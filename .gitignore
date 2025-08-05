@@ -47,3 +47,11 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# data or large output
+data/
+1-qol/output
+1-qol/models
+models/
+
+
