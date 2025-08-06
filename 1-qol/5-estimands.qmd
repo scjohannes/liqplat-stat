@@ -1,0 +1,327 @@
+---
+Title: SOPs
+---
+
+Here we analyse a random sample of the simulated data as we would analyze the true data of the liqplat trial.
+## Setup
+
+```{r}
+library(arrow)
+library(tidyverse)
+library(data.table)
+library(rmsb)
+library(ggplot2)
+library(ggdist)
+library(patchwork)
+library(furrr)
+```
+
+## Load data
+```{r}
+set.seed(12)
+# Load full dataset
+full_data <- read_parquet("./1-qol/sim-data/sim_data_nonpo.parquet")
+generate_SOPS <- FALSE
+fit <- FALSE
+```
+
+## Sample and format data
+```{r}
+# --- 2. Sample Patients ---
+ss_tx <- 180
+ss_control <- 90
+
+tx_ids <- sample(full_data |> filter(tx == 1) |> pull(id) |> unique(), ss_tx, replace = FALSE)
+control_ids <- sample(full_data |> filter(tx == 0) |> pull(id) |> unique(), ss_control, replace = FALSE)
+
+df <- full_data |>
+    filter(id %in% c(tx_ids, control_ids))
+
+rm(full_data)
+
+# --- 3. Pre-process Data & Save Empirical SOPs ---
+ids_death <- df$id[df$y == '8']
+df_filtered <- df |>
+    filter(!(id %in% ids_death))
+
+# Save empirical SOP image for this iteration's data
+p_empirical <- df_filtered |>
+    ggplot(aes(x = time, fill = factor(y))) +
+    geom_bar(position = "fill") +
+    scale_fill_brewer(palette = "Dark2") +
+    facet_wrap(~tx) +
+    labs(
+        title = "Empirical State Occupancy Probabilities",
+        subtitle = "After removing patients who died during follow-up",
+        x = "Time", y = "Proportion", fill = "State"
+    )
+
+# --- 4. Create analysis dataset with missing follow-up ---
+baseline <- df_filtered |>
+    filter(time == 1) |>
+    mutate(y = yprev, time = 0) |>
+    select(-yprev)
+
+follow_up <- df_filtered |>
+    slice_sample(prop = 0.15) |>
+    select(-yprev)
+
+data_for_model <- baseline |>
+    bind_rows(follow_up) |>
+    arrange(id, time) |>
+    group_by(id) |>
+    mutate(
+        yprev = lag(y, n = 1, order_by = time),
+        yprev = factor(yprev, levels = 1:7, ordered = FALSE),
+        timeprev = lag(time, n = 1, order_by = time),
+        gap = time - timeprev,
+        y = as.numeric(as.character(y))
+    ) |>
+    ungroup() |>
+    filter(!is.na(yprev)) |>
+    select(-timeprev)
+```
+
+## Visualize the follow-up pattern
+
+```{r}
+set.seed(4)
+ids <- data_for_model$id |> unique() |> sample(20) 
+
+fig_tile_random <- data_for_model |> 
+  filter(id %in% ids) |> 
+  mutate(id = as.factor(as.numeric(as.factor((id))))) |> 
+  ggplot(aes(y = id, x = time)) +
+  geom_tile(mapping = aes(fill = factor(y)), width = 0.95, height = 0.4) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = 1:26) +
+  labs(fill = "y")
+
+ggsave(filename = "./img/fig-sparse-tile.svg", width = 12, height = 6)
+```
+
+
+## Fit the model
+```{r}
+if(fit){
+dd <- datadist(data_for_model)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+options(datadist = 'dd')
+
+options(mc.cores = 8)
+
+Sys.setenv(RSTUDIO = 1)
+
+model <-
+    blrm(
+      formula = y  ~ tx + rcs(time, 4) + yprev * gap + ecog_fstcnt + diagnosis,
+      data = data_for_model,
+      ppo = ~ time,
+      cppo = function(y) y,
+      refresh = 5,
+      iter = 2000,
+      chains = 4,
+      method = "sampling"
+  )
+
+Sys.setenv(RSTUDIO = 0)
+
+saveRDS(model, "./1-qol/models/model-primary-estimand.rds")} else{
+  model <- readRDS("./1-qol/models/model-primary-estimand.rds")
+}
+```
+
+### Recovering difference in weeks with >= good QoL
+
+#### Marginalized State Occupancy Probabilities
+
+```{r}
+baseline_df <- data_for_model |> 
+    group_by(id) |> 
+    arrange(time) |> 
+    slice_head(n = 1) |> 
+    ungroup() |> 
+    mutate(
+        time = 1,
+        gap = 1,
+        y = NA) |> 
+    as.data.table()
+```
+
+```{r}
+write_SOP <- function(i, tx, baseline_df, path){
+  
+  row <- baseline_df[i]
+  
+  sops <-
+  soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, yprev=row$yprev, gap = row$gap),
+    times = 1:26,
+    ylevels = 1:7,
+    absorb = NULL,
+    tvarname = "time",
+    pvarname = "yprev"
+  )
+  
+  # Because of the size of the data, only use the first 500 MCMC draws
+  sops <- sops[1:500,,]
+  
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "time", "state", "sop"))
+  
+  sops$time <- as.integer(sops$time)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+  
+  folder <- file.path(path, glue::glue("/marginalized_sop_{tx}"), glue::glue("/msop_{i}.parquet"))
+
+  # Create the directory if it doesn't exist
+  dir_to_create <- dirname(folder)
+  if (!dir.exists(dir_to_create)) {
+    dir.create(dir_to_create, recursive = TRUE)
+  }
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+#### Generate marginalized SOPs
+
+```{r}
+path <- "./1-qol/output/primary-estimand/"
+future::plan(future::multisession, workers=6)
+
+
+# Control
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df, path),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+```{r}
+# Treatment
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df, path),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+#### Read maginalized SOPs
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./1-qol/output/primary-estimand/marginalized_sop_0/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, time, draw, tx)]
+soc_df[, state := as.factor(state)]
+```
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./1-qol/output/primary-estimand/marginalized_sop_1/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, time, draw, tx)]
+tx_df[, state := as.factor(state)]
+```
+
+```{r}
+sop_df <-
+  bind_rows(soc_df, tx_df) |>
+  mutate(tx = as.factor(tx))
+```
+
+### Plotting
+
+#### Marginalized SOPs
+
+```{r}
+fig_marginalized <-
+sop_df |>
+  ggplot() +
+  aes(x = time, y = sop) +
+  ggdist::stat_lineribbon(aes(fill = state, linetype = tx),
+                          linewidth = 0.6,
+                          alpha = 0.5,
+                          .width = c(0.95)) +
+  scale_color_brewer(palette = "Dark2", guide="none") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 0.45)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+
+ggsave("./img/primary-estimand-sop-line.svg", width = 10, height = 6)
+
+
+fig_marginalized_grouped <- sop_df |> 
+  mutate(group = case_when(
+    state == 1 | state == 2 | state == 3 ~ "Good",
+    state == 7 | state == 6 | state == 5 ~ "Bad",
+    TRUE ~ "Average"
+  )) |> 
+  group_by(group, draw, tx, time) |> 
+  summarise(sop = sum(sop)) |> 
+  ggplot() +
+  aes(x = time, y = sop) +
+  ggdist::stat_lineribbon(aes(fill = group, linetype = tx),
+                          linewidth = 0.6,
+                          alpha = 0.5,
+                          .width = c(0.95)) +
+  scale_color_brewer(palette = "Dark2", guide="none") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+
+fig_marginalized + fig_marginalized_grouped
+```
+
+#### Difference in Weeks with >= Good Quality of Life
+
+In the large dataset the true difference between tx == 1 and tx == 0 is 1.5 weeks.
+```{r}
+# marginalized difference in weeks for >= good QoL
+posterior <- sop_df |> 
+  filter(state == "1" | state == "2" | state == "3") |> 
+  group_by(tx, draw) |> 
+  summarise(mean_weeks = sum(sop))  |> 
+  pivot_wider(names_from = tx, values_from = mean_weeks, names_prefix = "tx_") |> 
+  mutate(difference = tx_1 - tx_0) |> 
+  ggplot(aes(x = difference)) +
+  ggdist::stat_halfeye(fill = "orange") +
+  labs(
+  title = bquote(paste("Treatment Difference in Weeks spent with ", "" >= "", " Good Quality of Life (", tau[W]^"psATE", ")")),
+  x = "Difference [weeks]"
+)
+
+ggsave("./img/primary-estimand-posterior.svg", width = 8, height = 5)
+```

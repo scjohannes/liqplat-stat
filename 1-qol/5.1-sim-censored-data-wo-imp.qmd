@@ -1,0 +1,523 @@
+---
+Title: Simulating Characteristics
+---
+
+Here we investigate the effect of sprase follow-up of non-missing states and using interval censoring (`Ocens()`) from Hmisc to deal with this. 
+It leads to an overestimate of the absorbing state.
+
+## Setup
+
+```{r}
+library(Hmisc)
+library(rmsb)
+library(ggplot2)
+library(arrow)
+library(tidyverse)
+library(data.table)
+library(furrr)
+library(mice)
+library(miceadds)
+library(VGAM)
+
+fit <- FALSE
+generate_SOPS <- FALSE
+```
+
+## Load data
+
+```{r}
+df_full <- read_parquet("./1-qol/sim-data/sim_data_po.parquet")
+
+source("./functions/censor-qol-data.R")
+source("./functions/write-sops.R")
+source("./functions/carry-death-forward.R")
+```
+
+## Task 1: Recover true OR with censored data and correct model
+
+First, we want to check whether we can in principle recover the OR of 0.8 and the difference in time spent with >= good QoL if we only observe about 4 measurements per patient. 
+
+### Sample data for 2500 patients
+
+```{r}
+set.seed(1234)
+
+ss_tx <- 1250
+ss_control <- 1250
+
+tx_ids <- sample(df_full |> filter(tx == 1) |> pull(id) |> unique(), ss_tx, replace = F)
+control_ids <- sample(df_full |> filter(tx == 0) |> pull(id) |> unique(), ss_control, replace = F)
+
+df <- df_full |> 
+    filter(id %in% tx_ids | id %in% control_ids)
+```
+
+## Separate first row and row where y == 8
+
+```{r}
+first_rows <- df |> 
+  group_by(id) |> 
+  arrange(id, time) |> 
+  slice_head(n = 1)
+
+death_rows <- df |> 
+    filter(y == '8')
+```
+
+## Take random sample of other rows
+
+```{r}
+sample_rows <- df |> 
+    anti_join(first_rows) |> 
+    anti_join(death_rows) |> 
+    ungroup() |> 
+    slice_sample(prop = 0.15) |> # this should amount to roughly four quality of life measurements after the baseline measurement 
+    arrange(id, time)
+```
+
+## Data wrangling
+
+- We have to recompute yprev and add a gap time between the measurements
+
+```{r}
+baseline <- first_rows |> 
+    mutate(
+      y = yprev,
+      time = 0
+    ) |> 
+    select(-yprev)
+
+follow_up <- sample_rows |> 
+    bind_rows(death_rows) |> 
+    select(-yprev) |> 
+    bind_rows(baseline) |> 
+    arrange(id, time)
+
+follow_up <- follow_up |> 
+    group_by(id) |> 
+    mutate(
+        yprev = case_when(
+            TRUE ~ lag(y, n = 1, order_by = time)
+        ),
+        yprev = factor(yprev, levels = 1:7, ordered = FALSE), #death = 8 doesn't exist in yprev
+        timeprev = case_when(
+            TRUE ~ lag(time, n = 1, order_by = time)
+        ), 
+        gap = time - timeprev) |> 
+    slice(-1) |> #remove baseline without prior state
+    ungroup()
+```
+
+## Visualize follow-pattern
+
+- As expected, we have datapoints for the entire follow-up duration (i.e., for every week)
+
+```{r}
+follow_up |> 
+    ggplot(aes(x = time, y = y)) +
+    geom_jitter(width = 0.1, height = 0.1)
+```
+
+## Imputing all missing y
+
+
+### create dataset without QoL measurements before week of death
+
+```{r}
+measurements <- follow_up |> bind_rows(baseline) |> select(id, y, time)
+
+static_info <- follow_up |> 
+  group_by(id) |> 
+  mutate(
+    dweek = time[y=='8'][1],
+    status = if_else(!is.na(dweek), 1, 0)) |> 
+  ungroup() |> 
+  select(-time, -y, -yprev, -gap, -timeprev) |> 
+  distinct()
+  
+empty_obs <-  static_info |>
+  mutate(time = list(0:26)) |>
+  unnest(time) |> 
+  left_join(measurements, by = c("id", "time")) |> 
+  mutate(
+    dweek = if_else(is.na(dweek), 27, dweek),
+    y = factor(y, levels = 1:7, ordered = TRUE),
+    status = factor(status),
+    tx = factor(tx),
+    ) |> 
+  arrange(id, time) |> 
+  group_by(id) |> 
+  filter(row_number() - 1 < dweek) |> 
+  select(-gender, -pat_age, -plan_fstcnt_coded) #I know that these variables are not predictive
+```
+
+### Impute this dataset
+
+```{r}
+md.pattern(empty_obs)
+
+init <- mice(empty_obs, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# Use patient ID as clustering variable
+pred_matrix[, "id"] <- -2
+
+# Impute individual q30 at the questionnaire level
+meth["y"] <- "2l.pmm"
+
+
+imputed_data <- mice(empty_obs,
+                     m = 10,
+                     maxit = 50,
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     seed = 123)
+
+plot(imputed_data)
+densityplot(imputed_data, ~y)
+
+stripplot(imputed_data, y ~ .imp, pch = 20, cex = 1.2)
+
+death_rows <- death_rows |> 
+  mutate(
+    tx = factor(tx),
+    status = factor(status)
+  ) |> 
+  select(-pat_age, -plan_fstcnt_coded, -yprev, -gender)
+
+complete_data <- list()
+
+for (i in 1:10){
+  imputed_set <- complete(imputed_data, i)
+
+  imputed_set <- imputed_set |> 
+    mutate(y = factor(y, ordered = FALSE)) |> 
+    bind_rows(death_rows) |> 
+    arrange(id, time) |> 
+    group_by(id) |> 
+    mutate(yprev = case_when(
+              TRUE ~ lag(y, n = 1, order_by = time))) |> 
+    slice(-1) |> 
+    ungroup() |> 
+    mutate(
+      y = as.numeric(as.character(y)),
+      yprev = factor(yprev, ordered = F))
+  
+  complete_data[[i]] <- imputed_set
+}
+```
+
+## create censored dataset
+
+```{r}
+df_censored <- follow_up |> 
+    select(-y, -yprev, -time, -timeprev, -gap) |> 
+    distinct() |> 
+    mutate(time = list(1:26)) |> 
+    unnest(time) |> 
+    left_join(follow_up, by = c("id", "tx", "gender", "pat_age", "ecog_fstcnt", "diagnosis", "plan_fstcnt_coded", "status", "time")) |> 
+    mutate(
+        yprev = as.numeric(as.character(yprev)),
+        y = as.numeric(as.character(y))) |> 
+    group_by(id) |> 
+    fill(yprev, .direction = "up") |> 
+    mutate(
+        yprev = case_when(
+            is.na(yprev) ~ lag(y, n = 1, order_by = time),
+            TRUE ~ yprev
+        ),
+        y.a = case_when(
+            !is.na(y) ~ y, 
+            TRUE ~ 1
+        ),
+        y.b = case_when(
+            !is.na(y) ~ y,
+            TRUE ~ 7 
+        )
+    ) |> 
+    fill(yprev, .direction = "down") |> 
+    mutate(gap_group = cumsum(lag(!is.na(y), default = FALSE))) |> 
+    group_by(id, gap_group) |> 
+    mutate(gap = row_number()) |> 
+    ungroup() |> 
+    filter(yprev != 8) |> 
+    select(-gap_group, -timeprev) |> 
+    mutate(
+      ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE), # rmsb can't handle ordered factor for predictions later on
+      yprev = factor(yprev),
+      tx = factor(tx) # absolutely needs to be a factor
+    )
+```
+
+### Fit model and check if we recover OR of 0.8
+
+```{r}
+dd <- datadist(df_censored)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+options(datadist = 'dd')
+
+options(mc.cores = 8)
+
+if (fit) {
+
+Sys.setenv(RSTUDIO = 1)
+
+    model <-
+    blrm(
+      formula = Ocens(y.a, y.b)  ~ tx + pol(time, 2) + yprev + ecog_fstcnt + diagnosis,
+      data = df_censored,
+      ppo = ~ time,
+      cppo = function(y) y,
+      refresh = 5,
+      iter = 2000,
+      chains = 4,
+      method = "sampling"
+  )
+
+Sys.setenv(RSTUDIO = 0)
+
+stanDx(model)
+stanDxplot(model)
+
+model
+saveRDS(model, "./1-qol/models/model-sim-task-1.rds")
+}
+
+model <- readRDS("./1-qol/models/model-sim-task-1.rds")
+```
+
+### Fit VGAM model
+
+```{r}
+# original full data
+o <- vglm(ordered(y) ~ tx + poly(time, 2) + yprev + ecog_fstcnt + diagnosis, 
+  cumulative(reverse = TRUE, parallel = FALSE ~ poly(time, 2)), 
+  data = df)
+
+f <- vglm(ordered(y) ~ tx + poly(time, 2) + yprev + ecog_fstcnt + diagnosis, 
+  cumulative(reverse = TRUE, parallel = FALSE ~ poly(time, 2)), 
+  data = complete_data)
+
+cbind(o = coef(o), f = coef(f))
+```
+
+```{r}
+models_list <- list()
+
+for (i in 1:length(complete_data)) {
+  current_data <- complete_data[[i]]
+  
+  model_fit <- vglm(ordered(y) ~ tx + poly(time, 2) + yprev + ecog_fstcnt + diagnosis, 
+                    cumulative(reverse = TRUE, parallel = FALSE ~ poly(time, 2)), 
+                    data = current_data)
+
+  models_list[[i]] <- model_fit
+}
+
+coefficients_list <- list()
+
+for (i in 1:length(models_list)) {
+  current_coefficients <- coef(models_list[[i]])
+  
+  coefficients_df <- enframe(current_coefficients, name = "term", value = "estimate")
+  
+  coefficients_list[[i]] <- coefficients_df
+}
+
+all_coefficients_df <- bind_rows(coefficients_list, .id = "imputation_id")
+
+mean_coefficients <- all_coefficients_df |> 
+  group_by(term) |> 
+  summarise(mean_estimate = mean(estimate, na.rm = TRUE)) |> 
+  arrange(term)
+
+true_coefficients <- enframe(coef(o), name = 'term', value = 'estimate') |> 
+  arrange(term)
+
+bind_cols(mean_coefficients, true_coefficients) |> View()
+```
+
+The esimated OR is around 0.8, but probably 25000 patients with about 5 measurements each are not enough.
+
+### Recovering difference in weeks with >= good QoL
+
+#### Marginalized State Occupancy Probabilities
+
+```{r}
+baseline_df <- filter(df_censored, time == 1) |> as.data.table()
+```
+
+```{r}
+write_SOP <- function(i, tx, baseline_df, path){
+  
+  row <- baseline_df[i]
+  
+  sops <-
+  soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, yprev=row$yprev, gap = row$gap),
+    times = 1:26,
+    ylevels = 1:8,
+    absorb = 8,
+    tvarname = "time",
+    pvarname = "yprev"
+  )
+  
+  # Because of the size of the data, only use the first 500 MCMC draws
+  sops <- sops[1:500,,]
+  
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "time", "state", "sop"))
+  
+  sops$time <- as.integer(sops$time)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+  
+  folder <- file.path(path, glue::glue("/marginalized_sop_{tx}"), glue::glue("/msop_{i}.parquet"))
+
+  # Create the directory if it doesn't exist
+  dir_to_create <- dirname(folder)
+  if (!dir.exists(dir_to_create)) {
+    dir.create(dir_to_create, recursive = TRUE)
+  }
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+#### Generate marginalized SOPs
+
+```{r}
+path <- "./1-qol/output/sim-task-1/"
+future::plan(multisession, workers=6)
+
+
+# Control
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df, path),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+```{r}
+# Treatment
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df, path),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+future::plan("sequential")
+```
+
+#### Read maginalized SOPs
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./1-qol/output/sim-task-1/marginalized_sop_0/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, time, draw, tx)]
+soc_df[, state := as.factor(state)]
+```
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./1-qol/output/sim-task-1/marginalized_sop_1/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, time, draw, tx)]
+tx_df[, state := as.factor(state)]
+```
+
+```{r}
+sop_df <-
+  bind_rows(soc_df, tx_df) |>
+  mutate(tx = as.factor(tx))
+```
+
+### Plotting
+
+#### Marginalized SOPs
+
+```{r}
+sop_empirical <- 
+  df |> 
+  carry_death_forward() |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  mutate(
+    total = sum(n),
+    sop   = n / total,
+    tx = factor(tx)) |>
+  ungroup() |> 
+  ggplot(aes(x = time, y = sop, color = y)) +
+  geom_line(aes(linetype = tx)) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 0.4)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Empirical state occupancy probabilities",
+   linetype = "Treatment",
+   color = "state")
+
+
+fig_marginalized <-
+sop_df |>
+  ggplot() +
+  aes(x = time, y = sop) +
+  ggdist::stat_lineribbon(aes(fill = state, linetype = tx),
+                          linewidth = 0.6,
+                          alpha = 0.5,
+                          .width = c(0.95)) +
+  scale_color_brewer(palette = "Dark2", guide="none") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 0.4)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+
+sop_empirical + fig_marginalized + 
+  plot_annotation(tag_levels = 'A')
+
+ggsave("./img/sop-cens-overestimate.svg", width = 10, height = 10)
+```
+
+#### Difference in Weeks with >= Good Quality of Life
+
+In the large dataset the true difference between tx == 1 and tx == 0 is 1.5 weeks.
+```{r}
+# marginalized difference in weeks for >= good QoL
+sop_df |> 
+  filter(state == "1" | state == "2" | state == "3") |> 
+  group_by(tx, draw) |> 
+  summarise(mean_weeks = sum(sop))  |> 
+  pivot_wider(names_from = tx, values_from = mean_weeks, names_prefix = "tx_") |> 
+  mutate(difference = tx_1 - tx_0) |> 
+  ggplot(aes(x = difference)) +
+  ggdist::stat_halfeye(fill = "orange") +
+  labs(
+    title = "Difference in Weeks spent with >= Good QoL (Y^1 - Y^0)"
+  )
+```

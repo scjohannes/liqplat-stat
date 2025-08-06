@@ -1,0 +1,221 @@
+---
+Title: Simulation where OR = 0.8 - principal stratum
+---
+
+
+## Setup
+```{r}
+# Load Libraries
+library(Hmisc)
+library(rmsb)
+library(ggplot2)
+library(arrow)
+library(tidyverse)
+library(data.table)
+library(furrr)
+library(glue)
+```
+
+## Load data
+
+```{r}
+set.seed(1234)
+# Load full dataset
+df_full <- read_parquet("./1-qol/sim-data/sim_data_nonpo.parquet")
+```
+
+
+## Simulation function
+
+```{r}
+run_simulation_iteration <- function(iter_num, base_path, full_data) {
+    # This function runs one full simulation iteration.
+    
+    # --- 1. Setup for the current iteration ---
+    # Use the iteration number to ensure a unique seed for each run
+    set.seed(123 + iter_num)
+    iter_path <- file.path(base_path, glue("run_{iter_num}"))
+    if (!dir.exists(iter_path)) {
+        dir.create(iter_path, recursive = TRUE)
+    }
+
+    # --- 2. Sample Patients ---
+    ss_tx <- 180
+    ss_control <- 90
+
+    tx_ids <- sample(full_data |> filter(tx == 1) |> pull(id) |> unique(), ss_tx, replace = FALSE)
+    control_ids <- sample(full_data |> filter(tx == 0) |> pull(id) |> unique(), ss_control, replace = FALSE)
+
+    df_iter <- full_data |>
+        filter(id %in% c(tx_ids, control_ids))
+
+    rm(full_data)
+
+    # --- 3. Pre-process Data & Save Empirical SOPs ---
+    ids_death <- df_iter$id[df_iter$y == '8']
+    df_filtered <- df_iter |>
+        filter(!(id %in% ids_death))
+
+    # Save empirical SOP image for this iteration's data
+    p_empirical <- df_filtered |>
+        ggplot(aes(x = time, fill = factor(y))) +
+        geom_bar(position = "fill") +
+        scale_fill_brewer(palette = "Dark2") +
+        facet_wrap(~tx) +
+        labs(
+            title = glue("Empirical State Occupancy Probabilities for Run {iter_num}"),
+            subtitle = "After removing patients who died during follow-up",
+            x = "Time", y = "Proportion", fill = "State"
+        )
+    
+    pdf(file = file.path(iter_path, "empirical_sops.pdf"), width = 8, height = 6)
+    print(p_empirical)
+    dev.off()
+
+    # --- 4. Create analysis dataset with missing follow-up ---
+    baseline <- df_filtered |>
+        filter(time == 1) |>
+        mutate(y = yprev, time = 0) |>
+        select(-yprev)
+
+    follow_up <- df_filtered |>
+        slice_sample(prop = 0.15) |>
+        select(-yprev)
+
+    data_for_model <- baseline |>
+        bind_rows(follow_up) |>
+        arrange(id, time) |>
+        group_by(id) |>
+        mutate(
+            yprev = lag(y, n = 1, order_by = time),
+            yprev = factor(yprev, levels = 1:7, ordered = FALSE),
+            timeprev = lag(time, n = 1, order_by = time),
+            gap = time - timeprev,
+            y = as.numeric(as.character(y))
+        ) |>
+        ungroup() |>
+        filter(!is.na(yprev)) |>
+        select(-timeprev) |> 
+        mutate(
+                ecog_fstcnt = factor(ecog_fstcnt),
+                diagnosis = factor(diagnosis)
+            )
+
+    # --- 5. Save the data used for model fitting ---
+    saveRDS(data_for_model, file.path(iter_path, "data_for_model.rds"))
+
+
+    # --- 6. Fit the Model and Save ---
+    if (nrow(data_for_model) > 0) {
+        model <- tryCatch({
+            # The code to try
+            blrm(
+                formula = y ~ tx + pol(time, 2) + yprev * gap + ecog_fstcnt + diagnosis,
+                data = data_for_model,
+                ppo = ~time,
+                cppo = function(y) y,
+                refresh = 0, # Quiets the STAN output for cleaner logs
+                iter = 2000,
+                chains = 4,
+                method = "sampling",
+                seed = 1234 + iter_num,
+                cores = 1,
+                loo = FALSE
+            )
+        }, error = function(e) {
+            # What to do if an error occurs
+            message(glue("ERROR in iteration {iter_num}: {e$message}"))
+            
+            # Save the problematic data for debugging later
+            saveRDS(data_for_model, file.path(iter_path, "problematic_data.rds"))
+            
+            # Return NULL or an error flag instead of a model object
+            return(NULL)
+        })
+
+        # --- 7. Save the results ONLY if the model ran successfully ---
+        if (!is.null(model)) {
+            # Save the full model object
+            # saveRDS(model, file.path(iter_path, "model_object.rds"))
+            
+            # Save the MCMC draws to a separate file
+            saveRDS(as.data.table(model$draws), file.path(iter_path, "model_draws.rds"))
+
+            rhat_values <- stanDx(model) |> 
+                data.frame() |> 
+                rownames_to_column()  |> 
+                select(-n_eff) |> 
+                pivot_wider(names_from = rowname, values_from = Rhat)
+
+            saveRDS(rhat_values, file.path(iter_path, "rhat_values.rds"))
+
+            ess_ratios <- stanDx(model) |> 
+                data.frame() |> 
+                rownames_to_column()  |> 
+                select(-Rhat) |> 
+                pivot_wider(names_from = rowname, values_from = n_eff) |> 
+                mutate_all(~ . / (model$iter * model$chains))
+
+             saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
+        }
+    }
+    
+    gc()
+    
+    # Return a status message for progress tracking
+    return(glue("Iteration {iter_num} completed."))
+}
+```
+
+## Run Parallelized Simulation
+```{r}
+# --- User-defined Parameters ---
+N_SIMULATIONS <- 1000 
+OUTPUT_PATH <- "./1-qol/output/sim-principal-stratum-markov-HA/" # Base path for all output
+N_CORES <- 10 
+
+message("Checking for previously completed simulation runs...")
+
+completed_files <- fs::dir_ls(path = OUTPUT_PATH, glob = "*/model_draws.rds", recurse = TRUE)
+
+completed_iters <- integer(0) 
+if (length(completed_files) > 0) {
+    completed_iters <- stringr::str_extract(completed_files, "(?<=run_)\\d+") |>
+        as.integer() |>
+        na.omit() |> # Remove any NAs from parsing failures
+        unique()
+}
+
+# Determine which iterations still need to be run
+all_possible_iters <- 1:N_SIMULATIONS
+iters_to_run <- setdiff(all_possible_iters, completed_iters)
+
+n_to_run <- length(iters_to_run)
+n_completed <- length(completed_iters)
+
+message(glue("{n_completed} of {N_SIMULATIONS} iterations are already complete."))
+
+if (n_to_run > 0) {
+    message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
+    
+    future::plan(future.callr::callr, workers = N_CORES)
+    
+    # --- Run Simulations in Parallel ---
+    furrr::future_walk(
+        .x = iters_to_run,
+        .f = ~run_simulation_iteration(
+            iter_num = .x,
+            base_path = OUTPUT_PATH,
+            full_data = df_full
+        ),
+        .options = furrr_options(seed = TRUE),
+        .progress = TRUE
+    )
+    
+    message(glue("Finished {n_to_run} simulations."))
+} else {
+    message("All simulations were already complete. No new runs started.")
+}
+
+message("Simulation process finished.")
+```

@@ -1,0 +1,729 @@
+---
+Title: Results of Simulations
+---
+
+In this document we summarise and visualize the results of the simulations from step 6.
+
+## Setup
+
+### Load packages
+
+```{r}
+library(fs)
+library(tidyverse)
+library(arrow)
+library(survival)
+library(patchwork)
+```
+
+### Load Full Data
+
+```{r}
+df_full <- read_parquet("./1-qol/sim-data/sim_data_nonpo.parquet")
+threshold <- 0.95
+```
+
+### Functions
+
+```{r} fun-jacknife
+jackknife_mcse <- function(estimates, statistic = mean) {
+  
+  # Number of simulation repetitions
+  nsim <- length(estimates)
+  
+  # Vector to store the "leave-one-out" estimates
+  leave_one_out_estimates <- numeric(nsim)
+  
+  # Step 1: Create the "leave-one-out" estimates
+  # Loop through each simulation run, remove it, and recalculate the statistic
+  for (i in 1:nsim) {
+    leave_one_out_estimates[i] <- statistic(estimates[-i])
+  }
+  
+  # Step 2: Calculate the average of all the leave-one-out estimates
+  mean_of_estimates <- mean(leave_one_out_estimates)
+  
+  # Step 3: Calculate the sum of squared differences
+  sum_sq_diff <- sum((leave_one_out_estimates - mean_of_estimates)^2)
+  
+  # Step 4: Apply the final jackknife formula
+  mcse <- sqrt(((nsim - 1) / nsim) * sum_sq_diff)
+  
+  return(mcse)
+}
+
+summarise_posterior <- function(data, param_name, true_param_value, threshold = 0.95){
+    data |> 
+        summarise(
+            # Point estimate (posterior mean) for the log OR
+            point_estimate = median({{param_name}}),
+            bias = point_estimate - true_param_value,
+            mod_SE = sd({{param_name}}),
+            
+            # 95% Credible Interval for the log OR
+            lower_ci = quantile({{param_name}}, probs = 0.025),
+            upper_ci = quantile({{param_name}}, probs = 0.975),
+            coverage = if_else(lower_ci <= true_param_value & upper_ci >= true_param_value, 1, 0), 
+            
+            # Posterior probability that the log(OR) is less than 0
+            p_benefit = mean({{param_name}} < 0),
+            rejected = if_else(p_benefit > threshold, 1, 0)
+        )
+}
+
+summarise_iterations <- function(data) {
+    data |> 
+        summarise(
+            mean_point_estimate = mean(point_estimate),
+            mcse_point_estimate = jackknife_mcse(point_estimate),
+            prob_rejection      = mean(rejected),
+            mcse_prob_rejection = jackknife_mcse(rejected),
+            mean_bias           = mean(bias),
+            mcse_bias           = jackknife_mcse(bias),
+            mean_coverage       = mean(coverage),
+            mcse_coverage       = jackknife_mcse(coverage),
+            emp_SE              = sd(point_estimate),
+            mcse_emp_SE         = jackknife_mcse(coverage, statistic = sd),
+            mean_modSE          = mean(mod_SE),
+            mcse_modSE          = jackknife_mcse(mod_SE)
+        )       
+}
+```
+
+```{r}
+plot_rhat <- function(data, y = tx){
+    data |> 
+        ggplot() +
+        aes(x = iter, y = {{y}}) +
+        geom_point(alpha = 0.5) +
+        geom_hline(yintercept = 1.05, linetype = "dashed", color = "red") + 
+        labs(
+            x = "Iteration",
+            y = expression(beta["treatment"])
+        )
+}
+
+plot_p_benefit <- function(data, param = tx) {
+    data |> 
+        group_by(iter) |> 
+        summarise(p_benefit = mean({{param}} < 0)) |> 
+        ggplot() +
+        aes(x = iter, y = p_benefit) +
+        geom_point(alpha = 0.5) +
+        theme_light() +
+        labs(
+            y = expression(P(beta[treatment]<0)),
+            x = "iteration"
+            )
+}
+
+plot_posterior_distribution <- function(data, x_variable, subtitle_type = "H0", hline_intercept = log(1)) {
+
+  if (!subtitle_type %in% c("H0", "HA")) {
+    stop("subtitle_type must be either 'H0' or 'HA'")
+  }
+  
+  subtitle_expression <- if (subtitle_type == "H0") {
+    expression(Stacked~Posterior~Draws~under~H[0])
+  } else {
+    expression(Stacked~Posterior~Draws~under~H[A])
+  }
+  
+  x_label_expression <- expression(beta[treatment])
+  
+  ggplot(data, aes(x = {{ x_variable }})) +
+    ggdist::stat_dist_halfeye(fill = "orange") +
+    geom_vline(xintercept = hline_intercept, linetype = "dashed", color = "blue") +
+    labs(
+      subtitle = subtitle_expression,
+      x = x_label_expression,
+      y = NULL
+    )
+}
+
+# Read and stack all draw files into a single data frame
+load_draws <- function(path){
+    draw_files <- fs::dir_ls(path = path, glob = "*/model_draws.rds", recurse = TRUE)
+
+    draws <- purrr::map_dfr(draw_files, readRDS, .id = "source")|>
+        mutate(iter = as.integer(str_extract(source, "(?<=run_)\\d+"))) |>
+        select(-source)
+
+    return(draws)
+}
+
+load_rhat_values <- function(path){
+    rhat_files <- fs::dir_ls(path = path, glob = "*/rhat_values.rds", recurse = TRUE)
+
+    # 2. Read and stack all draw files into a single data frame
+    rhat <- purrr::map_dfr(rhat_files, readRDS, .id = "source")|>
+        mutate(iter = as.integer(str_extract(source, "(?<=run_)\\d+"))) |>
+        select(-source)
+
+    return(rhat)
+}
+```
+
+## Markov Model
+
+#### Load draws + diagnostics
+```{r}
+# H0
+path <- "./1-qol/output/sim-principal-stratum-markov-H0/"
+markov_h0 <- load_draws(path)
+rhat_markov_h0 <- load_rhat_values(path = path)
+
+#HA
+path <- "./1-qol/output/sim-principal-stratum-markov-HA/"
+markov_ha <- load_draws(path)
+rhat_markov_ha <- load_rhat_values(path = path)
+```
+
+#### MCSE increase plot (power)
+
+```{r}
+iter_200 <- markov_ha |> 
+    filter(iter <= 200) |> 
+    group_by(iter) |> 
+    summarise(p_benefit = mean(tx < 0)) |> 
+    reframe(rejected  = as.numeric(p_benefit > threshold)) |> 
+    summarise(`Monte Carlo SE for power based on posterior probability` = jackknife_mcse(rejected)) |> 
+    mutate(`$n_\text{sim}$` = "200") |> 
+    relocate(`$n_\text{sim}$`)
+
+
+iter_400 <- markov_ha |> 
+    filter(iter <= 400) |> 
+    group_by(iter) |> 
+    summarise(p_benefit = mean(tx < 0)) |> 
+    reframe(rejected  = as.numeric(p_benefit > threshold)) |> 
+    summarise(`Monte Carlo SE for power based on posterior probability` = jackknife_mcse(rejected)) |> 
+    mutate(`$n_\text{sim}$` = "400")
+
+iter_600 <- markov_ha |> 
+    filter(iter <= 600) |> 
+    group_by(iter) |> 
+    summarise(p_benefit = mean(tx < 0)) |> 
+    reframe(rejected  = as.numeric(p_benefit > threshold)) |> 
+    summarise(`Monte Carlo SE for power based on posterior probability` = jackknife_mcse(rejected)) |> 
+    mutate(`$n_\text{sim}$` = "600")
+
+iter_800 <- markov_ha |> 
+    filter(iter <= 800) |> 
+    group_by(iter) |> 
+    summarise(p_benefit = mean(tx < 0)) |> 
+    reframe(rejected  = as.numeric(p_benefit > threshold)) |> 
+    summarise(`Monte Carlo SE for power based on posterior probability` = jackknife_mcse(rejected)) |> 
+    mutate(`$n_\text{sim}$` = "800")
+
+iter_1000 <- markov_ha |> 
+    filter(iter <= 1000) |> 
+    group_by(iter) |> 
+    summarise(p_benefit = mean(tx < 0)) |> 
+    reframe(rejected  = as.numeric(p_benefit > threshold)) |> 
+    summarise(`Monte Carlo SE for power based on posterior probability` = jackknife_mcse(rejected)) |> 
+    mutate(`$n_\text{sim}$` = "1000")
+
+mcse_evolution <- bind_rows(iter_200, iter_400, iter_600, iter_800, iter_1000)
+
+saveRDS(mcse_evolution, file = "./1-qol/output/mcse-evolution.rds")
+```
+
+#### Convergence diagnostics
+```{r}
+rhat_plot_markov_ha <- rhat_markov_ha |> 
+    plot_rhat()
+
+rhat_plot_markov_h0 <- rhat_markov_h0 |> 
+    plot_rhat()
+
+rhat_plot_markov_h0 + rhat_plot_markov_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
+```
+
+### Plot probability of benefit
+
+```{r}
+p1 <- markov_h0 |> 
+    plot_p_benefit(param = tx)
+
+p2 <- markov_ha |> 
+    plot_p_benefit(param = tx)
+
+p1 + p2 +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_markov_h0 <- markov_h0 |> 
+  plot_posterior_distribution(x_variable = tx)
+
+post_markov_ha <- markov_ha |> 
+  plot_posterior_distribution(
+    x_variable = tx, 
+    subtitle_type = "HA", 
+    hline_intercept = log(0.8))
+
+post_markov_h0 + post_markov_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+summary_markov_h0 <- markov_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = tx, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_markov_ha <- markov_ha |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = tx, 
+        true_param_value = log(0.8), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+rm(markov_h0, markov_ha)
+```
+
+## Multilevel Model with RI
+
+#### Load draws
+```{r}
+path <- "./1-qol/output/sim-principal-stratum-random-intercept-H0/"
+
+ri_h0 <- load_draws(path)
+rhat_ri_h0 <- load_rhat_values(path)
+
+path <- "./1-qol/output/sim-principal-stratum-random-intercept-HA/"
+
+ri_ha <- load_draws(path)
+rhat_ri_ha <- load_rhat_values(path)
+```
+
+#### Plot
+
+```{r}
+# probability of benefit over time
+p1 <- ri_h0 |> 
+    plot_p_benefit(param = b_tx)
+
+p2 <- ri_ha |> 
+    plot_p_benefit(param = b_tx)
+
+p1 + p2 +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-pbenefit-ri.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_ri_h0 <- ri_h0 |> 
+  plot_posterior_distribution(x_variable = b_tx)
+
+post_ri_ha <- ri_ha |> 
+  plot_posterior_distribution(
+    x_variable = b_tx, 
+    subtitle_type = "HA", 
+    hline_intercept = log(0.8))
+
+post_ri_h0 + post_ri_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-posteriors-ri.svg", width = 10, height = 5)
+```
+
+#### Converge diagnostics
+
+```{r}
+rhat_plot_ri_h0 <- rhat_ri_h0 |> 
+    plot_rhat(b_tx)
+
+rhat_plot_ri_ha <- rhat_ri_ha |> 
+    plot_rhat(b_tx)
+
+rhat_plot_ri_ha + rhat_plot_ri_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-rhat-ri.svg", width = 10, height = 5)
+```
+
+#### MCSE
+
+```{r}
+summary_ri_h0 <- ri_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_ri_ha <- ri_ha |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx, 
+        true_param_value = log(0.8), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+rm(ri_h0, ri_ha)
+```
+
+## Change From Baseline Model
+
+#### Load draws
+```{r}
+path <- "./1-qol/output/sim-principal-stratum-change-from-baseline-H0/"
+
+cfb_h0 <- load_draws(path)
+rhat_cfb_h0 <- load_rhat_values(path)
+
+path <- "./1-qol/output/sim-principal-stratum-change-from-baseline-HA/"
+
+cfb_ha <- load_draws(path)
+rhat_cfb_ha <- load_rhat_values(path)
+
+# 'true' change from baseline needs to be approximated from large dataset
+mean_change_empirical <- df_full |> 
+    filter(time == 1 | time == 26) |>
+    mutate(y = if_else(time == 1, yprev, y)) |> 
+    select(id, tx, time, y) |> 
+    pivot_wider(names_from = time, values_from = y, names_prefix = "y_") |> 
+    filter(y_26 != "8") |> # restrict to survivors
+    mutate(delta_y = as.numeric(as.character(y_26)) - as.numeric(as.character(y_1))) |> 
+    group_by(tx) |> 
+    summarise(mean_change = mean(delta_y))
+
+true_diff <- mean_change_empirical$mean_change[2] - mean_change_empirical$mean_change[1]
+```
+
+#### Converge diagnostics
+
+```{r}
+rhat_plot_cfb_h0 <- rhat_cfb_h0 |> 
+    plot_rhat(b_tx)
+
+rhat_plot_cfb_ha <- rhat_cfb_ha |> 
+    plot_rhat(b_tx)
+
+rhat_plot_cfb_h0 + rhat_plot_cfb_h0 +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-rhat-cfb.svg", width = 10, height = 5)
+```
+
+```{r}
+p1 <- cfb_h0 |> 
+    plot_p_benefit(param = b_tx)
+
+p2 <- cfb_ha |> 
+    plot_p_benefit(param = b_tx)
+
+p1 + p2 +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-pbenefit-cfb.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_cfb_h0 <- cfb_h0 |> 
+  plot_posterior_distribution(x_variable = b_tx)
+
+post_cfb_ha <- cfb_ha |> 
+  plot_posterior_distribution(
+    x_variable = b_tx, 
+    subtitle_type = "HA", 
+    hline_intercept = true_diff)
+
+post_cfb_h0 + post_cfb_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-posteriors-cfb.svg", width = 10, height = 5)
+```
+
+```{r}
+summary_cfb_h0 <- cfb_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx, 
+        true_param_value = 0, 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_cfb_ha <- cfb_ha |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx, 
+        true_param_value = true_diff, 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+rm(cfb_h0, cfb_ha)
+```
+
+## Time to Deterioation
+
+#### Load data
+
+```{r}
+path <- "./1-qol/output/sim-principal-stratum-time-to-deterioration-H0/"
+
+ttd_h0 <- load_draws(path)
+rhat_ttd_h0 <- load_rhat_values(path)
+
+path <- "./1-qol/output/sim-principal-stratum-time-to-deterioration-HA/"
+
+ttd_ha <- load_draws(path)
+rhat_ttd_ha <- load_rhat_values(path)
+```
+
+#### Plots
+
+```{r}
+p1 <- ttd_h0 |> 
+    plot_p_benefit(param = b_tx)
+
+p2 <- ttd_ha |> 
+    plot_p_benefit(param = b_tx)
+
+p1 + p2 +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-pbenefit-ttd.svg", width = 10, height = 5)
+```
+
+```{r}
+rhat_plot_ttd_ha <- rhat_ttd_ha |> 
+    plot_rhat(b_tx)
+
+rhat_plot_ttd_h0 <- rhat_ttd_h0 |> 
+    plot_rhat(b_tx)
+
+rhat_plot_ttd_h0 + rhat_plot_ttd_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-rhat-ttd.svg", width = 10, height = 5)
+```
+
+#### MCSE
+
+```{r}
+# we need to approximate 'true' HR from large dataset
+
+ids_death <- df_full$id[df_full$y == '8']
+
+df_filtered <- df_full |>
+        filter(!(id %in% ids_death))
+
+baseline <- df_filtered |>
+        filter(time == 1) |>
+        mutate(y = yprev, time = 0) |>
+        select(id, ybaseline = y)
+
+deteriorated <- df_filtered |> 
+    select(-yprev) |> 
+    left_join(baseline, by = "id") |> 
+    mutate(
+        ybaseline_numeric = as.numeric(as.character(ybaseline)),
+        y_numeric         = as.numeric(as.character(y)),
+        y_delta = y_numeric - ybaseline_numeric
+    ) |> 
+    filter(y_delta >= 1) |>
+    group_by(id) |>
+    arrange(time) |>
+    slice_head(n = 1) |> 
+    ungroup() |> 
+    mutate(status = 1) |> 
+    select(id, tx, time, status, ecog_fstcnt, diagnosis)
+
+not_deteriorated <- df_filtered |> 
+        filter(!(id %in% deteriorated$id)) |> 
+        mutate(
+            status = 0,
+            time   = 26) |> 
+        select(id, tx, time, status, ecog_fstcnt, diagnosis) |> 
+        distinct()
+
+cox_data <- bind_rows(deteriorated, not_deteriorated)
+
+
+cox_model <- coxph(
+  Surv(time, status) ~ tx + ecog_fstcnt + diagnosis,
+  data = cox_data
+)
+
+true_hr <- cox_model$coefficients[1]
+
+# get summary of sims
+
+summary_ttd_h0 <- ttd_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_ttd_ha <- ttd_ha |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx, 
+        true_param_value = true_hr, 
+        threshold = 0.95) |> 
+    summarise_iterations()
+```
+
+```{r}
+post_ttd_h0 <- ttd_h0 |> 
+  plot_posterior_distribution(x_variable = b_tx)
+
+post_ttd_ha <- ttd_ha |> 
+  plot_posterior_distribution(
+    x_variable = b_tx, 
+    subtitle_type = "HA", 
+    hline_intercept = true_hr)
+
+post_ttd_h0 + post_ttd_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-posteriors-ttd.svg", width = 10, height = 5)
+
+rm(ttd_h0, ttd_ha)
+```
+
+## Cumulative Logit at 6M
+
+#### Load draws
+```{r}
+path <- "./1-qol/output/sim-principal-stratum-6m-only-H0/"
+
+month_6_h0 <- load_draws(path)
+rhat_month_6_h0 <- load_rhat_values(path)
+
+path <- "./1-qol/output/sim-principal-stratum-6m-only-HA/"
+
+month_6_ha <- load_draws(path)
+rhat_month_6_ha <- load_rhat_values(path)
+```
+
+#### Plot
+
+```{r}
+p1 <- month_6_h0 |> 
+    plot_p_benefit(param = tx)
+
+p2 <- month_6_ha |> 
+    plot_p_benefit(param = tx)
+
+p1 + p2 +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-pbenefit-6m.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_month_6_h0 <- month_6_h0 |> 
+  plot_posterior_distribution(x_variable = tx)
+
+post_month_6_ha <- month_6_ha |> 
+  plot_posterior_distribution(
+    x_variable = tx, 
+    subtitle_type = "HA", 
+    hline_intercept = log(0.8))
+
+post_month_6_h0 + post_month_6_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-posteriors-6m.svg", width = 10, height = 5)
+```
+
+```{r}
+rhat_plot_month_6_h0 <- rhat_month_6_h0 |> 
+    plot_rhat(tx)
+
+rhat_plot_month_6_ha <- rhat_month_6_ha |> 
+    plot_rhat(tx)
+
+rhat_plot_month_6_h0 + rhat_plot_month_6_ha +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = "./img/fig-rhat-6m.svg", width = 10, height = 5)
+```
+
+#### MCSE
+
+```{r}
+summary_month_6_h0 <- month_6_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = tx, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_month_6_ha <- month_6_ha |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = tx, 
+        true_param_value = log(0.8), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+rm(month_6_h0, month_6_ha)
+```
+
+## Combine results
+
+```{r}
+results_h0 <- bind_rows(
+  "Markov Model" = summary_markov_h0,
+  "Random Intercept" = summary_ri_h0,
+  "Time-to-Deterioration" = summary_ttd_h0,
+  "6-Month Ordinal" = summary_month_6_h0,
+  "Change from Baseline" = summary_cfb_h0,
+  .id = "Model"
+)
+
+results_ha <- bind_rows(
+  "Markov Model" = summary_markov_ha,
+  "Random Intercept" = summary_ri_ha,
+  "Time-to-Deterioration" = summary_ttd_ha,
+  "6-Month Ordinal" = summary_month_6_ha,
+  "Change from Baseline" = summary_cfb_ha,
+  .id = "Model"
+)
+
+format_est_mcse <- function(est, mcse, digits = 3) {
+  paste0(
+    format(round(est, digits), nsmall = digits),
+    " (",
+    format(round(mcse, digits + 1), nsmall = digits + 1),
+    ")"
+  )
+}
+
+summary_table <- tibble(
+  Model = results_h0$Model,
+  `Absolute Bias ($H_A$)` = format_est_mcse(results_ha$mean_bias, results_ha$mcse_bias),
+  `Coverage ($H_A$)` = format_est_mcse(results_ha$mean_coverage, results_ha$mcse_coverage),
+  `Absolute Bias ($H_0$)` = format_est_mcse(results_h0$mean_bias, results_h0$mcse_bias),
+  `Coverage ($H_0$)` = format_est_mcse(results_h0$mean_coverage, results_h0$mcse_coverage),
+  `Power` = format_est_mcse(results_ha$prob_rejection, results_ha$mcse_prob_rejection),
+  `Type I Error` = format_est_mcse(results_h0$prob_rejection, results_h0$mcse_prob_rejection)
+)
+
+saveRDS(summary_table, file = "./1-qol/output/sim-summary.rds")
+```

@@ -1,0 +1,169 @@
+---
+Title : Model for Simulation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rms)
+library(rmsb)
+library(furrr)
+```
+
+## Load data
+
+We have to merge the categories of ecog == 3 and ecog == 4, becaus of too few observations in ecog == 4.
+```{r}
+df <- read_parquet("./data/censored_qol.parquet") |> 
+  mutate(
+    ecog_fstcnt = if_else(ecog_fstcnt == "4" | ecog_fstcnt == "3", "3plus", ecog_fstcnt), 
+    ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE), # rmsb can't handle ordered factor for predictions later on
+    yprev = factor(yprev) # absolutely needs to be a factor
+  ) 
+```
+
+Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
+```{r}
+fit <- FALSE
+generate_SOPS <- FALSE
+```
+
+## Model fitting
+
+### No treatment x time interaction
+- We will use model as a basis for simulating different scenarios.
+- We don't interact tx * time because there is not treatment effect in this data. 
+- Therefore also no nonPO for tx.  
+- We use polynomial instead of spline as it's easier to create the simlations with later on and yielded similar results in testing. 
+
+```{r}
+if (fit) {
+dd <- datadist(df)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+  options(datadist = 'dd')
+
+  options(mc.cores = 8)
+
+  Sys.setenv(RSTUDIO = 1)
+
+      model <-
+      blrm(
+        formula = Ocens(y.a, y.b)  ~ tx + pol(week, 2) + yprev * gap + ecog_fstcnt + diagnosis + pat_age + gender + plan_fstcnt_coded,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        refresh = 5,
+        iter = 2000,
+        chains = 4,
+        method = "sampling"
+    )
+    saveRDS(model, "./1-qol/models/qol_long_ord_pol.rds")
+
+
+  Sys.setenv(RSTUDIO = 0)
+}
+
+model <- readRDS("./1-qol/models/qol_long_ord_pol.rds")
+
+stanDx(model)
+stanDxplot(model)
+```
+
+## Marginalized State Occupancy Probabilities
+
+```{r}
+baseline_df <- filter(df, week == 1) |> as.data.table()
+```
+
+```{r}
+write_SOP <- function(i, tx, baseline_df){
+  
+  row <- baseline_df[i]
+  
+  sops <-
+  soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, plan_fstcnt_coded = row$plan_fstcnt_coded, pat_age = row$pat_age, gender = row$gender, yprev=row$yprev, gap = 1),
+    times = 1:26,
+    ylevels = 1:8,
+    absorb = 8,
+    tvarname = "week",
+    pvarname = "yprev"
+  )
+  
+  # Because of the size of the data, only use the first 500 MCMC draws
+  sops <- sops[1:500,,]
+  
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "week", "state", "sop"))
+  
+  sops$week <- as.integer(sops$week)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+  
+  folder <- glue::glue("./1-qol/output/model-for-sim/marginalized_sop_{tx}/msop_{i}.parquet")
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+### Generate marginalized SOPs
+
+```{r}
+future::plan(multisession, workers=6)
+
+# Control
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+```{r}
+# Treatment
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+future::plan("sequential")
+```
+
+### Read maginalized SOPs
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./1-qol/output/model-for-sim/marginalized_sop_0/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
+soc_df[, state := as.factor(state)]
+```
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./1-qol/output/model-for-sim/marginalized_sop_1/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
+tx_df[, state := as.factor(state)]
+```
+

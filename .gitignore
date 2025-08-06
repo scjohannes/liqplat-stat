@@ -52,6 +52,8 @@ rsconnect/
 data/
 1-qol/output
 1-qol/models
+1-qol/sim-data
 models/
-
+img/
+qol-sap_files/
 

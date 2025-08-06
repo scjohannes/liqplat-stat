@@ -1,0 +1,147 @@
+---
+Title: QoL - Data imputation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(mice)
+library(miceadds)
+library(arrow)
+```
+
+## Load data
+
+These are historic data from patients of the Division of Medical Oncology at USB, which had their first appointment from 2023 to mid 2025, i.e., before LIQPLAT started. The data are not publicly available.
+
+```{r}
+set.seed(1234)
+df <- read_parquet("data/alt_qol.parquet")
+```
+
+### Simplify some baseline varaibles
+
+```{r}
+# remove observations after day 182
+# lump factor variables according to frequency to have a maximum of 5 levels
+
+df <- df |> 
+  group_by(pat_id) |> 
+  filter(quest_day <= 182) |> 
+  ungroup() |> 
+  mutate(
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),
+    plan_fstcnt_coded = fct_lump_n(plan_fstcnt_coded, n = 4),
+    plan_fstcnt_coded = factor(as.integer(plan_fstcnt_coded)),
+    status    = if_else(!is.na(death_day) & death_day <= 182, 1, 0),
+    time      = if_else(!is.na(death_day) & death_day <= 182, death_day, 182),
+    q30       = factor(q30, levels = 1:7, ordered = TRUE),    
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:4, ordered = TRUE),
+    ) |> 
+  select(pat_id, pat_age, gender, ecog_fstcnt, diagnosis, plan_fstcnt_coded, time, status, quest_day, q30) |> 
+  arrange(pat_id, quest_day)
+```
+
+### Add Nelson-Aalen-estimates, Randomize, and add missing on day 0
+
+We need to consider the day of randomization as day 0, otherwise we immortalize patients. This creates an new problem: people who die before the day of their first contact, even though they were randomly selected, would be deleted from the analysis dataset because of a missing yprev before their death observation. Because we need to get an accurate cumulative incidence for death for our estimand, we need to impute a plausible QoL value for these patients before their death, e.g., at the day of random selection. We also need a value for day 0 for the marginalization. 
+
+I expect that 50% of patients are randomized on their date of first contact, and 50% before, but that death before the first contact will be exceedingly rare. 
+
+```{r}
+# nelason alen estimator
+df$na_est <- nelsonaalen(df, timevar = time, statusvar = status)
+
+# create random group allocation.
+tx <- sample(unique(df$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)
+
+df <- df |> 
+  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
+
+
+id_cols <- c(
+  "pat_id", "pat_age", "gender", "ecog_fstcnt", "diagnosis",
+  "plan_fstcnt_coded", "time", "status", "na_est", "tx"
+)
+
+# ensure that everyone has a questionnaire at baseline
+empty_obs <- df |>
+    group_by(pick(all_of(id_cols))) |> 
+    complete(quest_day = union(quest_day, 0)) |> 
+    ungroup() |> 
+    mutate(week = ceiling(quest_day/7))  
+```
+
+## Multiple imputation
+
+Baseline values will be imputed at the patient (cluster level). This ensures that only one value per multiple rows of missing data for a single patient is imputed. We akso impute missing responses to q30. 
+
+```{r}
+md.pattern(empty_obs)
+
+init <- mice(empty_obs, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# don't want to use survival time because we use na_est.
+pred_matrix[, "time"] <- 0 # 'time' will not predict any other variable
+pred_matrix["time", ] <- 0 # 'time' will not be predicted by any other variable
+meth["time"] <- "" 
+
+# Use patient ID as clustering variable
+pred_matrix[, "pat_id"] <- -2
+
+# Impute individual q30 at the questionnaire level
+meth["q30"] <- "2l.pmm"
+
+
+# use mean matching at the cluster level for baseline observations
+# this ensures only one ecog per patient per imputation
+meth["ecog_fstcnt"] <- "2lonly.pmm"
+meth["plan_fstcnt_coded"] <- "2lonly.pmm"
+meth["diagnosis"] <- "2lonly.pmm"
+
+
+imputed_data <- mice(empty_obs,
+                     m = 10,
+                     maxit = 50,
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     seed = 1234)
+```
+
+## Diagnostics
+
+The diagnostics look fine to me. 
+
+```{r}
+plot(imputed_data)
+densityplot(imputed_data, ~q30)
+densityplot(imputed_data, ~ecog_fstcnt)
+densityplot(imputed_data, ~diagnosis)
+
+stripplot(imputed_data, q30 ~ .imp, pch = 20, cex = 1.2)
+```
+
+## Select one imputation
+
+For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. 
+
+We can see that we have data for most days of follow-up, with a bit of scarcity from day 125 to day 150.
+
+```{r}
+complete_data <- complete(imputed_data, 4)
+
+complete_data |> 
+  mutate(q30 = as.numeric(q30)) |> 
+  ggplot(aes(x = quest_day, y = q30)) +
+  geom_point()
+```
+
+## Export
+
+```{r}
+write_parquet(complete_data, sink = "./data/qol_complete.parquet")
+```
