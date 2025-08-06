@@ -37,7 +37,7 @@ generate_SOPS <- FALSE
 - We will use model as a basis for simulating different scenarios.
 - We don't interact tx * time because there is not treatment effect in this data. 
 - Therefore also no nonPO for tx.  
-- We use polynomial instead of spline as it's easier to create the simlations with later on and yielded similar results in testing. 
+- We use polynomial instead of a spline as it's easier to create the simlations with later on and yielded similar results in testing. 
 
 ```{r}
 if (fit) {

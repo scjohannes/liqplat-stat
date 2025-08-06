@@ -46,7 +46,7 @@ df <- df |>
 
 ### Add Nelson-Aalen-estimates, Randomize, and add missing on day 0
 
-We need to consider the day of randomization as day 0, otherwise we immortalize patients. This creates an new problem: people who die before the day of their first contact, even though they were randomly selected, would be deleted from the analysis dataset because of a missing yprev before their death observation. Because we need to get an accurate cumulative incidence for death for our estimand, we need to impute a plausible QoL value for these patients before their death, e.g., at the day of random selection. We also need a value for day 0 for the marginalization. 
+We need to consider the day of randomization as day 0, otherwise we immortalize patients. This creates an new problem: people who die before the day of their first contact, even though they were randomly selected, would be deleted from the analysis dataset because of a missing yprev before their death observation. Because we need to get an accurate cumulative incidence for death, we need to impute a plausible QoL value for these patients before their death, e.g., at the day of random selection. We also need a value for day 0 for the marginalization. MI is probably better than carrying the first observed value backwards. 
 
 I expect that 50% of patients are randomized on their date of first contact, and 50% before, but that death before the first contact will be exceedingly rare. 
 
