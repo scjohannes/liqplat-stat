@@ -200,7 +200,7 @@ The primary analysis will be conducted on the **Principal Stratum Population**. 
 
 ## Rationale for Principal Stratum {#sec-rationale-ps}
 
-Our analysis software of choice, the `rmsb` package [@rmsb], has built-in functions to interval censoring of the ordinal dependent variable. For LIQPLAT trial, the date of death is provided for all patients via the data warehouse (CDWH) and is virtually complete. QoL is assessed at irregular intervals. This means that the dependent variable ranging from 1-8, where 1-7 are QoL states and 8 is death, is heavily censored for states 1 to 7. In other words, we know that if a patient has not died, they have a state between 1 and 7. For a patient who has a QoL of 4 in week 0 and a QoL of 6 in week 6 and died in week 9, the states would look like this : 4 \[1-7\] \[1-7\] \[1-7\] \[1-7\] \[1-7\] 6 \[1-7\] \[1-7\] 8.
+Our analysis software of choice, the `rmsb` package [@rmsb], has built-in functions to handle interval censoring of the ordinal dependent variable. For LIQPLAT trial, the date of death is provided for all patients via the data warehouse (CDWH) and is virtually complete. QoL is assessed at irregular intervals. This means that the dependent variable ranging from 1-8, where 1-7 are QoL states and 8 is death, is heavily censored for states 1 to 7. In other words, we know that if a patient has not died, they have a state between 1 and 7. For a patient who has a QoL of 4 in week 0 and a QoL of 6 in week 6 and died in week 9, the states would look like this : 4 \[1-7\] \[1-7\] \[1-7\] \[1-7\] \[1-7\] 6 \[1-7\] \[1-7\] 8.
 
 Unfortunately, we found that in such a situation, when the absorbing state is always known, and non-absorbing states are sparse (85% missing), our modeling approach produces falsely high estimates of the cumulative incidence of death. This bias in cumulative incidence then propagates to the estimates for all other state occupancy probabilities (SOPs), affecting the final estimand. Further research is needed to resolve this issue. For more details see @sec-appendix-cens.
 
@@ -852,6 +852,10 @@ Where:
 ![Stacked posterior draws for the treatment parameter ($\eta_{tx}$) from all iterations of the first-order Markov model, under no effect ($H_0; OR = 1$) (left) and a treatment effect ($H_A; OR = 0.8$) (right). The blue dotted line indicates the true parameter value ($\log(0.8) \approx -0.223$).](img/fig-posteriors-markov.svg){#fig-stacked-sim-markov}
 
 #### Cumulative Logit Multilevel Model with a Random Intercept
+
+::: {.callout-note}
+I have not yet run all 1000 simulation for this model.
+:::
 
 ##### Conceptual Framework & Data Preparation
 
