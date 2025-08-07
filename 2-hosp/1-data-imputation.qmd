@@ -1,0 +1,215 @@
+---
+Title: QoL - Data imputation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(mice)
+library(miceadds)
+library(arrow)
+library(data.table)
+```
+
+## Load data
+
+These are historic data from patients of the Division of Medical Oncology at USB, which had their first appointment from 2023 to mid 2025, i.e., before LIQPLAT started. The data are not publicly available.
+
+```{r}
+set.seed(1234)
+df_raw <- read_parquet("data/data_hosp_long.parquet")
+```
+
+### Simplify some baseline varaibles
+
+```{r}
+# remove observations after day 182
+# lump factor variables according to frequency to have a maximum of 5 levels
+
+df <- df_raw |> 
+  select(-c(randomselect_liqplat, offerpart_liqplat, icf_reg, q29, q30, QL2_trans, PF2_trans, PF2_trans_imput, n_blood_products, diagnosis_details, y)) |> 
+  mutate(
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),    
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:3, ordered = TRUE),
+    in_hospital = case_when(
+        in_hospital == 1 ~ TRUE, 
+        TRUE ~ FALSE),
+    unplanned_stay = case_when(
+        unplanned_stay == 1 ~ TRUE, 
+        TRUE ~ FALSE),
+    er_visit = case_when(
+        er_visit == 1 ~ TRUE, 
+        TRUE ~ FALSE)
+    ) |> 
+  filter(day < 183) |>
+  group_by(pat_id) |>
+  mutate(
+    survival_time = max(day),
+    died = if_else(any(death == 1), 1, 0)
+  ) |> 
+  arrange(pat_id, day)
+```
+
+### Add Nelson-Aalen-estimates, "Randomize"
+
+Nelson-Aalen yields slightly better predictions than raw survival time, see: https://stefvanbuuren.name/fimd/sec-toomany.html
+
+```{r}
+
+na_df <- df |> 
+    select(pat_id, survival_time, died) |> 
+    unique()
+
+# nelason alen estimator
+na_est <- cbind(na_df$pat_id, nelsonaalen(na_df, timevar = survival_time, statusvar = died)) |> 
+    data.table() |> 
+    rename(pat_id = V1, na_est = V2)
+
+df <- df |> 
+    left_join(na_est, by = "pat_id")
+
+# create random group allocation.
+tx <- sample(unique(df$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)
+
+df <- df |> 
+  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
+```
+
+## Multiple imputation
+
+Baseline values will be imputed at the patient (cluster level).
+
+```{r}
+md.pattern(df)
+
+init <- mice(df, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# don't want to use survival time because we use na_est.
+pred_matrix[, "survival_time"] <- 0 # 'time' will not predict any other variable
+pred_matrix["survival_time", ] <- 0 # 'time' will not be predicted by any other variable
+
+# Use patient ID as clustering variable
+pred_matrix[, "pat_id"] <- -2
+
+# use mean matching at the cluster level for baseline observations
+# this ensures only one ecog per patient per imputation
+meth["diagnosis"] <- "2lonly.pmm"
+meth["ecog_fstcnt"] <- "2lonly.pmm"
+meth["albumin"] <- "2lonly.pmm"
+meth["bilirubin"] <- "2lonly.pmm"
+meth["c_reactive_protein"] <- "2lonly.pmm"
+meth["lactate_dehydrogenase"] <- "2lonly.pmm"
+meth["leukocytes"] <- "2lonly.pmm"
+meth["lymphocytes_relative"] <- "2lonly.pmm"
+
+imputed_data <- mice(df,
+                     m = 5,
+                     maxit = 50,
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     seed = 1234)
+```
+
+## Multiple Imputation (Wide Format)
+
+Because we're only imputing baseline variables, we can also collapse the longitudinal data (e.g., into total days spend in hospital) and use multiple imputation on that data.
+
+```{r}
+
+df_wide <- df |> 
+    group_by(
+        pat_id, 
+        gender,
+        ecog_fstcnt,
+        diagnosis, 
+        age,
+        albumin,
+        bilirubin,
+        c_reactive_protein,
+        lactate_dehydrogenase, 
+        leukocytes,
+        lymphocytes_relative,
+        survival_time, 
+        died,
+        na_est,
+        tx
+    ) |> 
+        summarise(
+            days_in_hospital = sum(in_hospital),
+            days_er_visit    = sum(er_visit),
+            days_unplanned_stay = sum(unplanned_stay),
+            .groups = "drop"
+        ) |> 
+    mutate(
+        died = factor(died),
+        tx = factor(tx),
+    )
+
+md.pattern(df_wide)
+
+init <- mice(df_wide, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# don't want to use survival time because we use na_est. also don't use patient ID for imputation
+pred_matrix[, "survival_time"] <- 0
+pred_matrix["survival_time", ] <- 0 
+pred_matrix[, "pat_id"] <- 0
+pred_matrix["pat_id", ] <- 0 
+
+imputed_data_wide <- mice(df_wide,
+                     m = 5,
+                     maxit = 50,
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     seed = 1234)
+```
+
+## Diagnostics
+
+The diagnostics look fine to me. 
+
+```{r}
+plot(imputed_data)
+densityplot(imputed_data, ~albumin)
+densityplot(imputed_data, ~bilirubin)
+densityplot(imputed_data, ~c_reactive_protein)
+densityplot(imputed_data, ~leukocytes)
+densityplot(imputed_data, ~lactate_dehydrogenase)
+densityplot(imputed_data, ~lymphocytes_relative)
+densityplot(imputed_data, ~ecog_fstcnt)
+densityplot(imputed_data, ~diagnosis)
+
+stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
+```
+```{r}
+plot(imputed_data)
+densityplot(imputed_data_wide, ~albumin)
+densityplot(imputed_data_wide, ~bilirubin)
+densityplot(imputed_data_wide, ~c_reactive_protein)
+densityplot(imputed_data_wide, ~leukocytes)
+densityplot(imputed_data_wide, ~lactate_dehydrogenase)
+densityplot(imputed_data_wide, ~lymphocytes_relative)
+densityplot(imputed_data_wide, ~ecog_fstcnt)
+densityplot(imputed_data_wide, ~diagnosis) #only 1 diagnosis category is missing out of 255 patients
+
+stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
+```
+
+## Select one imputation
+
+For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. I will use the data imputed in long format for the time being.
+
+```{r}
+complete_data <- complete(imputed_data, 4)
+```
+
+## Export
+
+```{r}
+write_parquet(complete_data, sink = "./data/hosp_long_complete.parquet")
+```

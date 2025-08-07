@@ -1,0 +1,225 @@
+---
+Title : Model for Simulation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rms)
+library(rmsb)
+library(furrr)
+```
+
+## Load data
+
+```{r}
+df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+    ) |> 
+      select(pat_id, tx, y, yprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+```
+
+Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
+```{r}
+fit <- FALSE
+generate_SOPS <- TRUE
+```
+
+## Model fitting
+
+### No treatment x time interaction
+- We will use model as a basis for simulating different scenarios.
+- We don't interact tx * time because there is not treatment effect in this data. 
+- Therefore also no nonPO for tx.  
+- We use polynomial instead of a spline as it's easier to create the simlations with later on and yielded similar results in testing. 
+- We interact yprev with time, because serial correlation seems to change over time in correlation plots
+- We add clinical variables to add mroe outcome heterogeneity
+
+```{r}
+if (fit) {
+dd <- datadist(df)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+  options(datadist = 'dd')
+
+  options(mc.cores = 8)
+
+  Sys.setenv(RSTUDIO = 1)
+
+      model <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) * yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        refresh = 5,
+        iter = 2000,
+        chains = 4,
+        method = "sampling"
+    )
+    saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")
+
+
+  Sys.setenv(RSTUDIO = 0)
+}
+
+model <- readRDS("./2-hosp/models/model_hosp_pol.rds")
+model
+
+stanDx(model)
+stanDxplot(model)
+```
+
+## Marginalized State Occupancy Probabilities
+
+```{r}
+baseline_df <- filter(df, week == 1) |> as.data.table()
+```
+
+```{r}
+write_SOP <- function(i, tx, baseline_df){
+  
+  row <- baseline_df[i]
+  
+  sops <-
+  soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, age = row$age, gender = row$gender, albumin = row$albumin, c_reactive_protein = row$c_reactive_protein, yprev=row$yprev),
+    times = 1:26,
+    ylevels = 1:5,
+    absorb = 5,
+    tvarname = "week",
+    pvarname = "yprev"
+  )
+  
+  # Because of the size of the data, only use the first 500 MCMC draws
+  sops <- sops[1:500,,]
+  
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "week", "state", "sop"))
+  
+  sops$week <- as.integer(sops$week)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+  
+  folder <- glue::glue("./2-hosp/output/sops-sim-model/marginalized_sop_{tx}/msop_{i}.parquet")
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+### Generate marginalized SOPs
+
+```{r}
+future::plan(future.callr::callr, workers=10)
+
+# Control
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+```{r}
+# Treatment
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+### Read maginalized SOPs
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./2-hosp/output/sops-sim-model/marginalized_sop_0/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
+soc_df[, state := as.factor(state)]
+```
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./2-hosp/output/sops-sim-model/marginalized_sop_1/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
+tx_df[, state := as.factor(state)]
+```
+
+```{r}
+sop_df <-
+  bind_rows(soc_df, tx_df) |>
+  mutate(tx = as.factor(tx))
+```
+
+### Plotting
+
+#### Marginalized SOPs
+
+```{r}
+fig_marginalized <-
+sop_df |>
+  ggplot() +
+  aes(x = week, y = sop) +
+  ggdist::stat_lineribbon(aes(fill = state, linetype = tx),
+                          linewidth = 0.6,
+                          alpha = 0.5,
+                          .width = c(0.95)) +
+  scale_color_viridis_d(end = 0.9) +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+
+fig_marginalized
+```
+
+Stacked bar chart using median point estimate
+
+```{r}
+sop_df |>
+  group_by(state, week, tx) |> 
+  summarise(sop = median(sop)) |> 
+  ggplot() +
+  aes(x = week, y = sop, fill = state) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = 1:26) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.25)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  facet_wrap(~tx, nrow=1) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+```
+
+

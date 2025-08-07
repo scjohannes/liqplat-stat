@@ -1,0 +1,66 @@
+---
+Title : QoL Data Preparation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+```
+
+```{r}
+df <- read_parquet("./data/hosp_long_complete.parquet")
+```
+
+## Code Y 
+```{r}
+df <- df |> 
+    select(-na_est) |>
+    mutate(
+      y = case_when(
+        death == 1      ~ 5,
+        unplanned_stay ~ 4,
+        er_visit       ~ 3,
+        in_hospital    ~ 2,
+        TRUE           ~ 1
+      )
+    ) |> 
+    relocate(pat_id, tx, y)
+```
+
+## Add lag + reduce to weeks for simulations
+
+We will reduce the granularity of time to weeks for the simulation.
+
+
+```{r}
+# Convert time-scale to weeks
+# Day zero is counted as week 0 (baseline), Day 1 counts towards week 1.
+df_weeks <- df |> 
+    mutate(
+        week = ceiling(day / 7),
+        surv_weeks = ceiling(survival_time/7)
+    ) |> 
+    group_by(pat_id, week) |> 
+    arrange(desc(y)) |> 
+    slice_head(n = 1) |> 
+    arrange(pat_id, week) |> 
+    group_by(pat_id) |> 
+    mutate(
+        yprev = case_when(
+            TRUE ~ lag(y, n = 1, order_by = week)
+        ),
+        yprev = factor(yprev, levels = 1:4, ordered = FALSE), #death = 5 doesn't exist in yprev
+        gap = 1) |> 
+    slice(-1) |> 
+    ungroup() |> 
+    relocate(pat_id, tx, y, yprev)
+```
+
+## Export
+
+```{r}
+write_parquet(df_weeks, sink = "./data/hosp_long_weeks.parquet")
+```
