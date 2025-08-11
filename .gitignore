@@ -58,5 +58,6 @@ img/
 qol-sap_files/
 2-hosp/output
 2-hosp/models
+2-hosp/sim-data
 stan-progress.txt
 

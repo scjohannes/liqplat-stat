@@ -1,0 +1,724 @@
+---
+Title: Simulation of different scenarios
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(tidybayes)
+library(rmsb)
+library(rms)
+library(Hmisc)
+library(arrow)
+library(VGAM)
+library(patchwork)
+
+set.seed(1234)
+```
+
+## Load model and dataset
+
+```{r}
+df <- read_parquet("./data/hosp_long_weeks.parquet")  |> 
+    mutate(ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE))
+
+model <- readRDS("./2-hosp/models/model_hosp_pol.rds")
+
+```
+
+## Extract median of posterior draws
+
+```{r}
+draws <- as.data.table(model$draws) 
+
+coef <- draws |> 
+  summarise_all(median)
+
+coef
+```
+
+## Baseline-Covariates
+
+```{r}
+N <- 250000 # Simulation size
+
+baseline_w <- df |> 
+    filter(week == 1) |> 
+    select(pat_id, yprev,ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+i <- sample(1:nrow(baseline_w), N, replace = TRUE)
+sim_baseline_data <- baseline_w[i, ] |> 
+  mutate(pat_id = row_number())
+
+init <- sim_baseline_data$yprev # initial states to be passed to g function
+
+baseline_formula <- ~ ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein
+X_baseline <- model.matrix(baseline_formula, data = sim_baseline_data)[, -1] # Baseline values dummy coded, remove intercept
+
+tx <- sample(0:1, N, replace = TRUE) # Sample treatment assignment
+X <- cbind(X_baseline, tx) 
+```
+
+## PO tx effect, constant over time
+
+- Proportional Part: Effects that are constant across all k-1 logits (e.g., yprev, gap, baseline covariates, pol(week,3)).
+- Non-Proportional Part: The week x f(y) term, which varies with the outcome level k. For our model cppo = function(y) y, this term is k * week * \gamma_{week}.
+
+```{r}
+ints <- unlist(coef[1:4])
+extra <- unlist(coef[- (1:5)]) #remove tx coef as well
+
+names(extra)[names(extra) == "ecog_fstcnt=2"] <- "ecog_fstcnt2"
+names(extra)[names(extra) == "ecog_fstcnt=3"] <- "ecog_fstcnt3"
+names(extra)[names(extra) == "diagnosis=2"] <- "diagnosis2"
+names(extra)[names(extra) == "diagnosis=3"] <- "diagnosis3"
+names(extra)[names(extra) == "diagnosis=4"] <- "diagnosis4"
+names(extra)[names(extra) == "diagnosis=5"] <- "diagnosis5"
+names(extra)[names(extra) == "plan_fstcnt_coded=2"] <- "plan_fstcnt_coded2"
+names(extra)[names(extra) == "plan_fstcnt_coded=3"] <- "plan_fstcnt_coded3"
+names(extra)[names(extra) == "plan_fstcnt_coded=4"] <- "plan_fstcnt_coded4"
+names(extra)[names(extra) == "plan_fstcnt_coded=5"] <- "plan_fstcnt_coded5"
+names(extra)[names(extra) == "gender=1"] <- "gender1" # 1 = male
+
+g <- function(yprev, t, gap, X, parameter = 0, extra) {
+
+  # X is a vector for one patient, containing baseline covariates and tx (which we want to remove)
+  # yprev is the previous state (character)
+  # t is the current week (numeric)
+  # gap is assumed to be 1 for this simulation
+  gap <- 1 
+
+  # 1. Treatment Effect
+  # Treatment effect stable over time
+  # The treatment indicator 'tx' is the last element of the X vector.
+  tx_value <- X[length(X)]
+  tx_effect <- parameter * tx_value
+
+  # 2. Baseline effect
+  # X contains the non-treatment variables. We match its names to the 'extra' vector.
+  X_nontx <- X[-length(X)] # X is a single vector. We remove tx which is as the end of this vector
+  baseline_coef_names <- names(X_nontx)
+
+  baseline_effect <- sum(extra[baseline_coef_names] * X_nontx)
+
+  # 3.  time effect (proportional part) from pol(week, 2)
+  time_effect <- extra[["week"]] * t + extra[["week^2"]] * (t^2) + extra[["week^3"]] * (t^3)
+
+  # This is if yprev is equal to 1 (the reference group)
+  yprev_effect <- 0
+  yprev_week_effect <- 0
+  yprev_week_effect_2 <- 0
+  yprev_week_effect_3 <- 0
+
+  # 4. Previous state effect
+  # standalone effects
+  yprev_coef_name <- paste0('yprev=', yprev)
+  if (yprev_coef_name %in% names(extra)) {
+      yprev_effect <- extra[[yprev_coef_name]]
+  }
+  # interaction with time (week), linear
+  yprev_week_coef_name <- paste0('week * yprev=', yprev)
+  if (yprev_week_coef_name %in% names(extra)) {
+      yprev_week_effect <- extra[[yprev_week_coef_name]] * t
+  }
+
+  # interaction with time (week), 2nd order polynomial
+  yprev_week_coef_name_2 <- paste0('week^2 * yprev=', yprev)
+  if (yprev_week_coef_name_2 %in% names(extra)) {
+      yprev_week_effect_2 <- extra[[yprev_week_coef_name_2]] * (t^2)
+  }
+
+  # interaction with time (week), 3rd order polynomial
+  yprev_week_coef_name_3 <- paste0('week^3 * yprev=', yprev)
+  if (yprev_week_coef_name_3 %in% names(extra)) {
+      yprev_week_effect_3 <- extra[[yprev_week_coef_name_3]] * (t^3)
+  }
+
+  # Sum of all proportional effects
+  lin_pred_prop <- tx_effect + baseline_effect + time_effect + yprev_effect + yprev_week_effect + yprev_week_effect_2 + yprev_week_effect_3
+
+  # 5. Non-proportional effect of time
+  # From cppo=function(y) y, the effect for P(Y>=k) is k * week * gamma
+  # The columns of the final lp correspond to k = 2, 3, ..., 5
+  nonprop_gamma <- extra[['week x f(y)']]
+  k_levels <- 2:5 
+  lin_pred_nonprop <- k_levels * t * nonprop_gamma
+
+  # 6. Final linear predictor (vector of length 4)
+  # This is the sum of the proportional part (a scalar) and non-proportional part (a vector)
+  lp <- lin_pred_prop + lin_pred_nonprop
+    
+  return(lp)
+
+}
+
+formals(g)$extra <- extra
+```
+
+## G-Function for PO tx effect, 0 at t = 0, linearly increasing over time
+
+- The functions is specifically for a simulation over 26 weeks of follow-up (hardcoded)
+- the parameter value passed to the function logodds is the parameter at week 26
+
+```{r}
+g2 <- function(yprev, t, gap, X, parameter = 0, extra) {
+
+  # X is a vector for one patient, containing baseline covariates and tx (which we want to remove)
+  # yprev is the previous state (character)
+  # t is the current week (numeric)
+  # gap is assumed to be 1 for this simulation
+  gap <- 1 
+
+  # 1. Treatment Effect
+  # The treatment linearly increases on the logit scale from time 0 to time 26
+  # at week 26 logodds of treatment = the passed parameter value
+  tx_value <- X[length(X)]
+  tx_effect <- parameter / 26 * t * tx_value 
+
+  # 2. Baseline effect
+  # X contains the non-treatment variables. We match its names to the 'extra' vector.
+  X_nontx <- X[-length(X)] # X is a single vector. We remove tx which is as the end of this vector
+  baseline_coef_names <- names(X_nontx)
+
+  baseline_effect <- sum(extra[baseline_coef_names] * X_nontx)
+
+  # 3.  time effect (proportional part) from pol(week, 2)
+  time_effect <- extra[["week"]] * t + extra[["week^2"]] * (t^2) + extra[["week^3"]] * (t^3)
+
+  # This is if yprev is equal to 1 (the reference group)
+  yprev_effect <- 0
+  yprev_week_effect <- 0
+  yprev_week_effect_2 <- 0
+  yprev_week_effect_3 <- 0
+
+  # 4. Previous state effect
+  # standalone effects
+  yprev_coef_name <- paste0('yprev=', yprev)
+  if (yprev_coef_name %in% names(extra)) {
+      yprev_effect <- extra[[yprev_coef_name]]
+  }
+  # interaction with time (week), linear
+  yprev_week_coef_name <- paste0('week * yprev=', yprev)
+  if (yprev_week_coef_name %in% names(extra)) {
+      yprev_week_effect <- extra[[yprev_week_coef_name]] * t
+  }
+
+  # interaction with time (week), 2nd order polynomial
+  yprev_week_coef_name_2 <- paste0('week^2 * yprev=', yprev)
+  if (yprev_week_coef_name_2 %in% names(extra)) {
+      yprev_week_effect_2 <- extra[[yprev_week_coef_name_2]] * (t^2)
+  }
+
+  # interaction with time (week), 3rd order polynomial
+  yprev_week_coef_name_3 <- paste0('week^3 * yprev=', yprev)
+  if (yprev_week_coef_name_3 %in% names(extra)) {
+      yprev_week_effect_3 <- extra[[yprev_week_coef_name_3]] * (t^3)
+  }
+
+  # Sum of all proportional effects
+  lin_pred_prop <- tx_effect + baseline_effect + time_effect + yprev_effect + yprev_week_effect + yprev_week_effect_2 + yprev_week_effect_3
+
+  # 5. Non-proportional effect of time
+  # From cppo=function(y) y, the effect for P(Y>=k) is k * week * gamma
+  # The columns of the final lp correspond to k = 2, 3, ..., 8
+  nonprop_gamma <- extra[['week x f(y)']]
+  k_levels <- 2:5 
+  lin_pred_nonprop <- k_levels * t * nonprop_gamma
+
+  # 6. Final linear predictor (vector of length 7)
+  # This is the sum of the proportional part (a scalar) and non-proportional part (a vector)
+  lp <- lin_pred_prop + lin_pred_nonprop
+    
+  return(lp)
+
+}
+
+formals(g2)$extra <- extra
+```
+
+## G-Function for constant nonPO Tx Effect
+
+- Assume that effect on mortality is smaller than effect on planned / unplanned hospitalizations
+
+```{r}
+g3 <- function(yprev, t, gap, X, parameter = 0, extra) {
+  gap <- 1 
+
+  # 1. Treatment Effect
+  tx_value <- X[length(X)]
+  tx_effect <- parameter * tx_value
+
+  # 2. Baseline effect
+  X_nontx <- X[-length(X)] # X is a single vector. We remove tx which is as the end of this vector
+  baseline_coef_names <- names(X_nontx)
+
+  baseline_effect <- sum(extra[baseline_coef_names] * X_nontx)
+
+  # 3.  time effect (proportional part) from pol(week, 2)
+  time_effect <- extra[["week"]] * t + extra[["week^2"]] * (t^2) + extra[["week^3"]] * (t^3)
+
+  # This is if yprev is equal to 1 (the reference group)
+  yprev_effect <- 0
+  yprev_week_effect <- 0
+  yprev_week_effect_2 <- 0
+  yprev_week_effect_3 <- 0
+
+  # 4. Previous state effect
+  # standalone effects
+  yprev_coef_name <- paste0('yprev=', yprev)
+  if (yprev_coef_name %in% names(extra)) {
+      yprev_effect <- extra[[yprev_coef_name]]
+  }
+  # interaction with time (week), linear
+  yprev_week_coef_name <- paste0('week * yprev=', yprev)
+  if (yprev_week_coef_name %in% names(extra)) {
+      yprev_week_effect <- extra[[yprev_week_coef_name]] * t
+  }
+
+  # interaction with time (week), 2nd order polynomial
+  yprev_week_coef_name_2 <- paste0('week^2 * yprev=', yprev)
+  if (yprev_week_coef_name_2 %in% names(extra)) {
+      yprev_week_effect_2 <- extra[[yprev_week_coef_name_2]] * (t^2)
+  }
+
+  # interaction with time (week), 3rd order polynomial
+  yprev_week_coef_name_3 <- paste0('week^3 * yprev=', yprev)
+  if (yprev_week_coef_name_3 %in% names(extra)) {
+      yprev_week_effect_3 <- extra[[yprev_week_coef_name_3]] * (t^3)
+  }
+
+  # Sum of all proportional effects
+  lin_pred_prop <- baseline_effect + time_effect + yprev_effect + yprev_week_effect + yprev_week_effect_2 + yprev_week_effect_3
+
+  # 5. Non-proportional effect of time
+  nonprop_gamma <- extra[['week x f(y)']]
+  k_levels <- 2:5 
+  lin_pred_nonprop <- k_levels * t * nonprop_gamma
+
+  # 6. Final linear predictor (vector of length 7)
+  # This is the sum of the proportional part (a scalar) and non-proportional part (a vector)
+  lp <- lin_pred_prop + lin_pred_nonprop + c(rep(tx_effect, 3), 0) # tx not applied to last threshold
+    
+  return(lp)
+
+}
+
+formals(g3)$extra <- extra
+```
+
+## Simulate dataset with PO for treatment
+
+- Odds of 0.8 of moving to a higher (worse state)
+
+```{r}
+# Run the simulation
+carried_forward <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:5, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 5,
+                  intercepts = ints, 
+                  g = g, 
+                  parameter = log(0.8),
+                  carry = TRUE)
+
+not_carried_forward <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:5, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 5,
+                  intercepts = ints, 
+                  g = g, 
+                  parameter = log(0.8),
+                  carry = FALSE)
+```
+
+### Check if OR of 0.8 is recovered
+
+```{r}
+sample <- not_carried_forward |> 
+    select(id, time, y, yprev, tx) |> 
+    left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
+
+h <- vglm(ordered(y) ~ yprev * poly(time, 3) + ecog_fstcnt + diagnosis + tx,
+                cumulative(reverse=TRUE, parallel=FALSE ~ poly(time, 3)),
+                data=sample)
+
+h
+```
+
+### Calculate the SOPs
+```{r}
+sops <- carried_forward |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  reframe(
+    y = y,
+    sop = n / sum(n))
+```
+
+### Calculate the difference in weeks spent at home
+```{r}
+# Difference in mean days with excellent, very good or good quality of life
+weeks_at_home <- sops |> 
+  filter(y == 1) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_at_home$mean_weeks[2] - weeks_at_home$mean_weeks[1]
+
+# difference in weeks at home or planned hospitalization
+weeks_wo_emerg <- sops |> 
+  filter(y == 1 | y == 2) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_wo_emerg$mean_weeks[2] - weeks_wo_emerg$mean_weeks[1]
+
+# difference in RMST
+rmst <- sops |> 
+  filter(y != 5) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+rmst$mean_weeks[2] - rmst$mean_weeks[1]
+```
+
+In this population an OR of 0.8 for a proportional treatment effect leads to a
+-  1.24 week increase in time spent at home 
+-  1.08 weeks more without an emergency / unplanned hospitalization
+-  0.7 week increase in the restricted mean survival time at 6 months.
+
+
+## Simulate dataset with increasing tx effect
+
+- Odds of 0.7 of moving to a worse state at week 26, linear increase until the on the logit scale
+- I choose OR of 0.7, because 0.8 results in a very small difference. I think MCID should be at least 1 week more at home.
+
+```{r}
+# Run the simulation
+carried_forward_non_const <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:5, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 5,
+                  intercepts = ints, 
+                  g = g2, 
+                  parameter = log(0.6),
+                  carry = TRUE)
+
+not_carried_forward_non_const  <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:5, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 5,
+                  intercepts = ints, 
+                  g = g2, 
+                  parameter = log(0.6),
+                  carry = FALSE)
+```
+
+### Examine OR
+
+What happens if we don't fit interaction between tx and time ?
+
+```{r}
+sample_non_const <- not_carried_forward_non_const |> 
+    select(id, time, y, yprev, tx) |> 
+    left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
+
+h_non_const <- vglm(ordered(y) ~ tx + yprev * poly(time, 3) + tx:time + ecog_fstcnt + diagnosis,
+                cumulative(reverse=TRUE, parallel=FALSE ~ poly(time, 3)),
+                data=sample_non_const)
+
+h_non_const
+```
+
+The OR is estimated as 1 but with the interaction term included is calculated as close to 0.7 for week 26. 
+
+### Calculate the SOPs
+```{r}
+sops_non_const <- carried_forward_non_const |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  reframe(
+    y = y,
+    sop = n / sum(n))
+```
+
+### Calculate the difference in weeks spent at home
+
+This results in differences of only days.
+
+```{r}
+# Difference in mean days with excellent, very good or good quality of life
+weeks_at_home <- sops_non_const |> 
+  filter(y == 1) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_at_home$mean_weeks[2] - weeks_at_home$mean_weeks[1]
+
+# difference in weeks at home or planned hospitalization
+weeks_wo_emerg <- sops_non_const |> 
+  filter(y == 1 | y == 2) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_wo_emerg$mean_weeks[2] - weeks_wo_emerg$mean_weeks[1]
+
+# difference in RMST
+rmst <- sops_non_const |> 
+  filter(y != 5) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+rmst$mean_weeks[2] - rmst$mean_weeks[1]
+```
+
+- 1.04 more weeks at home
+- 0.88 more weeks without emergency / unplanned
+- 0.54 longer RMST
+
+## Simulate dataset with nonPO for treatment
+
+```{r}
+carried_forward_nonPO <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:5, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 5,
+                  intercepts = ints, 
+                  g = g3, 
+                  parameter = log(0.8),
+                  carry = TRUE)
+
+not_carried_forward_nonPO <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:5, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 5,
+                  intercepts = ints, 
+                  g = g3, 
+                  parameter = log(0.8),
+                  carry = FALSE)
+```
+
+### Examine OR
+
+```{r}
+sample_nonPO <- not_carried_forward_nonPO |> 
+    select(id, time, y, yprev, tx) |> 
+    left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
+
+h_nonPO <- vglm(ordered(y) ~ tx + yprev * poly(time, 3) + ecog_fstcnt + diagnosis,
+                cumulative(reverse=TRUE, parallel=FALSE ~ tx + poly(time, 3)),
+                data=sample_nonPO)
+
+h_nonPO
+```
+
+As expected, the treatment effect is close to 0 (OR = 1) for threshold 4, and close to log(0.8) for thresholds 1 to 3.
+
+### Calculate the SOPs
+```{r}
+sops_nonPO <- carried_forward_nonPO |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  reframe(
+    y = y,
+    sop = n / sum(n))
+```
+
+### Calculate the difference in weeks spent at home
+
+```{r}
+# Difference in mean days with excellent, very good or good quality of life
+weeks_at_home <- sops_nonPO |> 
+  filter(y == 1) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_at_home$mean_weeks[2] - weeks_at_home$mean_weeks[1]
+
+# difference in weeks at home or planned hospitalization
+weeks_wo_emerg <- sops_nonPO |> 
+  filter(y == 1 | y == 2) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_wo_emerg$mean_weeks[2] - weeks_wo_emerg$mean_weeks[1]
+
+# difference in RMST
+rmst <- sops_nonPO |> 
+  filter(y != 5) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+rmst$mean_weeks[2] - rmst$mean_weeks[1]
+```
+
+- 0.97 weeks more at home (was 1.2 with PO)
+- 0.79 weeks more w/o emergency / unplanned
+- 0.34 weeks longer RMST (was 0.7 with PO)
+
+## Create and export images
+
+### State Occupancy Probabilities
+
+#### Constant OR, PO
+```{r}
+sops_line <- carried_forward |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  mutate(
+    total = sum(n),
+    sop   = n / total,
+    tx = factor(tx)) |>
+  ungroup() |> 
+  ggplot(aes(x = time, y = sop, color = y)) +
+  geom_line(aes(linetype = tx)) +
+  scale_color_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Empirical state occupancy probabilities",
+   linetype = "Treatment",
+   color = "State")
+
+sops_stacked <- carried_forward |>  
+  ggplot(aes(x = time, fill = y)) +
+  geom_bar(position = "fill")  +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.2)) +
+  facet_wrap(~tx) +
+  labs(x = "Study Week",
+   y = "Cumulative Proportion",
+   subtitle = "Distribution of ordinal states over time",
+   color = "State")
+
+sops_line / sops_stacked +
+  plot_annotation(tag_level = 'A')
+
+ggsave(filename = "./img/fig-hosp-sim-data-sop-PO-constant.svg", width = 12, height = 10)
+
+```
+
+#### Non-Constant OR, PO
+```{r}
+sops_line <- carried_forward_non_const |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  mutate(
+    total = sum(n),
+    sop   = n / total,
+    tx = factor(tx)) |>
+  ungroup() |> 
+  ggplot(aes(x = time, y = sop, color = y)) +
+  geom_line(aes(linetype = tx)) +
+  scale_color_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Empirical state occupancy probabilities",
+   linetype = "Treatment",
+   color = "State")
+
+sops_stacked <- carried_forward_non_const |>  
+  ggplot(aes(x = time, fill = y)) +
+  geom_bar(position = "fill")  +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.2)) +
+  facet_wrap(~tx) +
+  # coord_cartesian(ylim = c(0, 0.4)) +
+  labs(x = "Study Week",
+   y = "Cumulative Proportion",
+   subtitle = "Distribution of ordinal states over time",
+   color = "State")
+
+sops_line / sops_stacked +
+  plot_annotation(tag_level = 'A')
+
+ggsave(filename = "./img/fig-hosp-sim-data-sop-non-const.svg", width = 12, height = 10)
+```
+
+#### Constant OR, non-PO
+
+```{r}
+sops_line <- carried_forward_nonPO |> 
+  group_by(time, tx) |> 
+  count(y) |> 
+  mutate(
+    total = sum(n),
+    sop   = n / total,
+    tx = factor(tx)) |>
+  ungroup() |> 
+  ggplot(aes(x = time, y = sop, color = y)) +
+  geom_line(aes(linetype = tx)) +
+  scale_color_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Empirical state occupancy probabilities",
+   linetype = "Treatment",
+   color = "State")
+
+sops_stacked <- carried_forward_nonPO |>  
+  ggplot(aes(x = time, fill = y)) +
+  geom_bar(position = "fill")  +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.2)) +
+  facet_wrap(~tx) +
+  # coord_cartesian(ylim = c(0, 0.4)) +
+  labs(x = "Study Week",
+   y = "Cumulative Proportion",
+   subtitle = "Distribution of ordinal states over time",
+   color = "State")
+
+sops_line / sops_stacked +
+  plot_annotation(tag_level = 'A')
+
+ggsave(filename = "./img/fig-hosp-sim-data-sop-const-nonPO.svg", width = 12, height = 10)
+```
+
+### Individual trajectories
+
+```{r}
+set.seed(4)
+ids <- sample$id |> unique() |> sample(20) 
+
+fig_tile_random <- not_carried_forward |> 
+  filter(id %in% ids) |> 
+  mutate(id = as.factor(as.numeric(as.factor((id))))) |> 
+  ggplot(aes(y = id, x = time)) +
+  geom_tile(mapping = aes(fill = y), width = 0.95, height = 0.4) +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = 1:26)
+
+ggsave(filename = "./img/fig-hosp-sim-tile.svg", width = 12, height = 6)
+```
+
+## Export simulataed datasets
+
+```{r}
+write_parquet(sample, "./2-hosp/sim-data/sim_data_po_const.parquet")
+write_parquet(sample_non_const, "./2-hosp/sim-data/sim_data_po_non_const.parquet")
+write_parquet(sample_nonPO, "./2-hosp/sim-data/sim_data_nonpo_const.parquet")
+```
