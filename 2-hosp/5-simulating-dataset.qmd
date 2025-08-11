@@ -42,7 +42,7 @@ coef
 ## Baseline-Covariates
 
 ```{r}
-N <- 250000 # Simulation size
+N <- 100000 # Simulation size
 
 baseline_w <- df |> 
     filter(week == 1) |> 
@@ -389,8 +389,8 @@ rmst$mean_weeks[2] - rmst$mean_weeks[1]
 ```
 
 In this population an OR of 0.8 for a proportional treatment effect leads to a
--  1.24 week increase in time spent at home 
--  1.08 weeks more without an emergency / unplanned hospitalization
+-  1.2 week increase in time spent at home 
+-  1.0 weeks more without an emergency / unplanned hospitalization
 -  0.7 week increase in the restricted mean survival time at 6 months.
 
 
@@ -409,7 +409,7 @@ carried_forward_non_const <- simMarkovOrd(n = N,
                   absorb = 5,
                   intercepts = ints, 
                   g = g2, 
-                  parameter = log(0.6),
+                  parameter = log(6/11),
                   carry = TRUE)
 
 not_carried_forward_non_const  <- simMarkovOrd(n = N, 
@@ -420,7 +420,7 @@ not_carried_forward_non_const  <- simMarkovOrd(n = N,
                   absorb = 5,
                   intercepts = ints, 
                   g = g2, 
-                  parameter = log(0.6),
+                  parameter = log(6/11),
                   carry = FALSE)
 ```
 
@@ -440,7 +440,62 @@ h_non_const <- vglm(ordered(y) ~ tx + yprev * poly(time, 3) + tx:time + ecog_fst
 h_non_const
 ```
 
-The OR is estimated as 1 but with the interaction term included is calculated as close to 0.7 for week 26. 
+The OR is estimated as 1 but with the interaction term included is calculated as close to log(5/16) for week 26. 
+
+### Examine linear predictor over time
+
+```{r}
+# not sure whether I should use the dataset where I carry foward death or not...
+data_lp <- carried_forward_non_const |> 
+    select(id, time, y, yprev, tx) |> 
+    left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
+
+baseline_formula <- ~ ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein
+X_baseline_recalc <- model.matrix(baseline_formula, data = data_lp)[, -1]
+X_recalc <- cbind(X_baseline_recalc, tx = data_lp$tx)
+
+lp_list <- purrr::pmap(
+  list(
+    yprev = data_lp$yprev,
+    t = data_lp$time,
+    row_index = 1:nrow(X_recalc)
+  ),
+  ~ g2(yprev = ..1, t = ..2, gap = 1, X = X_recalc[..3, ]),
+  .progress = TRUE
+)
+
+lp_df <- do.call(rbind, lp_list) |>
+  as.data.frame() |>
+  setNames(paste0("lp", 1:4)) |>
+  # Add back the time and treatment columns for grouping
+  bind_cols(data_lp |> select(time, tx))
+
+# calculate difference in the linea predictor
+
+lp_diff <- lp_df |>
+  pivot_longer(cols = starts_with("lp"), names_to = "logit", values_to = "lp_value") |>
+  group_by(time, tx, logit) |>
+  summarise(mean_lp = mean(lp_value), .groups = "drop") |>
+  pivot_wider(names_from = tx, values_from = mean_lp, names_prefix = "tx_") |>
+  mutate(lp_diff = tx_1 - tx_0)
+
+ggplot(lp_diff, aes(x = time, y = lp_diff, color = logit, linetype = logit)) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  scale_x_continuous(breaks = 1:26) +
+  labs(
+    title = "Difference in Linear Predictor Over Time (Treated - Control)",
+    subtitle = "The differences in the LP are the same for each threshold, because Tx acts proportional",
+    x = "Study Week",
+    y = "Difference in Mean Linear Predictor",
+    color = "Logit Threshold"
+  ) +
+  scale_color_viridis_d(
+      name = "Logit Threshold",
+      labels = c("lp1" = "Y >= 2", "lp2" = "Y >= 3", "lp3" = "Y >= 4", "lp4" = "Y >= 5")
+  ) +
+  theme_minimal()
+```
 
 ### Calculate the SOPs
 ```{r}
@@ -453,8 +508,6 @@ sops_non_const <- carried_forward_non_const |>
 ```
 
 ### Calculate the difference in weeks spent at home
-
-This results in differences of only days.
 
 ```{r}
 # Difference in mean days with excellent, very good or good quality of life
@@ -482,9 +535,11 @@ rmst <- sops_non_const |>
 rmst$mean_weeks[2] - rmst$mean_weeks[1]
 ```
 
-- 1.04 more weeks at home
-- 0.88 more weeks without emergency / unplanned
-- 0.54 longer RMST
+An OR of 0.545 at day 26 (linear decrease from log(1) to log(6/11) over 26 weeks) results in 
+
+- 1.2 more weeks at home
+- 1.0 more weeks without emergency / unplanned
+- 0.6 longer RMST
 
 ## Simulate dataset with nonPO for treatment
 
@@ -511,6 +566,7 @@ not_carried_forward_nonPO <- simMarkovOrd(n = N,
                   parameter = log(0.8),
                   carry = FALSE)
 ```
+
 
 ### Examine OR
 
@@ -566,9 +622,9 @@ rmst <- sops_nonPO |>
 rmst$mean_weeks[2] - rmst$mean_weeks[1]
 ```
 
-- 0.97 weeks more at home (was 1.2 with PO)
-- 0.79 weeks more w/o emergency / unplanned
-- 0.34 weeks longer RMST (was 0.7 with PO)
+- 1.0 weeks more at home (was 1.2 with PO)
+- 0.8 weeks more w/o emergency / unplanned
+- 0.3 weeks longer RMST (was 0.7 with PO)
 
 ## Create and export images
 
@@ -654,6 +710,10 @@ sops_line / sops_stacked +
   plot_annotation(tag_level = 'A')
 
 ggsave(filename = "./img/fig-hosp-sim-data-sop-non-const.svg", width = 12, height = 10)
+```
+
+```{r}
+
 ```
 
 #### Constant OR, non-PO
