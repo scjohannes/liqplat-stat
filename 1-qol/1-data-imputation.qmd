@@ -52,7 +52,13 @@ I expect that 50% of patients are randomized on their date of first contact, and
 
 ```{r}
 # nelason alen estimator
-df$na_est <- nelsonaalen(df, timevar = time, statusvar = status)
+df_na_est <- df  |> select(pat_id, time, status)  |> distinct()
+
+na_est <- nelsonaalen(df_na_est, timevar = time, statusvar = status)
+na_est <- tibble(pat_id = df_na_est$pat_id, na_est)
+
+df <- df |> left_join(na_est, by = "pat_id")
+
 
 # create random group allocation.
 tx <- sample(unique(df$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)

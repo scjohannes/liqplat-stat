@@ -11,6 +11,7 @@ library(arrow)
 library(rms)
 library(rmsb)
 library(furrr)
+library(VGAM)
 ```
 
 ## Load data
@@ -27,7 +28,7 @@ df <- read_parquet("./data/hosp_long_weeks.parquet") |>
 Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
 ```{r}
 fit <- FALSE
-generate_SOPS <- TRUE
+generate_SOPS <- FALSE
 ```
 
 ## Model fitting
@@ -61,7 +62,7 @@ dd <- datadist(df)
         chains = 4,
         method = "sampling"
     )
-    saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")
+    # saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")
 
 
   Sys.setenv(RSTUDIO = 0)
@@ -209,7 +210,7 @@ sop_df |>
   summarise(sop = median(sop)) |> 
   ggplot() +
   aes(x = week, y = sop, fill = state) +
-  geom_col() +
+  geom_col(position = "fill") +
   scale_fill_viridis_d(end = 0.9) +
   scale_x_continuous(breaks = 1:26) +
   scale_y_continuous(breaks = seq(0, 1, by=0.25)) +
@@ -220,6 +221,22 @@ sop_df |>
    subtitle = "Marginalized state occupancy probabilities",
    fill = "State",
    linetype = "Treatment")
+```
+
+Posterior of Estimand (Time out of hospital)
+
+```{r}
+difference_in_mean_time_home <- sop_df |> 
+  filter(state == 1) |> 
+  group_by(draw, tx) |> 
+  summarise(mean_weeks = sum(sop)) |> 
+  pivot_wider(id_cols = draw, names_from = tx, names_prefix = "mean_time_tx_", values_from = mean_weeks) |> 
+  summarise(difference = mean_time_tx_1 - mean_time_tx_0)
+
+difference_in_mean_time_home |> 
+  ggplot() +
+  aes(x = difference) +
+  ggdist::stat_dist_halfeye(fill = "orange")
 ```
 
 

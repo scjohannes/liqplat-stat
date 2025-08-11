@@ -1,0 +1,182 @@
+---
+Title : Model for Simulation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rms)
+library(rmsb)
+library(furrr)
+library(VGAM)
+library(Hmisc)
+```
+
+## Load data
+
+```{r}
+df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+    ) |> 
+      select(pat_id, tx, y, yprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+```
+
+Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
+```{r}
+fit <- TRUE
+generate_SOPS <- TRUE
+```
+
+## Model fitting
+
+
+#### VGAM 
+```{r}
+if (fit) {
+  model_vglm <- vglm(
+    ordered(y)  ~ tx + rms::rcs(week, 4) + ecog_fstcnt + diagnosis,
+    cumulative(reverse = TRUE, parallel = FALSE ~  rms::rcs(week, 4)),
+    data = df)
+
+    se <- sqrt(diag(vcov(model_vglm)))
+    round(cbind(beta=coef(model_vglm), se=se, z=coef(model_vglm) / se), 3)
+}
+```
+
+
+
+## Marginalized State Occupancy Probabilities
+
+```{r}
+baseline_df <- filter(df, week == 1) |> as.data.table()
+```
+
+```{r}
+calculate_sop_in_memory <- function(i, tx, baseline_df, model) {
+  
+  # Select the specific patient's baseline data
+  row <- baseline_df[i]
+  
+  # Calculate State Occupancy Probabilities
+  sops_array <- soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, yprev=row$yprev),
+    times = 1:26,
+    ylevels = 1:5,
+    absorb = 5,
+    tvarname = "week",
+    pvarname = "yprev"
+  )
+    
+  # Convert to a data.table and reshape
+  sops_dt <- as.data.table(sops_array) |> 
+    rownames_to_column() |> 
+    pivot_longer(names_to = "state", values_to = "sop", cols = c("1", "2", "3", "4", "5")) |> 
+    mutate(week = as.numeric(rowname)) |> 
+    select(-rowname) |> 
+    mutate(
+      tx = tx,
+      id = i
+    )
+  
+  # Return the resulting data.table
+  return(sops_dt)
+}
+```
+
+### Generate marginalized SOPs
+
+```{r}
+# Treatment
+if (generate_SOPS) {
+    future::plan(future.callr::callr, workers=8)
+
+    sops_soc <- furrr::future_map_dfr(
+    1:nrow(baseline_df), 
+    \(x) calculate_sop_in_memory(x, "0", baseline_df, model_vglm),
+    .progress = TRUE
+    )
+
+    sops_tx <- furrr::future_map_dfr(
+    1:nrow(baseline_df), 
+    \(x) calculate_sop_in_memory(x, "1", baseline_df, model_vglm),
+    .progress = TRUE
+    )
+}
+```
+
+### Read maginalized SOPs
+```{r}
+sop_df <-
+  bind_rows(sops_soc, sops_tx) |>
+  mutate(tx = as.factor(tx)) |> 
+  group_by(state, week, tx) |> 
+  summarise(sop = mean(sop))
+```
+
+### Plotting
+
+#### Marginalized SOPs
+
+```{r}
+fig_marginalized <-
+sop_df |>
+  ggplot() +
+  aes(x = week, y = sop, color = state) +
+  geom_line(aes(linetype = tx), linewidth = 1) +
+  scale_color_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = seq(1, 26, by=4)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+
+fig_marginalized
+```
+
+Stacked bar chart using median point estimate
+
+```{r}
+sop_df |>
+  group_by(state, week, tx) |> 
+  summarise(sop = median(sop)) |> 
+  ggplot() +
+  aes(x = week, y = sop, fill = state) +
+  geom_col(position = "fill") +
+  scale_fill_viridis_d(end = 0.9) +
+  scale_x_continuous(breaks = 1:26) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.25)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  facet_wrap(~tx, nrow=1) +
+  labs(x = "Study Week",
+   y = "SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+```
+
+Posterior of Estimand (Time out of hospital)
+
+```{r}
+difference_in_mean_time_home <- sop_df |> 
+  filter(state == 1) |> 
+  group_by(draw, tx) |> 
+  summarise(mean_weeks = sum(sop)) |> 
+  pivot_wider(id_cols = draw, names_from = tx, names_prefix = "mean_time_tx_", values_from = mean_weeks) |> 
+  summarise(difference = mean_time_tx_1 - mean_time_tx_0)
+
+difference_in_mean_time_home |> 
+  ggplot() +
+  aes(x = difference) +
+  ggdist::stat_dist_halfeye(fill = "orange")
+```
+
+
