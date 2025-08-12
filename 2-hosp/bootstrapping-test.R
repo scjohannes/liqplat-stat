@@ -7,6 +7,9 @@ library(VGAM)
 library(furrr)
 library(Hmisc)
 
+
+# Won't work without collapsing states 4 and 3
+
 # --- 1. Load and Prepare Data ---
 # Load the dataset from a Parquet file
 df <- read_parquet("./data/hosp_long_weeks.parquet") |>

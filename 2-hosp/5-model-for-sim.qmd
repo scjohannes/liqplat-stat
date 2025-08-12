@@ -27,7 +27,7 @@ df <- read_parquet("./data/hosp_long_weeks.parquet") |>
 
 Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
 ```{r}
-fit <- FALSE
+fit <- TRUE
 generate_SOPS <- FALSE
 ```
 
@@ -62,21 +62,98 @@ dd <- datadist(df)
         chains = 4,
         method = "sampling"
     )
-    # saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")
+    saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")
 
 
   Sys.setenv(RSTUDIO = 0)
+} else{
+  model <- readRDS("./2-hosp/models/model_hosp_pol.rds")
 }
 
-model <- readRDS("./2-hosp/models/model_hosp_pol.rds")
 model
 
 stanDx(model)
 stanDxplot(model)
 ```
 
-## Marginalized State Occupancy Probabilities
 
+### No yprev time interaction
+
+```{r}
+if (fit) {
+dd <- datadist(df)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+  options(datadist = 'dd')
+
+  options(mc.cores = 4)
+
+  Sys.setenv(RSTUDIO = 1)
+
+      model_2 <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) + yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        refresh = 5,
+        iter = 2000,
+        chains = 4,
+        method = "sampling"
+    )
+    saveRDS(model_2, "./2-hosp/models/model_hosp_pol_simple.rds")
+
+
+  Sys.setenv(RSTUDIO = 0)
+} else{
+  model_2 <- readRDS("./2-hosp/models/model_hosp_pol_simple.rds")
+}
+
+model_2
+
+stanDx(model_2)
+stanDxplot(model_2)
+```
+
+### Linear interaction with yprev and time
+
+
+```{r}
+if (fit) {
+dd <- datadist(df)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+  options(datadist = 'dd')
+
+  options(mc.cores = 4)
+
+  Sys.setenv(RSTUDIO = 1)
+
+      model_3 <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) + yprev + yprev %ia% week + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        refresh = 5,
+        iter = 2000,
+        chains = 4,
+        method = "sampling"
+    )
+    saveRDS(model_3, "./2-hosp/models/model_hosp_pol_lin_x.rds")
+
+
+  Sys.setenv(RSTUDIO = 0)
+} else{
+  model_3 <- readRDS("./2-hosp/models/model_hosp_pol_lin_x.rds")
+}
+
+model_3
+
+stanDx(model_3)
+stanDxplot(model_3)
+```
+
+
+## Marginalized State Occupancy Probabilities
 ```{r}
 baseline_df <- filter(df, week == 1) |> as.data.table()
 ```

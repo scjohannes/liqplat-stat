@@ -59,8 +59,49 @@ df_weeks <- df |>
     relocate(pat_id, tx, y, yprev)
 ```
 
+## Create data set with ypprev (2 weeks ago) for second order model
+
+```{r}
+df_ypprev <- df_weeks  |> 
+    group_by(pat_id) |> 
+    mutate(
+        ypprev = case_when(
+            TRUE ~ lag(yprev, n = 1, order_by = week)
+        ),
+        ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)) |> 
+    slice(-1) |> 
+    ungroup() |> 
+    relocate(pat_id, tx, y, yprev, ypprev)
+```
+
+## Data daily
+
+```{r}
+df_daily <- df |> 
+    group_by(pat_id, day) |> 
+    arrange(desc(y)) |> 
+    slice_head(n = 1) |> 
+    arrange(pat_id, day) |> 
+    group_by(pat_id) |> 
+    mutate(
+        yprev = case_when(
+            TRUE ~ lag(y, n = 1, order_by = day)
+        ),
+        yprev = factor(yprev, levels = 1:4, ordered = FALSE),
+        ypprev = case_when(
+            TRUE ~ lag(yprev, n = 1, order_by = day)
+        ),
+        ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),
+        gap = 1) |> 
+    slice(-1) |> 
+    ungroup() |> 
+    relocate(pat_id, tx, y, yprev, ypprev)
+```
+
 ## Export
 
 ```{r}
 write_parquet(df_weeks, sink = "./data/hosp_long_weeks.parquet")
+write_parquet(df_ypprev, sink = "./data/hosp_long_weeks_two_lags.parquet")
+write_parquet(df_daily, sink = "./data/hosp_long_daily.parquet")
 ```

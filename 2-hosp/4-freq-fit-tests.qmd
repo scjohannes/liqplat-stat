@@ -1,0 +1,101 @@
+---
+Title : Model for Simulation
+---
+
+Examining first vs. second order markov modoel and interactnig yprev with time or not.
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rms)
+library(rmsb)
+library(furrr)
+library(VGAM)
+library(Hmisc)
+```
+
+## Load data
+
+```{r}
+df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+    ) |> 
+      select(pat_id, tx, y, yprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+    ) |> 
+      select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+df_daily <- read_parquet("./data/hosp_long_daily.parquet") |> 
+  mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        y = case_when(
+          y == 4 ~ 3,
+          y == 5 ~ 4,
+          TRUE ~ y),
+        yprev = case_when(
+          yprev == "4" ~ "3",
+          TRUE ~ yprev),
+        ypprev = case_when(
+          ypprev == "4" ~ "3",
+          TRUE ~ ypprev)   
+    ) |> 
+      select(pat_id, tx, y, yprev, ypprev, day, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+```
+
+## Weekly States
+
+```{r}
+fit_first <- vglm(
+    ordered(y)  ~ rcs(week, 3) + yprev,
+    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(week, 3)),
+    data = na.omit(df_ypprev))
+
+fit_first_int <- vglm(
+    ordered(y)  ~ rcs(week, 3) * yprev,
+    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(week, 3)),
+    data = na.omit(df_ypprev))
+
+fit_second <- vglm(
+    ordered(y)  ~ rcs(week, 3) + yprev + ypprev,
+    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(week, 3)),
+    data = na.omit(df_ypprev))
+
+lrtest(fit_second, fit_first)
+lrtest(fit_first_int, fit_first)
+
+AIC(fit_first); AIC(fit_first_int); AIC(fit_second)
+BIC(fit_first); BIC(fit_first_int); BIC(fit_second)
+```
+
+- According to AIC first-order fit with interaction
+- Improvement in fit is significant per likelihood ratio test
+
+## Daily States
+
+```{r}
+fit_first <- vglm(
+    ordered(y)  ~ rcs(day, 4) + yprev,
+    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(day, 4)),
+    data = na.omit(df_daily))
+
+fit_second <- vglm(
+    ordered(y)  ~ rcs(day, 4) + yprev + ypprev,
+    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(day, 4)),
+    data = na.omit(df_daily))
+
+lrtest(fit_second, fit_first)
+
+AIC(fit_first); AIC(fit_second)
+```
+
+- Also for daily data second order fit seems to be better

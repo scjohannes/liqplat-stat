@@ -393,7 +393,6 @@ In this population an OR of 0.8 for a proportional treatment effect leads to a
 -  1.0 weeks more without an emergency / unplanned hospitalization
 -  0.7 week increase in the restricted mean survival time at 6 months.
 
-
 ## Simulate dataset with increasing tx effect
 
 - Odds of 0.7 of moving to a worse state at week 26, linear increase until the on the logit scale
@@ -712,9 +711,6 @@ sops_line / sops_stacked +
 ggsave(filename = "./img/fig-hosp-sim-data-sop-non-const.svg", width = 12, height = 10)
 ```
 
-```{r}
-
-```
 
 #### Constant OR, non-PO
 
@@ -779,6 +775,7 @@ ggsave(filename = "./img/fig-hosp-sim-tile.svg", width = 12, height = 6)
 
 ```{r}
 write_parquet(sample, "./2-hosp/sim-data/sim_data_po_const.parquet")
+write_parquet(carried_forward, "./2-hosp/sim-data/sim_data_po_const_forward.parquet")
 write_parquet(sample_non_const, "./2-hosp/sim-data/sim_data_po_non_const.parquet")
 write_parquet(sample_nonPO, "./2-hosp/sim-data/sim_data_nonpo_const.parquet")
 ```
