@@ -23,6 +23,7 @@ set.seed(1234)
 
 # Load full dataset
 # If we reasign the treatment again and again, emergency room visits are a bit too rare and mess up transitions
+# We therefore collapse staet 3 and 4
 df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
     mutate(
         ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
@@ -56,27 +57,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
         mutate(
             tx = if_else(pat_id %in% tx_ids, "1", "0"),
             tx = factor(tx, levels = c(0, 1)))
-
-    # we probably should probably merge levels 3 and 4 into 3, and then assign five to 
-
-    # Would need to carry death forward for empirical plots
-    # Save empirical SOP image for this iteration's data
-    # p_empirical <- full_data |>
-    #     ggplot(aes(x = time, fill = factor(y))) +
-    #     geom_bar(position = "fill") +
-    #     scale_fill_viridis_d(end = 0.9) +
-    #     facet_wrap(~tx) +
-    #     labs(
-    #         title = glue("Empirical State Occupancy Probabilities for Run {iter_num}"),
-    #         subtitle = "After removing patients who died during follow-up",
-    #         x = "Time", y = "Proportion", fill = "State"
-    #     )
     
-    # pdf(file = file.path(iter_path, "empirical_sops.pdf"), width = 8, height = 6)
-    # print(p_empirical)
-    # dev.off()
+    rm(full_data)
 
-    # --- 4. Create analysis dataset with missing follow-up ---
 
     # --- 5. Save the data used for model fitting ---
     saveRDS(data_for_model, file.path(iter_path, "data_for_model.rds"))
@@ -90,7 +73,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     if (nrow(data_for_model) > 0) {
         model <- tryCatch({        
             blrm(
-                formula = y  ~ tx + yprev * rcs(time, 4) + ecog_fstcnt + diagnosis,
+                formula = y  ~ tx + yprev + rcs(time, 4),
                 data = data_for_model,
                 ppo = ~ time,
                 cppo = function(y) y,
@@ -99,7 +82,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
                 chains = 4,
                 seed = 1234 + iter_num,
                 cores = 1,
-                loo = NULL,
+                loo = FALSE,
                 method = "sampling"
             )
         }, error = function(e) {
@@ -136,8 +119,6 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
              saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
         }
     }
-    
-    gc()
     # Return a status message for progress tracking
     return(glue("Iteration {iter_num} completed."))
 }
@@ -145,8 +126,8 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 8 
-OUTPUT_PATH <- "./2-hosp/output/sim-resampling-H0/"
+N_SIMULATIONS <- 16 
+OUTPUT_PATH <- "./2-hosp/output/sim-resampling-H0-no-int/"
 N_CORES <- 8
 
 message("Checking for previously completed simulation runs...")
@@ -169,7 +150,7 @@ n_to_run <- length(iters_to_run)
 n_completed <- length(completed_iters)
 
 message(glue("{n_completed} of {N_SIMULATIONS} iterations are already complete."))
-
+t1 <- Sys.time()
 if (n_to_run > 0) {
     message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
     
@@ -191,6 +172,9 @@ if (n_to_run > 0) {
 } else {
     message("All simulations were already complete. No new runs started.")
 }
+t2 <- Sys.time()
 
 message("Simulation process finished.")
+#Duration of Simulation
+t2-t1
 ```

@@ -1,0 +1,106 @@
+---
+Title: Results of Simulations
+---
+
+In this document we summarise and visualize the results of the simulations from step 6.
+
+## Setup
+
+### Load packages
+
+```{r}
+library(fs)
+library(tidyverse)
+library(arrow)
+library(survival)
+library(patchwork)
+```
+
+### Set Threshold for P(Benefit)
+
+```{r}
+threshold <- 0.95
+```
+
+### Functions
+
+```{r}
+source("./functions/jackknife_mcse.R")
+source("./functions/summarise-posterior.R")
+source("./functions/summarise-iterations.R")
+source("./functions/plot-rhat.R")
+source("./functions/plot-p-benefit.R")
+source("./functions/plot-posterior-distribution.R")
+source("./functions/load-draws.R")
+source("./functions/load-rhat-values.R")
+```
+
+## Markov Model
+
+#### Load draws + diagnostics
+```{r}
+# H0
+path <- "./2-hosp/output/sim-resampling-H0-no-int/"
+no_int_h0 <- load_draws(path)
+rhat_no_int_h0 <- load_rhat_values(path = path)
+```
+
+#### Convergence diagnostics
+```{r}
+rhat_plot_no_int_h0 <- rhat_no_int_h0 |> 
+    plot_rhat(y = `tx=1`)
+
+# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
+```
+
+### Plot probability of benefit
+
+```{r}
+p1 <- no_int_h0 |> 
+    plot_p_benefit(param = `tx=1`)
+
+# p2 <- markov_ha |> 
+#     plot_p_benefit(param = tx)
+
+# p1 + p2 +
+#     plot_annotation(tag_levels = 'A')
+
+# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_no_int_h0 <- no_int_h0 |> 
+  plot_posterior_distribution(x_variable = `tx=1`)
+
+# post_markov_ha <- markov_ha |> 
+#   plot_posterior_distribution(
+#     x_variable = tx, 
+#     subtitle_type = "HA", 
+#     hline_intercept = log(0.8))
+
+# post_markov_h0 + post_markov_ha +
+#     plot_annotation(tag_levels = 'A')
+
+# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+summary_no_int_h0 <- no_int_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+# summary_markov_ha <- markov_ha |> 
+#     group_by(iter) |> 
+#     summarise_posterior(
+#         param_name = tx, 
+#         true_param_value = log(0.8), 
+#         threshold = 0.95) |> 
+#     summarise_iterations()
+
+# rm(markov_h0, markov_ha)
+```
