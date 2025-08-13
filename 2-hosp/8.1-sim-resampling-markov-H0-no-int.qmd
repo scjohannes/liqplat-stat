@@ -24,14 +24,11 @@ set.seed(1234)
 # Load full dataset
 # If we reasign the treatment again and again, emergency room visits are a bit too rare and mess up transitions
 # We therefore collapse staet 3 and 4
-df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+df <- read_parquet("./data/hosp_long_weeks_anon.parquet") |> 
     mutate(
-        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
-        y = if_else(y == 4, 3, y),
-        y = if_else(y == 5, 4, y),
         yprev = if_else(yprev == "4", "3", yprev),
         yprev = factor(yprev)) |> 
-    select(pat_id, tx, y, yprev, time = week, ecog_fstcnt, diagnosis)
+    select(id, tx, y, yprev, time = week)
 ```
 
 
@@ -50,12 +47,12 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
     # Resample from data with no effect
     tx_ids <- full_data |> 
-        distinct(pat_id) |> 
-        sample_frac(2/3) |> pull(pat_id)
+        distinct(id) |> 
+        sample_frac(2/3) |> pull(id)
 
     data_for_model <- full_data |> 
         mutate(
-            tx = if_else(pat_id %in% tx_ids, "1", "0"),
+            tx = if_else(id %in% tx_ids, "1", "0"),
             tx = factor(tx, levels = c(0, 1)))
     
     rm(full_data)
@@ -126,9 +123,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 16 
+N_SIMULATIONS <- 2 
 OUTPUT_PATH <- "./2-hosp/output/sim-resampling-H0-no-int/"
-N_CORES <- 8
+N_CORES <- 2
 
 message("Checking for previously completed simulation runs...")
 
