@@ -70,3 +70,4 @@ nohup.out
 2-hosp/output.zip
 
 2-hosp/8.2-sim-resampling-markov-H0-linear-int.rmarkdown
+2-hosp/8.1-sim-resampling-markov-H0-no-int.rmarkdown
