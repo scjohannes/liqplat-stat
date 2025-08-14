@@ -1,16 +1,12 @@
 ---
-Title: Examining Type I Error with Resampling - Full Interaction time x yrev
+Title: Type I Error Rate with Poisson Regression
 ---
 
 ## Setup
 ```{r}
 # Load Libraries
-library(Hmisc)
-library(rmsb)
-library(ggplot2)
 library(arrow)
 library(tidyverse)
-library(data.table)
 library(furrr)
 library(glue)
 library(fs)
@@ -27,11 +23,20 @@ set.seed(1234)
 # We therefore collapse staet 3 and 4
 df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
     mutate(
-        y = if_else(y == 4, 3, y),
-        y = if_else(y == 5, 4, y),
         yprev = if_else(yprev == "4", "3", yprev),
         yprev = factor(yprev)) |> 
     select(id, tx, y, yprev, time = week)
+
+surv_time <- df |> group_by(id) |> 
+    mutate(surv_time = n()) |> 
+    select(id, surv_time) |> 
+    distinct()
+
+count_df <- df |> 
+    group_by(id, tx) |> 
+    count(y)
+
+
 ```
 
 
