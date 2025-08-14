@@ -124,9 +124,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 50
+N_SIMULATIONS <- 30
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-linear-int")
-N_CORES <- 50
+N_CORES <- 30
 
 message("Checking for previously completed simulation runs...")
 
