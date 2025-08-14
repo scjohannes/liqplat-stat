@@ -60,6 +60,7 @@ dd <- datadist(df)
         refresh = 5,
         iter = 2000,
         chains = 4,
+        seed = 1234,
         method = "sampling"
     )
     saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")

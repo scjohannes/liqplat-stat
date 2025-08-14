@@ -34,7 +34,6 @@ df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |>
     select(id, tx, y, yprev, time = week)
 ```
 
-
 ## Simulation function
 
 ```{r}
@@ -71,6 +70,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     # if we move to computing cluster, maybe do marginalization
     
     if (nrow(data_for_model) > 0) {
+        options(mc.cores = 1)
         model <- tryCatch({        
             blrm(
                 formula = y  ~ tx + yprev + rcs(time, 4),
@@ -81,7 +81,6 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
                 iter = 2000,
                 chains = 4,
                 seed = 1234,
-                cores = 1,
                 loo = FALSE,
                 method = "sampling"
             )
@@ -126,9 +125,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 600 
+N_SIMULATIONS <- 8 
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int")
-N_CORES <- 30
+N_CORES <- 8
 
 message("Checking for previously completed simulation runs...")
 
