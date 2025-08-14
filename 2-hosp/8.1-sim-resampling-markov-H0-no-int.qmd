@@ -127,7 +127,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 ```{r}
 N_SIMULATIONS <- 500
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int")
-N_CORES <- 16
+N_CORES <- 28
 
 message("Checking for previously completed simulation runs...")
 
