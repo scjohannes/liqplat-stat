@@ -1,5 +1,5 @@
 ---
-Title: Simulation where OR = 1.0 - principal stratum
+Title: Examining Type I Error with Resampling - Full Interaction time x yrev
 ---
 
 ## Setup
@@ -27,6 +27,8 @@ set.seed(1234)
 # We therefore collapse staet 3 and 4
 df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
     mutate(
+        y = if_else(y == 4, 3, y),
+        y = if_else(y == 5, 4, y),
         yprev = if_else(yprev == "4", "3", yprev),
         yprev = factor(yprev)) |> 
     select(id, tx, y, yprev, time = week)
