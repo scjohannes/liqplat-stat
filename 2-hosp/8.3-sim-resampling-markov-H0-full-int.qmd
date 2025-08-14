@@ -23,8 +23,7 @@ library(here)
 set.seed(1234)
 
 # Load full dataset
-# If we reasign the treatment again and again, emergency room visits are a bit too rare and mess up transitions
-# We therefore collapse staet 3 and 4
+# Collapse state 3 and 4
 df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
     mutate(
         y = if_else(y == 4, 3, y),
