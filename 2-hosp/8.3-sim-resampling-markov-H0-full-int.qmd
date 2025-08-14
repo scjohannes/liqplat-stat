@@ -71,7 +71,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     if (nrow(data_for_model) > 0) {
         model <- tryCatch({        
             blrm(
-                formula = y  ~ tx + yprev + rcs(time, 4),
+                formula = y  ~ tx + yprev * rcs(time, 4),
                 data = data_for_model,
                 ppo = ~ time,
                 cppo = function(y) y,
@@ -125,7 +125,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 ## Run Parallelized Simulation
 ```{r}
 N_SIMULATIONS <- 50 
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int")
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-full-int")
 N_CORES <- 50
 
 message("Checking for previously completed simulation runs...")
