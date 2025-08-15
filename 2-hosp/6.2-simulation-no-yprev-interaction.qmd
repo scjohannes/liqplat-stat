@@ -1,5 +1,5 @@
 ---
-Title: Simulation of different scenarios
+Title: Simulation of OR 0.8, constant, effect of yprev constant
 ---
 
 ## Setup
@@ -61,10 +61,7 @@ tx <- sample(0:1, N, replace = TRUE) # Sample treatment assignment
 X <- cbind(X_baseline, tx) 
 ```
 
-## PO tx effect, constant over time
-
-- Proportional Part: Effects that are constant across all k-1 logits (e.g., yprev, gap, baseline covariates, pol(week,3)).
-- Non-Proportional Part: The week x f(y) term, which varies with the outcome level k. For our model cppo = function(y) y, this term is k * week * \gamma_{week}.
+## PO tx effect, constant over time, effect of yprev constant over time
 
 ```{r}
 ints <- unlist(coef[1:4])

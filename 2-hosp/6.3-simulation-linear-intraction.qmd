@@ -1,5 +1,5 @@
 ---
-Title: Simulation of different scenarios
+Title: Simulation of constant OR, effect of yprev x time linear interaction
 ---
 
 ## Setup

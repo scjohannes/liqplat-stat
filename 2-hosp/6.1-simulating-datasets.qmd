@@ -61,7 +61,7 @@ tx <- sample(0:1, N, replace = TRUE) # Sample treatment assignment
 X <- cbind(X_baseline, tx) 
 ```
 
-## PO tx effect, constant over time
+## PO tx effect, constant over time, full yprev x time interaction
 
 - Proportional Part: Effects that are constant across all k-1 logits (e.g., yprev, gap, baseline covariates, pol(week,3)).
 - Non-Proportional Part: The week x f(y) term, which varies with the outcome level k. For our model cppo = function(y) y, this term is k * week * \gamma_{week}.
