@@ -124,7 +124,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 500
+N_SIMULATIONS <- 1200
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-full-int")
 N_CORES <- 28
 

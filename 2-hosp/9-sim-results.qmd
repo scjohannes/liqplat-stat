@@ -129,5 +129,13 @@ summary_full_int_h0 <- full_int_h0 |>
         threshold = 0.95) |> 
     summarise_iterations()
 
-# rm(markov_h0, markov_ha)
+# create dataframe with for comparison
+all_summaries <- bind_rows(
+  'no_int' = summary_no_int_h0,
+  'linear_int' = summary_linear_int_h0,
+  'full_int' = summary_full_int_h0,
+  .id = 'model_type'
+)
+
+saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
 ```

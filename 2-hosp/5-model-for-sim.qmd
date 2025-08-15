@@ -5,12 +5,12 @@ Title : Model for Simulation
 ## Setup
 
 ```{r}
+library(furrr)
 library(tidyverse)
 library(data.table)
 library(arrow)
 library(rms)
 library(rmsb)
-library(furrr)
 library(VGAM)
 ```
 
@@ -151,6 +151,47 @@ model_3
 
 stanDx(model_3)
 stanDxplot(model_3)
+```
+
+### Model with random intercept
+
+```{r}
+if (fit) {
+dd <- datadist(df)
+# Set the global option so that rms/rmsb functions know to use 'dd'
+  options(datadist = 'dd')
+
+  options(mc.cores = 4)
+
+  Sys.setenv(RSTUDIO = 1)
+      t1 <- Sys.time()
+      model_4 <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) * yprev + cluster(id),
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        refresh = 5,
+        iter = 2000,
+        chains = 4,
+        seed = 1234,
+        method = "sampling",
+        backend = "cmdstan"
+    )
+    t2 <- Sys.time()
+    t2 - t1
+    saveRDS(model_4, "./2-hosp/models/model_hosp_pol_cluster.rds")
+
+
+  Sys.setenv(RSTUDIO = 0)
+} else{
+  model_4 <- readRDS("./2-hosp/models/model_hosp_pol_cluster.rds")
+}
+
+model_4
+
+stanDx(model_4)
+stanDxplot(model_4)
 ```
 
 
