@@ -11,6 +11,7 @@ library(furrr)
 library(glue)
 library(fs)
 library(here)
+library(brms)
 ```
 
 ## Load data
@@ -19,31 +20,58 @@ library(here)
 set.seed(1234)
 
 # Load full dataset
-# If we reasign the treatment again and again, emergency room visits are a bit too rare and mess up transitions
-# We therefore collapse staet 3 and 4
+# Collapse staet 3 and 4
 df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
     mutate(
+        y = if_else(y == 4, 3, y),
+        y = if_else(y == 5, 4, y),
         yprev = if_else(yprev == "4", "3", yprev),
-        yprev = factor(yprev)) |> 
+        yprev = factor(yprev),
+        tx = factor(tx)) |> 
     select(id, tx, y, yprev, time = week)
+
+model <- readRDS(here("2-hosp", "models", "model_neg_binom.rds"))
 
 surv_time <- df |> group_by(id) |> 
     mutate(surv_time = n()) |> 
     select(id, surv_time) |> 
     distinct()
 
+# weeks spent with at least one day in state 3 (hospital or ER)
 count_df <- df |> 
     group_by(id, tx) |> 
-    count(y)
+    count(y) |> 
+    # complete each group with n = 0 if y is missing
+    complete(y = 0:4, fill = list(n = 0)) |>
+    filter(y == 3 | y == 2) |> # weeks in hospital
+    summarise(n = sum(n)) |> 
+    left_join(surv_time, by = "id") |>
+    # calcualte weeks not at home
+    ungroup()
 
+# then we count something like weeks in hospital with offset of survival time 
+# some expsure weighted ratio, but not sure which one
 
+rm(df, surv_time)
+
+# model <- brm(
+#     n | rate(surv_time) ~ tx,
+#     data = count_df, 
+#     family = negbinomial(),
+#     prior = c(
+#         prior(normal(0, 100), class = "b")
+#     ),
+#     iter = 2000,
+#     seed = 1234,
+#     cores = 4)
 ```
 
+I'm really not sure what estimand we are targeting, when we sum the days not at home (and not dead), and add a offset for the survival_time. For each patient, the prediction based on the model would be the number of days not at home, considering his survival time (at assuming a constant rate of the events). So is it just the same as summing SOP state 2 and 3 over time / the probabilities? The predicted value is the exp(log(linpred)) * survival time.
 
 ## Simulation function
 
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data) {
+run_simulation_iteration <- function(iter_num, base_path, full_data, model) {
     # This function runs one full simulation iteration.
     
     # --- 1. Setup for the current iteration ---
@@ -77,19 +105,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     
     if (nrow(data_for_model) > 0) {
         model <- tryCatch({        
-            blrm(
-                formula = y  ~ tx + yprev * rcs(time, 4),
-                data = data_for_model,
-                ppo = ~ time,
-                cppo = function(y) y,
-                refresh = 0,
-                iter = 2000,
-                chains = 4,
-                seed = 1234,
-                cores = 1,
-                loo = FALSE,
-                method = "sampling"
-            )
+            update(model, 
+              newdata = data_for_model, 
+              cores = 1)            
         }, error = function(e) {
             message(glue("ERROR in iteration {iter_num}: {e$message}"))
             
@@ -100,28 +118,31 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
         
         # --- 7. Save the results ONLY if the model ran successfully ---
         if (!is.null(model)) {
-            # Save the full model object
-            saveRDS(model, file.path(iter_path, "model_object.rds"))
-            
-            # Save just the MCMC draws to a separate file
-            saveRDS(as.data.table(model$draws), file.path(iter_path, "model_draws.rds"))
+            # Save the MCMC draws to a separate file
+            saveRDS(brms::as_draws_df(model), file.path(iter_path, "model_draws.rds"))
 
-            rhat_values <- stanDx(model) |> 
+            # Predicted difference in the number of weeks in state 3
+            # Predictions when everyone is treated and untreated, get draws, take individual level differences, group by draw, average over all patient, then takes the median for point estimate
+            ATE_draws <- marginaleffects::avg_comparisons(model, variables = "tx", type = "response") |> 
+                marginaleffects::get_draws()
+
+            saveRDS(ATE_draws, file.path(iter_path, "ATE_draws.rds"))
+
+            # Save rhat values for all params
+            rhat_values <- brms::rhat(model) |> 
                 data.frame() |> 
-                rownames_to_column()  |> 
-                select(-n_eff) |> 
-                pivot_wider(names_from = rowname, values_from = Rhat)
+                rownames_to_column() |> 
+                pivot_wider(names_from = rowname, values_from = brms..rhat.model.)
 
             saveRDS(rhat_values, file.path(iter_path, "rhat_values.rds"))
-
-            ess_ratios <- stanDx(model) |> 
+            
+            # save ess ratios for all parameters
+            ess_ratios <- brms::neff_ratio(model) |> 
                 data.frame() |> 
-                rownames_to_column()  |> 
-                select(-Rhat) |> 
-                pivot_wider(names_from = rowname, values_from = n_eff) |> 
-                mutate_all(~ . / (model$iter * model$chains))
+                rownames_to_column() |> 
+                pivot_wider(names_from = rowname, values_from = brms..neff_ratio.model.)
 
-             saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
+            saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
         }
     }
     # Return a status message for progress tracking
@@ -131,9 +152,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 30 
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-full-int")
-N_CORES <- 30
+N_SIMULATIONS <- 1000
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-neg-binom")
+N_CORES <- 8
 
 message("Checking for previously completed simulation runs...")
 
@@ -167,7 +188,8 @@ if (n_to_run > 0) {
         .f = ~run_simulation_iteration(
             iter_num = .x,
             base_path = OUTPUT_PATH,
-            full_data = df
+            full_data = count_df,
+            model = model
         ),
         .options = furrr_options(seed = TRUE),
         .progress = TRUE

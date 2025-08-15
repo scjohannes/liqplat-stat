@@ -1,8 +1,8 @@
 # Read and stack all draw files into a single data frame
-load_draws <- function(path) {
+load_draws <- function(path, glob = "*/model_draws.rds") {
   draw_files <- fs::dir_ls(
     path = path,
-    glob = "*/model_draws.rds",
+    glob = glob,
     recurse = TRUE
   )
 

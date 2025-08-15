@@ -131,3 +131,63 @@ summary_full_int_h0 <- full_int_h0 |>
 
 # rm(markov_h0, markov_ha)
 ```
+
+## Count Regression
+
+### Resampling H0
+
+#### Load draws + diagnostics
+```{r}
+# H0 no interaction
+path <- "./2-hosp/output/sim-resampling-H0-neg-binom/"
+neg_binom_h0 <- load_draws(path)
+rhat_neg_binom_h0 <- load_rhat_values(path = path)
+
+ate_neg_binom_h0 <- load_draws(path = path, glob = "*/ATE_draws.rds")
+```
+
+#### Convergence diagnostics
+```{r}
+rhat_plot_neg_binom_h0 <- rhat_neg_binom_h0 |> 
+    plot_rhat(y = b_tx1)
+
+# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
+```
+
+### Plot probability of benefit
+
+```{r}
+p1 <- neg_binom_h0 |> 
+    plot_p_benefit(param = b_tx1)
+
+p2 <- ate_neg_binom_h0 |>
+    plot_p_benefit(param = draw)
+
+p1 + p2
+
+# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_neg_binom_h0 <- neg_binom_h0 |> 
+  plot_posterior_distribution(x_variable = b_tx1) + 
+  scale_x_continuous(limits = c(-1, 1))
+
+post_neg_binom_h0
+
+ate_post_neg_binom_h0 <- ate_neg_binom_h0 |> 
+  plot_posterior_distribution(x_variable = draw)
+
+# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+summary_neg_binom_h0 <- neg_binom_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx1, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+```
