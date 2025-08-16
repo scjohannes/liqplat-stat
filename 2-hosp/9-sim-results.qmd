@@ -55,6 +55,11 @@ rhat_linear_int_h0 <- load_rhat_values(path = path)
 path <- "./2-hosp/output/sim-resampling-H0-full-int/"
 full_int_h0 <- load_draws(path)
 rhat_full_int_h0 <- load_rhat_values(path = path)
+
+# H0 no interaction w/ clustering
+path <- "./2-hosp/output/sim-resampling-H0-no-int-cluster/"
+no_int_h0_cluster <- load_draws(path)
+rhat_no_int_h0_cluster <- load_rhat_values(path = path)
 ```
 
 #### Convergence diagnostics
@@ -67,6 +72,9 @@ rhat_plot_linear_int_h0 <- rhat_linear_int_h0 |>
 
 rhat_plot_full_int_h0 <- rhat_full_int_h0 |>
     plot_rhat(y = `tx=1`)
+
+rhat_plot_no_int_h0 <- rhat_no_int_h0_cluster |> 
+    plot_rhat(y = beta.1.)
 
 # ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
@@ -83,7 +91,12 @@ p2 <- linear_int_h0 |>
 p3 <- full_int_h0 |>
     plot_p_benefit(param = `tx=1`)
 
+p4 <- no_int_h0_cluster |>
+    plot_p_benefit(param = `tx=1`)
+
 p1 + p2 + p3
+
+
 
 # ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
 ```
@@ -97,6 +110,9 @@ post_linear_int_h0 <- linear_int_h0 |>
   plot_posterior_distribution(x_variable = `tx=1`)
 
 post_full_int_h0 <- full_int_h0 |>
+  plot_posterior_distribution(x_variable = `tx=1`)
+
+post_no_int_h0_cluster <- no_int_h0_cluster |> 
   plot_posterior_distribution(x_variable = `tx=1`)
 
 post_no_int_h0 + post_linear_int_h0 + post_full_int_h0
@@ -122,6 +138,14 @@ summary_linear_int_h0 <- linear_int_h0 |>
     summarise_iterations()
 
 summary_full_int_h0 <- full_int_h0 |>
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_no_int_h0_cluster <- no_int_h0_cluster |> 
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx=1`, 
