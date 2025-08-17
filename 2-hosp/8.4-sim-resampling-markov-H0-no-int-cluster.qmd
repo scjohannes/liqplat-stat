@@ -1,6 +1,5 @@
 ---
-Title: Examining Type I Error with Resampling - No Interaction time x yrev WITH
-ClUSTER
+Title: Examining Type I Error with Resampling - with clustering
 ---
 
 ## Setup
@@ -58,7 +57,7 @@ if(FALSE){# fit original model
 ## Simulation function
 
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data, model) {
+run_simulation_iteration <- function(iter_num, base_path, full_data) {
     # This function runs one full simulation iteration.
     
     # --- 1. Setup for the current iteration ---
@@ -88,13 +87,26 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model) {
     # --- 6. Fit the Model and Save ---
 
     # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
-    # if we move to computing cluster, maybe do marginalization
     
     if (nrow(data_for_model) > 0) {
         cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
+        options(rmsbdir=iter_path) # for cmd need to save commpiled code to disk. 
+
         options(mc.cores = 1)
         model <- tryCatch({        
-            update(model, newdadta = df)
+            blrm(
+                    formula = y  ~ tx + yprev + rcs(time, 4) + cluster(id),
+                    data = data_for_model,
+                    ppo = ~ time,
+                    cppo = function(y) y,
+                    refresh = 0,
+                    iter = 2000,
+                    chains = 4,
+                    seed = 1234,
+                    loo = FALSE,
+                    method = "sampling",
+                    backend = "cmdstan"
+                )
         }, error = function(e) {
             message(glue("ERROR in iteration {iter_num}: {e$message}"))
             saveRDS(data_for_model, file.path(iter_path, "problematic_data.rds"))
@@ -132,9 +144,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 4
+N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int-cluster")
-N_CORES <- 4
+N_CORES <- 28
 
 message("Checking for previously completed simulation runs...")
 
@@ -168,8 +180,7 @@ if (n_to_run > 0) {
         .f = ~run_simulation_iteration(
             iter_num = .x,
             base_path = OUTPUT_PATH,
-            full_data = df,
-            model = model
+            full_data = df
         ),
         .options = furrr_options(seed = TRUE, packages = "rmsb"),
         .progress = FALSE

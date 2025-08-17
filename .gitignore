@@ -63,6 +63,7 @@ stan-progress.txt
 2-hosp/8.1-sim-resampling-markov-H0-no-int_files
 2-hosp/8.2-sim-resampling-markov-H0-linear-int_files
 2-hosp/8.3-sim-resampling-markov-H0-full-int_files
+2-hosp/8.4-sim-resampling-markov-H0-no-int-cluster_files
 nohup.out
 2-hosp/8.1-sim-resampling-markov-H0-no-int.html
 2-hosp/8.2-sim-resampling-markov-H0-linear-int.html
@@ -72,3 +73,4 @@ nohup.out
 2-hosp/8.2-sim-resampling-markov-H0-linear-int.rmarkdown
 2-hosp/8.1-sim-resampling-markov-H0-no-int.rmarkdown
 2-hosp/8.3-sim-resampling-markov-H0-full-int.rmarkdown
+2-hosp/8.4-sim-resampling-markov-H0-no-int-cluster.html
