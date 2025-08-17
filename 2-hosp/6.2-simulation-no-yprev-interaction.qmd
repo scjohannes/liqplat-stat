@@ -25,7 +25,6 @@ df <- read_parquet("./data/hosp_long_weeks.parquet")  |>
     mutate(ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE))
 
 model <- readRDS("./2-hosp/models/model_hosp_pol_simple.rds")
-
 ```
 
 ## Extract median of posterior draws
@@ -42,7 +41,7 @@ coef
 ## Baseline-Covariates
 
 ```{r}
-N <- 20000 # Simulation size
+N <- 100000 # Simulation size
 
 baseline_w <- df |> 
     filter(week == 1) |> 
@@ -209,4 +208,148 @@ In this population an OR of 0.8 for a proportional treatment effect leads to a
 ## Export
 ```{r}
 write_parquet(carried_forward, "./2-hosp/sim-data/sim_data_no_interaction_forward.parquet")
+write_parquet(not_carried_forward, "./2-hosp/sim-data/sim_data_no_interaction.parquet")
 ```
+
+
+# FREQUENTIST MODEL
+
+## Fit VGAM Model
+
+```{r}
+df <- df |> 
+  mutate(
+        y = if_else(y == 4, 3, y),
+        y = if_else(y == 5, 4, y),
+        yprev = if_else(yprev == "4", "3", yprev),
+        yprev = factor(yprev))
+
+vm <- vglm(
+  ordered(y) ~ tx + week + I(week^2) + I(week^3) + yprev + ecog_fstcnt + diagnosis,
+  cumulative(reverse = TRUE, parallel = FALSE ~ week + I(week^2) + week + I(week^3)),
+  data = df
+  )
+
+summary(vm)
+coef <- coef(vm)
+```
+
+## Baseline-Covariates
+
+```{r}
+N <- 100000 # Simulation size
+
+baseline_w <- df |> 
+    filter(week == 1) |> 
+    select(pat_id, yprev,ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+i <- sample(1:nrow(baseline_w), N, replace = TRUE)
+sim_baseline_data <- baseline_w[i, ] |> 
+  mutate(pat_id = row_number())
+
+init <- sim_baseline_data$yprev # initial states to be passed to g function
+
+baseline_formula <- ~ ecog_fstcnt + diagnosis
+X_baseline <- model.matrix(baseline_formula, data = sim_baseline_data)[, -1] # Baseline values dummy coded, remove intercept
+
+tx <- sample(0:1, N, replace = TRUE) # Sample treatment assignment
+X <- cbind(X_baseline, tx) 
+```
+
+## PO tx effect, constant over time, effect of yprev constant over time
+
+```{r}
+ints <- unlist(coef[1:3])
+extra <- unlist(coef[- (1:4)]) #remove tx coef as well
+
+g_vglm <- function(yprev, t, gap, X, parameter = 0, extra) {
+
+  # X is a vector for one patient, containing baseline covariates and tx (which we want to remove)
+  # yprev is the previous state (character)
+  # t is the current week (numeric)
+  # gap is assumed to be 1 for this simulation
+  gap <- 1 
+
+  # 1. Treatment Effect
+  # Treatment effect stable over time
+  # The treatment indicator 'tx' is the last element of the X vector.
+  tx_value <- X[length(X)]
+  tx_effect <- parameter * tx_value
+
+  # 2. Baseline effect
+  # X contains the non-treatment variables. We match its names to the 'extra' vector.
+  X_nontx <- X[-length(X)] # X is a single vector. We remove tx which is as the end of this vector
+  baseline_coef_names <- names(X_nontx)
+
+  baseline_effect <- sum(extra[baseline_coef_names] * X_nontx)
+
+  # This is if yprev is equal to 1 (the reference group)
+  yprev_effect <- 0
+
+  # 3. Previous state effect
+  # standalone effects
+  yprev_coef_name <- paste0('yprev', yprev)
+  if (yprev_coef_name %in% names(extra)) {
+      yprev_effect <- extra[[yprev_coef_name]]
+  }
+
+  # Sum of all proportional effects
+  lin_pred_prop <- tx_effect + baseline_effect  + yprev_effect
+
+  # 4. Non-proportional effect of time -> different linear predictor for each cut point
+  lin_pred_nonprop <- c(
+    sum(extra[grepl("2):1", names(extra))] * t^2, extra[grepl("3):1", names(extra))] * t^3),
+    sum(extra[grepl("k:2", names(extra))] * t, extra[grepl("2):2", names(extra))] * t^2, extra[grepl("3):2", names(extra))] * t^3),
+    sum(extra[grepl("k:3", names(extra))] * t, extra[grepl("2):3", names(extra))] * t^2, extra[grepl("3):3", names(extra))] * t^3)
+                        # sum(extra[grepl("k:4", names(extra))] * t, extra[grepl("2):4", names(extra))] * t^2, extra[grepl("3):4", names(extra))] * t^3)
+                        )
+
+  # 5. Final linear predictor (vector of length 4)
+  # This is the sum of the proportional part (a scalar) and non-proportional part (a vector)
+  lp <- lin_pred_prop + lin_pred_nonprop
+    
+  return(lp)
+
+}
+
+formals(g_vglm)$extra <- extra
+```
+
+```{r}
+# Run the simulation
+carried_forward <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:4, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 4,
+                  intercepts = ints, 
+                  g = g_vglm, 
+                  parameter = log(1),
+                  carry = TRUE)
+
+not_carried_forward <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:4, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 4,
+                  intercepts = ints, 
+                  g = g_vglm, 
+                  parameter = log(1),
+                  carry = FALSE)
+```
+
+
+```{r}
+carried_forward |> 
+  group_by(time) |>
+  count(y) |> 
+  ggplot(aes(x = time, fill = y, y = n)) +
+  geom_col(position = "fill")
+```
+
+```{r}
+write_parquet(not_carried_forward, "./2-hosp/sim-data/sim_data_vglm.parquet")
+```
+
