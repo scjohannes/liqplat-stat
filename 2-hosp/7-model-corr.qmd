@@ -21,6 +21,40 @@ real_data <- read_parquet("./data/hosp_long_weeks.parquet") |>
         time = week)
 ```
 
+Reminder on model specificaions:
+
+```
+model_full_int <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) * yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        iter = 2000,
+        chains = 4
+    )
+
+model_lin_int <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) + yprev + yprev %ia% week + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        iter = 2000,
+        chains = 4
+    )
+
+model_no_int <-
+      blrm(
+        formula = y  ~ tx + pol(week, 3) + yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+        data = df,
+        ppo = ~ week,
+        cppo = function(y) y,
+        iter = 2000,
+        chains = 4
+    )
+```
+
 ## Carry Death Forward
 
 ```{r}
@@ -247,7 +281,13 @@ m <- round(apply(ad, 1, mean), 2) |> data.table() |>
     rename(full_int = V1) |> 
     cbind(m)
 
-m
+m |> 
+  rownames_to_column("rownames") |>
+  pivot_longer(names_to = "model", values_to = "value", -rownames) |>
+  pivot_wider(names_from = rownames, values_from = value) |> 
+  knitr::kable()
+
+
 
 m |> summarise_all(sum)
 m |> summarise_all(mean)
@@ -259,16 +299,22 @@ m |> summarise_all(mean)
 Hmisc::plotCorrM(corr_actual)[[2]] +
     scale_y_continuous(limits = c(-.1, 1))
 
+ggsave(filename = "./img/fig-hosp-weekly-variogram-emp.svg", height = 10, width = 11)
+
 Hmisc::plotCorrM(corr_no)[[2]] + 
     scale_y_continuous(limits = c(-.1, 1))
+
+ggsave(filename = "./img/fig-hosp-weekly-variogram-no-int.svg", height = 10, width = 11)
 
 Hmisc::plotCorrM(corr_lin)[[2]] + 
     scale_y_continuous(limits = c(-.1, 1))
 
+ggsave(filename = "./img/fig-hosp-weekly-variogram-lin-int.svg", height = 10, width = 11)
+
 Hmisc::plotCorrM(corr_full)[[2]] + 
     scale_y_continuous(limits = c(-.1, 1))
 
-
+ggsave(filename = "./img/fig-hosp-weekly-variogram-full-int.svg", height = 10, width = 11)
 ```
 
 

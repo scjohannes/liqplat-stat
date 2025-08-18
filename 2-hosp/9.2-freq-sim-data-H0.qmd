@@ -16,6 +16,10 @@ library(rms)
 library(VGAM)
 ```
 
+```{r}
+source("./functions/jackknife_mcse.R")
+```
+
 ## Load data
 
 - underlying truths: 
@@ -42,14 +46,10 @@ df_full <- read_parquet(here("2-hosp", "sim-data", "sim_data_po_const.parquet"))
 
 
 # df without yprev x time interaction
+# states 3 and 4 were already collapsed during model fitting
 df_full_no_int <- read_parquet(here("2-hosp", "sim-data", "sim_data_vglm.parquet")) |> 
-    # mutate(
-    #     y = as.numeric(as.character(y)),
-    #     y = if_else(y == 4, 3, y),
-    #     y = if_else(y == 5, 4, y),
-    #     yprev = if_else(yprev == "4", "3", yprev),
-    #     yprev = factor(yprev)) |> 
     select(id, tx, y, yprev, time)
+
 ```
 
 ## Simulation function
@@ -90,8 +90,6 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model_formu
         }, error = function(e) {
             message(glue("ERROR in iteration {iter_num}: {e$message}"))
             
-            saveRDS(data_for_model, file.path(iter_path, "problematic_data.rds"))
-            
             return(NULL)
         })
         
@@ -107,81 +105,18 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model_formu
 }
 ```
 
-## Type I Error for data w/ interaction
-```{r}
-N_SIMULATIONS <- 1500
-OUTPUT_PATH <- here("2-hosp", "output", "sim-simdata-H0-freq")
-RESULTS_FILE <- "sim-simdata-H0.parquet"
-N_CORES <- 8
-
-# define model specs
-main_formula <- ordered(y) ~ tx + poly(time, 3) * yprev
-cumulative_formula <- cumulative(reverse = TRUE, parallel = FALSE ~ poly(time, 3))
-
-t1 <- Sys.time()
-
-message(glue("Starting {N_SIMULATIONS} new simulations on {N_CORES} cores..."))
-
-future::plan(future.callr::callr, workers = N_CORES)
-
-# --- Run Simulations in Parallel ---
-results <- furrr::future_map_dfr(
-    .x = 1:N_SIMULATIONS,
-    .f = ~ run_simulation_iteration(
-        iter_num = .x,
-        full_data = df_full,
-        model_formula = main_formula,
-        cumulative_arg = cumulative_formula,
-    ),
-    .options = furrr_options(seed = TRUE),
-    .progress = TRUE,
-    .id = "iter" # Automatically adds an iteration column
-)
-
-write_parquet(results, here(OUTPUT_PATH, RESULTS_FILE))
-
-message(glue("Finished {N_SIMULATIONS} simulations."))
-
-t2 <- Sys.time()
-
-message("Simulation process finished.")
-t2-t1
-```
-
-
-```{r}
-# Read and stack all draw files into a single data frame
-results <- read_parquet(here(OUTPUT_PATH, RESULTS_FILE))
-
-p_values <- results |> filter(term == "tx1") |> 
-    pull(`Pr...z..`)
-
-hist(p_values, breaks = 100)
-
-mean(p_values < 0.05)
-
-tibble(
-    p_value = p_values,
-    significant = p_values < 0.05
-) |> 
-    ggplot(aes(x = p_value)) +
-    ggdist::geom_dots()
-```
-
 ## Type I Error for data w/o interaction
+
+### Large N
 ```{r}
 N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-simdata-H0-freq")
-RESULTS_FILE <- "sim-simdata-H0-no-int.parquet"
+RESULTS_FILE_LARGE <- "sim-simdata-H0-no-int-1k.parquet"
 N_CORES <- 8
 
 # define model specs
 main_formula <- ordered(y) ~ tx + poly(time, 3) + yprev
 cumulative_formula <- cumulative(reverse = TRUE, parallel = FALSE ~ poly(time, 3))
-
-t1 <- Sys.time()
-
-message(glue("Starting {N_SIMULATIONS} new simulations on {N_CORES} cores..."))
 
 future::plan(future.callr::callr, workers = N_CORES)
 
@@ -202,45 +137,49 @@ results <- furrr::future_map_dfr(
 )
 
 write_parquet(results, here(OUTPUT_PATH, RESULTS_FILE))
+```
 
-message(glue("Finished {N_SIMULATIONS} simulations."))
+### Small N
 
-t2 <- Sys.time()
+```{r}
+RESULTS_FILE_SMALL <- "sim-simdata-H0-no-int-250.parquet"
 
-message("Simulation process finished.")
-t2-t1
+results <- furrr::future_map_dfr(
+    .x = 1:N_SIMULATIONS,
+    .f = ~ run_simulation_iteration(
+        iter_num = .x,
+        full_data = df_full_no_int,
+        model_formula = main_formula,
+        cumulative_arg = cumulative_formula,
+        sample_size = 250,
+        seed = 888
+    ),
+    .options = furrr_options(seed = TRUE),
+    .progress = TRUE,
+    .id = "iter" # Automatically adds an iteration column
+)
+
+write_parquet(results, here(OUTPUT_PATH, RESULTS_FILE_SMALL))
 ```
 
 
 ```{r}
 # Read and stack all draw files into a single data frame
-results <- read_parquet(here(OUTPUT_PATH, RESULTS_FILE))
+results_l_n <- read_parquet(here(OUTPUT_PATH, RESULTS_FILE_LARGE))
+results_s_n <- read_parquet(here(OUTPUT_PATH, RESULTS_FILE_SMALL))
 
-p_values <- results |> filter(term == "tx1") |> 
+p_values_l <- results_l_n |> filter(term == "tx1") |> 
     pull(`Pr...z..`)
 
-hist(p_values, breaks = 100)
+p_values_s <- results_s_n |> filter(term == "tx1") |> 
+    pull(`Pr...z..`)
 
-mean(p_values < 0.05)
+hist(p_values_l, breaks = 200, main = "Large N (1000)")
+hist(p_values_s, breaks = 200, main = "Small N (250)")
 
-tibble(
-    p_value = p_values,
-    significant = p_values < 0.05
-) |> 
-    ggplot(aes(x = p_value)) +
-    ggdist::geom_dots()
-```
-
-## Type I Error for data generated from VGLM fit
-
-```{r}
-vm2 <- vglm(
-  ordered(y) ~ tx + poly(time, 3) + yprev,
-  cumulative(reverse = TRUE, parallel = FALSE ~ poly(time, 3)),
-  data = df_full_no_int
-  )
-
-coef(vm2)
-
+mean(p_values_l < 0.05)
+jackknife_mcse(p_values_l < 0.05)
+mean(p_values_s < 0.05)
+jackknife_mcse(p_values_s < 0.05)
 ```
 
