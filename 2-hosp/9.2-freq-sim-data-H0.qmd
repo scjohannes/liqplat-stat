@@ -197,8 +197,8 @@ jackknife_mcse(p_values_s < 0.05)
 Function to run a single iteration
 
 ```{r}
-N_SIMULATIONS <- 8
-N_CORES <- 8
+N_SIMULATIONS <- 500
+N_CORES <- 28
 future::plan(future.callr::callr, workers = N_CORES)
 ```
 
@@ -226,7 +226,7 @@ if (sim_status$n_to_run > 0) {
             sample_size = 250
         ),
         .options = furrr_options(seed = TRUE, packages = c("rmsb", "data.table", "tidyverse")),
-        .progress = FALSE
+        .progress = TRUE
     )
     
     message(glue("Finished {sim_status$n_to_run} simulations."))
