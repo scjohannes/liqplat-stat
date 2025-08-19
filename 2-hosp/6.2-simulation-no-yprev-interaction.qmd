@@ -18,6 +18,8 @@ library(patchwork)
 set.seed(1234)
 ```
 
+
+
 ## Load model and dataset
 
 ```{r}
@@ -99,7 +101,7 @@ g <- function(yprev, t, gap, X, parameter = 0, extra) {
 
   baseline_effect <- sum(extra[baseline_coef_names] * X_nontx)
 
-  # 3.  time effect (proportional part) from pol(week, 2)
+  # 3.  time effect (proportional part) from pol(week, 3)
   time_effect <- extra[["week"]] * t + extra[["week^2"]] * (t^2) + extra[["week^3"]] * (t^3)
 
   # This is if yprev is equal to 1 (the reference group)
@@ -232,6 +234,25 @@ vm <- vglm(
 
 summary(vm)
 coef <- coef(vm)
+```
+
+Comparison with the ordinal model
+
+```{r}
+library(ordinal)
+
+om <- ordinal::clm(
+  formula = y ~ tx + poly(week, 3) + yprev + ecog_fstcnt + diagnosis,
+  nominal = ~ week,
+  data = df |> mutate(y = factor(y, ordered = TRUE))
+)
+
+omm <- clmm2(
+  location = y ~ tx + poly(week, 3) + yprev + ecog_fstcnt + diagnosis,
+  nominal = ~ week,
+  random = pat_id,
+  data = df |> mutate(y = factor(y, ordered = TRUE), pat_id = factor(pat_id))
+) 
 ```
 
 ## Baseline-Covariates

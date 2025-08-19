@@ -37,7 +37,7 @@ source("./functions/load-rhat-values.R")
 
 ## Markov Models
 
-### Resampling H0
+### Resampling H0 (empirical)
 
 #### Load draws + diagnostics
 ```{r}
@@ -87,7 +87,7 @@ rhat_plot_no_int_h0_cluster <- rhat_no_int_h0_cluster |>
 # ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
 
-### Plot probability of benefit
+#### Plot probability of benefit
 
 ```{r}
 p1 <- no_int_h0 |> 
@@ -202,6 +202,36 @@ formatted_summary <- all_summaries |>
 formatted_summary |> knitr::kable()
 
 saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
+```
+
+### SIMULATED DATA UNDER H0 -------------------
+
+```{r}
+# Load the simulated data
+
+# model used to simulate data and model used to analyze data match
+# no interaction
+# N = 250
+path <- "./2-hosp/output/sim-simdata-H0-no-int-bayes-250-correct/"
+no_int_h0 <- load_draws(path)
+rhat_no_int_h0 <- load_rhat_values(path = path)
+
+rhat_plot_no_int_h0 <- rhat_no_int_h0 |> 
+    plot_rhat(y = `tx=1`)
+
+p_benefit_plot_no_int_h0 <- no_int_h0 |> 
+    plot_p_benefit(param = `tx=1`)
+
+post_no_int_h0 <- no_int_h0 |> 
+  plot_posterior_distribution(x_variable = `tx=1`)
+
+summary_no_int_h0 <- no_int_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
 ```
 
 ## Count Regression

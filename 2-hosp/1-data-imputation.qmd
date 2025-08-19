@@ -200,6 +200,8 @@ densityplot(imputed_data_wide, ~diagnosis) #only 1 diagnosis category is missing
 stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
 ```
 
+I currently prefer the cluster level imputation.
+
 ## Select one imputation
 
 For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. I will use the data imputed in long format for the time being.

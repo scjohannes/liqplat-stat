@@ -17,7 +17,9 @@ library(VGAM)
 ```
 
 ```{r}
-source("./functions/jackknife_mcse.R")
+source(here("functions", "jackknife_mcse.R"))
+source(here("functions", "check-completed-simulations.R"))
+source(here("functions", "bayes-hosp-run-markov-simulation-iteration.R"))
 ```
 
 ## Load data
@@ -32,20 +34,21 @@ source("./functions/jackknife_mcse.R")
 set.seed(1234)
 
 # Load full dataset
-# If we reasign the treatment again and again, emergency room visits are a bit too rare and mess up transitions
-# We therefore collapse staet 3 and 4
-df_full <- read_parquet(here("2-hosp", "sim-data", "sim_data_po_const.parquet")) |> 
-    # mutate(
-    #     y = as.numeric(as.character(y)),
-    #     y = if_else(y == 4, 3, y),
-    #     y = if_else(y == 5, 4, y),
-    #     yprev = if_else(yprev == "4", "3", yprev),
-    #     yprev = factor(yprev)) |> 
+# underlying bayesian model 
+# y  ~ tx + pol(week, 3) + yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
+
+df_full <- read_parquet(here("2-hosp", "sim-data", "sim_data_no_interaction.parquet")) |> 
+    mutate(
+        y = as.numeric(as.character(y)),
+        y = if_else(y == 4, 3, y),
+        y = if_else(y == 5, 4, y),
+        yprev = if_else(yprev == "4", "3", yprev),
+        yprev = factor(yprev)) |> 
     filter(tx == "0") |> 
     select(id, tx, y, yprev, time)
 
 
-# model used for df_full_no_int
+# model used for df_full_no_int (vglm model)
 
 # vm <- vglm(
 #   ordered(y) ~ tx + week + I(week^2) + I(week^3) + yprev + ecog_fstcnt + diagnosis,
@@ -191,102 +194,44 @@ jackknife_mcse(p_values_s < 0.05)
 
 ## Bayesian Simulation
 
+Function to run a single iteration
+
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data, model_formula, prior_spec = NULL) {
-    # This function runs one full simulation iteration.
+N_SIMULATIONS <- 8
+N_CORES <- 8
+future::plan(future.callr::callr, workers = N_CORES)
+```
+
+## Small n (250)
+
+The model is correclty specified, i.e., correctly models time (uses rcs(time, 4)) instead of pol(time, 3) which was used during data generation but that really shouldn't matter, and correctly does not include an interaction. It just does not include some predictors that were used to generate the data. The only thing that's not 100% as in the data generating model, is that levels 3 and 4 have been collapsed into one level. 
+
+```{r}
+OUTPUT_PATH <- here("2-hosp", "output", "sim-simdata-H0-no-int-bayes-250-correct")
+sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
+
+if (sim_status$n_to_run > 0) {
+    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
     
-    # --- 1. Setup for the current iteration ---
-    set.seed(123 + iter_num)
-    iter_path <- file.path(base_path, glue("run_{iter_num}"))
-    if (!dir.exists(iter_path)) {
-        dir.create(iter_path, recursive = TRUE)
-    }
-
-    # Resample from data with no effect
-    tx_ids <- full_data |> 
-        distinct(id) |> 
-        sample_frac(2/3) |> pull(id)
-
-    data_for_model <- full_data |> 
-        mutate(
-            tx = if_else(id %in% tx_ids, "1", "0"),
-            tx = factor(tx, levels = c(0, 1)))
+    formula <- y  ~ tx + yprev + rcs(time, 4)
     
-    rm(full_data)
-
-
-    # --- 5. Save the data used for model fitting ---
-    saveRDS(data_for_model, file.path(iter_path, "data_for_model.rds"))
-
-
-    # --- 6. Fit the Model and Save ---
-
-    # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
-   
-    if (nrow(data_for_model) > 0) {
-        options(mc.cores = 1)
-        dd <- datadist(data_for_model)
-        options(datadist = 'dd')
-
-        # Forcefully place the 'dd' object into the global environment of the worker.
-        assign("dd", dd, envir = .GlobalEnv)
-        on.exit(rm(dd, envir = .GlobalEnv))
-
-        blrm_args <- list(
-            formula = model_formula,
-            data = data_for_model,
-            ppo = ~ time,
-            cppo = function(y) y,
-            refresh = 0,
-            iter = 2000,
-            chains = 4,
-            seed = 1234,
-            loo = FALSE,
-            method = "sampling"
-        )
-        
-        if (!is.null(prior_spec)) {
-            blrm_args$pcontrast <- prior_spec
-        }
-
-        model <- tryCatch({
-            do.call(blrm, blrm_args)
-        }, error = function(e) {
-            message(glue("ERROR in iteration {iter_num}: {e$message}"))
-            
-            saveRDS(data_for_model, file.path(iter_path, "problematic_data.rds"))
-            
-            return(NULL)
-        })
-        
-        # --- 7. Save the results ONLY if the model ran successfully ---
-        if (!is.null(model)) {
-            # Save the full model object
-            saveRDS(model, file.path(iter_path, "model_object.rds"))
-            
-            # Save just the MCMC draws to a separate file
-            saveRDS(as.data.table(model$draws), file.path(iter_path, "model_draws.rds"))
-
-            rhat_values <- stanDx(model) |> 
-                data.frame() |> 
-                rownames_to_column()  |> 
-                select(-n_eff) |> 
-                pivot_wider(names_from = rowname, values_from = Rhat)
-
-            saveRDS(rhat_values, file.path(iter_path, "rhat_values.rds"))
-
-            ess_ratios <- stanDx(model) |> 
-                data.frame() |> 
-                rownames_to_column()  |> 
-                select(-Rhat) |> 
-                pivot_wider(names_from = rowname, values_from = n_eff) |> 
-                mutate_all(~ . / (model$iter * model$chains))
-
-             saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
-        }
-    }
-    # Return a status message for progress tracking
-    return(glue("Iteration {iter_num} completed."))
+    # --- Run Simulations in Parallel ---
+    furrr::future_walk(
+        .x = sim_status$iters_to_run,
+        .f = ~run_simulation_iteration(
+            iter_num = .x,
+            base_path = OUTPUT_PATH,
+            full_data = df_full,
+            model_formula = formula,
+            sample_size = 250
+        ),
+        .options = furrr_options(seed = TRUE, packages = c("rmsb", "data.table", "tidyverse")),
+        .progress = FALSE
+    )
+    
+    message(glue("Finished {sim_status$n_to_run} simulations."))
+} else {
+    message("All simulations were already complete. No new runs started.")
 }
 ```
 
