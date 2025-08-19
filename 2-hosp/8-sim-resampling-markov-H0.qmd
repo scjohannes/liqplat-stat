@@ -7,7 +7,6 @@ Title: Examining Type I Error with Resampling - No Interaction time x yrev
 # Load Libraries
 library(Hmisc)
 library(rmsb)
-library(ggplot2)
 library(arrow)
 library(tidyverse)
 library(data.table)
@@ -34,10 +33,10 @@ df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |>
     select(id, tx, y, yprev, time = week)
 ```
 
-## Simulation function
+## Functions
 
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data) {
+run_simulation_iteration <- function(iter_num, base_path, full_data, model_formula) {
     # This function runs one full simulation iteration.
     
     # --- 1. Setup for the current iteration ---
@@ -67,13 +66,12 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     # --- 6. Fit the Model and Save ---
 
     # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
-    # if we move to computing cluster, maybe do marginalization
-    
+   
     if (nrow(data_for_model) > 0) {
         options(mc.cores = 1)
         model <- tryCatch({        
             blrm(
-                formula = y  ~ tx + yprev + rcs(time, 4),
+                formula = model_formula,
                 data = data_for_model,
                 ppo = ~ time,
                 cppo = function(y) y,
@@ -123,57 +121,124 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 }
 ```
 
-## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 1200
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int")
-N_CORES <- 28
+check_completed_simulations <- function(output_path, total_sims) {
+    completed_files <- fs::dir_ls(
+        path = output_path, 
+        glob = "*/model_draws.rds", 
+        recurse = TRUE
+    )
 
-message("Checking for previously completed simulation runs...")
+    completed_iters <- integer(0) 
+    if (length(completed_files) > 0) {
+        completed_iters <- stringr::str_extract(completed_files, "(?<=run_)\\d+") |>
+            as.integer() |>
+            na.omit() |>
+            unique()
+    }
 
-completed_files <- fs::dir_ls(path = OUTPUT_PATH, glob = "*/model_draws.rds", recurse = TRUE)
+    all_possible_iters <- 1:total_sims
+    iters_to_run <- setdiff(all_possible_iters, completed_iters)
 
-completed_iters <- integer(0) 
-if (length(completed_files) > 0) {
-    completed_iters <- stringr::str_extract(completed_files, "(?<=run_)\\d+") |>
-        as.integer() |>
-        na.omit() |>
-        unique()
+    return(list(
+        iters_to_run = iters_to_run,
+        n_to_run = length(iters_to_run),
+        n_completed = length(completed_iters)
+    ))
 }
+```
+## Run Simulations
+```{r}
+N_SIMULATIONS <- 1204
+N_CORES <- 28
+future::plan(future.callr::callr, workers = N_CORES)
+```
 
-# Determine which iterations still need to be run
-all_possible_iters <- 1:N_SIMULATIONS
-iters_to_run <- setdiff(all_possible_iters, completed_iters)
+### No yprev x time interaction
+```{r}
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int")
+sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
 
-n_to_run <- length(iters_to_run)
-n_completed <- length(completed_iters)
-
-message(glue("{n_completed} of {N_SIMULATIONS} iterations are already complete."))
-t1 <- Sys.time()
-if (n_to_run > 0) {
-    message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
+if (sim_status$n_to_run > 0) {
+    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
     
-    future::plan(future.callr::callr, workers = N_CORES)
+    formula <- y  ~ tx + yprev + rcs(time, 4)
     
     # --- Run Simulations in Parallel ---
     furrr::future_walk(
-        .x = iters_to_run,
+        .x = sim_status$iters_to_run,
         .f = ~run_simulation_iteration(
             iter_num = .x,
             base_path = OUTPUT_PATH,
-            full_data = df
+            full_data = df,
+            model_formula = formula
         ),
         .options = furrr_options(seed = TRUE),
         .progress = FALSE
     )
     
-    message(glue("Finished {n_to_run} simulations."))
+    message(glue("Finished {sim_status$n_to_run} simulations."))
 } else {
     message("All simulations were already complete. No new runs started.")
 }
-t2 <- Sys.time()
+```
 
-message("Simulation process finished.")
-#Duration of Simulation
-t2-t1
+### Linear nteraction time x yprev
+
+```{r}
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-linear-int")
+sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
+
+if (sim_status$n_to_run > 0) {
+    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
+
+    formula <- y  ~ tx + yprev + rcs(time, 4) + time %ia% yprev
+    
+    # --- Run Simulations in Parallel ---
+    furrr::future_walk(
+        .x = sim_status$iters_to_run,
+        .f = ~run_simulation_iteration(
+            iter_num = .x,
+            base_path = OUTPUT_PATH,
+            full_data = df,
+            model_formula = formula
+        ),
+        .options = furrr_options(seed = TRUE),
+        .progress = FALSE
+    )
+    
+    message(glue("Finished {sim_status$n_to_run} simulations."))
+} else {
+    message("All simulations were already complete. No new runs started.")
+}
+```
+
+### Full Interaction time x yprev
+
+```{r}
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-full-int")
+sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
+
+if (sim_status$n_to_run > 0) {
+    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
+    
+    formula <- y  ~ tx + yprev * rcs(time, 4)
+    
+    # --- Run Simulations in Parallel ---
+    furrr::future_walk(
+        .x = sim_status$iters_to_run,
+        .f = ~run_simulation_iteration(
+            iter_num = .x,
+            base_path = OUTPUT_PATH,
+            full_data = df,
+            model_formula = formula
+        ),
+        .options = furrr_options(seed = TRUE),
+        .progress = FALSE
+    )
+    
+    message(glue("Finished {sim_status$n_to_run} simulations."))
+} else {
+    message("All simulations were already complete. No new runs started.")
+}
 ```

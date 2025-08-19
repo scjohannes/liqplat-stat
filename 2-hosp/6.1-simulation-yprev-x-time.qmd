@@ -1,5 +1,5 @@
 ---
-Title: Simulation of different scenarios
+Title: Simulation of different scenarios, all with yprev x time
 ---
 
 ## Setup
@@ -61,7 +61,7 @@ tx <- sample(0:1, N, replace = TRUE) # Sample treatment assignment
 X <- cbind(X_baseline, tx) 
 ```
 
-## PO tx effect, constant over time, full yprev x time interaction
+## G Function for PO tx effect, constant over time, full yprev x time interaction
 
 - Proportional Part: Effects that are constant across all k-1 logits (e.g., yprev, gap, baseline covariates, pol(week,3)).
 - Non-Proportional Part: The week x f(y) term, which varies with the outcome level k. For our model cppo = function(y) y, this term is k * week * \gamma_{week}.
@@ -157,7 +157,7 @@ g <- function(yprev, t, gap, X, parameter = 0, extra) {
 formals(g)$extra <- extra
 ```
 
-## G-Function for PO tx effect, 0 at t = 0, linearly increasing over time
+## G-Function for PO tx effect, 0 at t = 0, linearly increasing over time, full yprev x time
 
 - The functions is specifically for a simulation over 26 weeks of follow-up (hardcoded)
 - the parameter value passed to the function logodds is the parameter at week 26
@@ -238,7 +238,7 @@ g2 <- function(yprev, t, gap, X, parameter = 0, extra) {
 formals(g2)$extra <- extra
 ```
 
-## G-Function for constant nonPO Tx Effect
+## G-Function for constant nonPO Tx Effect, full yprev x time
 
 - Assume that effect on mortality is smaller than effect on planned / unplanned hospitalizations
 

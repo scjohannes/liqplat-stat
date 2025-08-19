@@ -22,6 +22,8 @@ library(VGAM)
 
 ```{r}
 source("./functions/jackknife_mcse.R")
+
+simulate <- FALSE
 ```
 
 ## Load data
@@ -149,6 +151,9 @@ run_simulation_iteration_boot <- function(iter_num, base_path, full_data, main_f
 }
 ```
 
+Using ordinal package
+
+
 ## Run Parallelized Simulation
 
 ```{r}
@@ -162,94 +167,96 @@ OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-freq")
 RESULTS_FILE_NO <- "sim-resampling-H0-no-int-freq.parquet"
 RESULTS_FILE_NO_BOOT <- "sim-resampling-H0-no-int-freq-boot.parquet"
 
-main_formula <- ordered(y) ~ tx + rcs(time, 4) + yprev
-cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~ rcs(time, 4))
+if(simulate){
+    main_formula <- ordered(y) ~ tx + rcs(time, 4) + yprev
+    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~ rcs(time, 4))
 
-future::plan(future.callr::callr, workers = N_CORES)
+    future::plan(future.callr::callr, workers = N_CORES)
 
-# --- Run Simulations in Parallel ---
-results_non <- furrr::future_map_dfr(
-    .x = 1:N_SIMULATIONS,
-    .f = ~ run_simulation_iteration(
-        iter_num = .x,
-        full_data = df,
-        main_formula = main_formula,
-        cumulative_arg = cumulative_arg
-    ),
-    .options = furrr_options(seed = TRUE, packages = "rms"),
-    .progress = TRUE,
-    .id = "iter" # Automatically adds an iteration column
-)
+    # --- Run Simulations in Parallel ---
+    results_non <- furrr::future_map_dfr(
+        .x = 1:N_SIMULATIONS,
+        .f = ~ run_simulation_iteration(
+            iter_num = .x,
+            full_data = df,
+            main_formula = main_formula,
+            cumulative_arg = cumulative_arg
+        ),
+        .options = furrr_options(seed = TRUE, packages = "rms"),
+        .progress = TRUE,
+        .id = "iter" # Automatically adds an iteration column
+    )
 
-results_non_boot <- furrr::future_map_dfr(
-    .x = 1:N_SIMULATIONS,
-    .f = ~ run_simulation_iteration_boot(
-        iter_num = .x,
-        full_data = df,
-        main_formula = main_formula,
-        cumulative_arg = cumulative_arg
-    ),
-    .options = furrr_options(seed = TRUE, packages = "rms"),
-    .progress = TRUE,
-    .id = "iter" # Automatically adds an iteration column
-)
+    results_non_boot <- furrr::future_map_dfr(
+        .x = 1:N_SIMULATIONS,
+        .f = ~ run_simulation_iteration_boot(
+            iter_num = .x,
+            full_data = df,
+            main_formula = main_formula,
+            cumulative_arg = cumulative_arg
+        ),
+        .options = furrr_options(seed = TRUE, packages = "rms"),
+        .progress = TRUE,
+        .id = "iter" # Automatically adds an iteration column
+    )
 
-write_parquet(results, here(OUTPUT_PATH, RESULTS_FILE_NO))
-write_parquet(results_non_boot, here(OUTPUT_PATH, RESULTS_FILE_NO_BOOT))
+    write_parquet(results, here(OUTPUT_PATH, RESULTS_FILE_NO))
+    write_parquet(results_non_boot, here(OUTPUT_PATH, RESULTS_FILE_NO_BOOT))
+}
 ```
 
 ### Sim with linear Interaction
 
 ```{r}
-main_formula <- ordered(y)  ~ tx + rcs(time, 4) + yprev + time %ia% yprev
-cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  rcs(time, 4))
-
 RESULTS_FILE_LIN <- "sim-resampling-H0-linear-int-freq.parquet"
 
+if(simulate){
+    main_formula <- ordered(y)  ~ tx + rcs(time, 4) + yprev + time %ia% yprev
+    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  rcs(time, 4))
 
-# --- Run Simulations in Parallel ---
-results_int <- furrr::future_map_dfr(
-    .x = 1:N_SIMULATIONS,
-    .f = ~ run_simulation_iteration(
-        iter_num = .x,
-        full_data = df,
-        main_formula = main_formula,
-        cumulative_arg = cumulative_arg
-    ),
-    .options = furrr_options(seed = TRUE, packages = "rms"),
-    .progress = TRUE,
-    .id = "iter" # Automatically adds an iteration column
-)
+    # --- Run Simulations in Parallel ---
+    results_int <- furrr::future_map_dfr(
+        .x = 1:N_SIMULATIONS,
+        .f = ~ run_simulation_iteration(
+            iter_num = .x,
+            full_data = df,
+            main_formula = main_formula,
+            cumulative_arg = cumulative_arg
+        ),
+        .options = furrr_options(seed = TRUE, packages = "rms"),
+        .progress = TRUE,
+        .id = "iter" # Automatically adds an iteration column
+    )
 
-write_parquet(results_int, here(OUTPUT_PATH, RESULTS_FILE_LIN))
+    write_parquet(results_int, here(OUTPUT_PATH, RESULTS_FILE_LIN))
+}
 ```
 
 ### Sim Second Order, no interaction
 
 ```{r}
 RESULTS_FILE_SECOND <- "sim-resampling-H0-second-order.parquet"
+if(simulate){
+    main_formula <- ordered(y)  ~ tx + rcs(time, 4) + yprev + ypprev
+    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  rcs(time, 4))
 
-main_formula <- ordered(y)  ~ tx + rcs(time, 4) + yprev + ypprev
-cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  rcs(time, 4))
 
+    # --- Run Simulations in Parallel ---
+    results_second <- furrr::future_map_dfr(
+        .x = 1:N_SIMULATIONS,
+        .f = ~ run_simulation_iteration(
+            iter_num = .x,
+            full_data = df_ypprev,
+            main_formula = main_formula,
+            cumulative_arg = cumulative_arg
+        ),
+        .options = furrr_options(seed = TRUE, packages = "rms"),
+        .progress = TRUE,
+        .id = "iter"
+    )
 
-# --- Run Simulations in Parallel ---
-results_second <- furrr::future_map_dfr(
-    .x = 1:N_SIMULATIONS,
-    .f = ~ run_simulation_iteration(
-        iter_num = .x,
-        full_data = df_ypprev,
-        main_formula = main_formula,
-        cumulative_arg = cumulative_arg
-    ),
-    .options = furrr_options(seed = TRUE, packages = "rms"),
-    .progress = TRUE,
-    .id = "iter"
-)
-
-write_parquet(results_second, here(OUTPUT_PATH, RESULTS_FILE_SECOND))
-
-message(glue("Finished {N_SIMULATIONS} simulations."))
+    write_parquet(results_second, here(OUTPUT_PATH, RESULTS_FILE_SECOND))
+}
 ```
 
 ## Type I Error Rate
@@ -294,7 +301,6 @@ knitr::kable(results_summary, caption = "Type I Error Rates with Monte Carlo Sta
 ```
 
 ### With Bootstrapping, 500 N
-
 
 ```{r}
 results_non_boot <- read_parquet(here(OUTPUT_PATH, RESULTS_FILE_NO_BOOT))
