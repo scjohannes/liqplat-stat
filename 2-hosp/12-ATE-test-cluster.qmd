@@ -32,6 +32,25 @@ model <- readRDS("./2-hosp/models/model_hosp_rcs_cluster_no_int.rds")
 generate_SOPS <- TRUE
 ```
 
+The brms package does not make predictions with the random effects. If we want
+to do so, we have to do so manually:
+
+Need to have cmdstan installed.
+
+```{r}
+s <- stanGet(model)
+draws <- posterior::as_draws_df(s)
+draws_ri <- draws |> select(starts_with("gamma["), .chain, .iteration, .draw) # don't use gamma_raw
+```
+
+We now want to manually recreate the prediction of predict.blrm and
+sopmarkovordm. If we have a perfect match, we'll work in the random effects.
+posterior::as_draws_df(stanGet(model))
+
+```{r}
+
+```
+
 ## Marginalized State Occupancy Probabilities for model 1 (full int, non clustered)
 ```{r}
 baseline_df <- filter(df, time == 1) |> as.data.table()
