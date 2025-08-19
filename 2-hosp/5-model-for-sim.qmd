@@ -27,13 +27,13 @@ df <- read_parquet("./data/hosp_long_weeks.parquet") |>
 
 Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
 ```{r}
-fit <- TRUE
+fit <- FALSE
 generate_SOPS <- FALSE
 ```
 
 ## Model fitting
 
-### No treatment x time interaction
+### Full yprev x time interaction
 - We will use model as a basis for simulating different scenarios.
 - We don't interact tx * time because there is not treatment effect in this data. 
 - Therefore also no nonPO for tx.  
@@ -115,8 +115,7 @@ stanDx(model_2)
 stanDxplot(model_2)
 ```
 
-### Linear interaction with yprev and time
-
+### Linear interaction yprev x time
 
 ```{r}
 if (fit) {
@@ -164,7 +163,6 @@ dd <- datadist(df)
   options(mc.cores = 4)
 
   Sys.setenv(RSTUDIO = 1)
-      t1 <- Sys.time()
       model_4 <-
       blrm(
         formula = y  ~ tx + pol(week, 3) * yprev + cluster(id),
@@ -178,8 +176,6 @@ dd <- datadist(df)
         method = "sampling",
         backend = "cmdstan"
     )
-    t2 <- Sys.time()
-    t2 - t1
     saveRDS(model_4, "./2-hosp/models/model_hosp_pol_cluster.rds")
 
 
@@ -195,7 +191,7 @@ stanDxplot(model_4)
 ```
 
 
-## Marginalized State Occupancy Probabilities
+## Marginalized State Occupancy Probabilities for model 1 (full int, non clustered)
 ```{r}
 baseline_df <- filter(df, week == 1) |> as.data.table()
 ```
@@ -319,6 +315,8 @@ sop_df |>
    linetype = "Treatment")
 
 fig_marginalized
+
+ggsave("./img/hosp-marginalized_sop-full-int.svg", fig_marginalized, width = 10, height = 6)
 ```
 
 Stacked bar chart using median point estimate
@@ -340,6 +338,8 @@ sop_df |>
    subtitle = "Marginalized state occupancy probabilities",
    fill = "State",
    linetype = "Treatment")
+
+ggsave("./img/hosp-marginalized_sop-stacked-full-int.svg", width = 10, height = 6)
 ```
 
 Posterior of Estimand (Time out of hospital)
@@ -356,6 +356,8 @@ difference_in_mean_time_home |>
   ggplot() +
   aes(x = difference) +
   ggdist::stat_dist_halfeye(fill = "orange")
+
+ggsave("./img/hosp-difference-in-mean-time-home-full-int.svg", width = 8, height = 7)
 ```
 
 

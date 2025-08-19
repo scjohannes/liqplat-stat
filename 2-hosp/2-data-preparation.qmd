@@ -32,8 +32,7 @@ df <- df |>
 
 ## Add lag + reduce to weeks for simulations
 
-We will reduce the granularity of time to weeks for the simulation.
-
+We will reduce the granularity of time to weeks for the simulations.
 
 ```{r}
 # Convert time-scale to weeks

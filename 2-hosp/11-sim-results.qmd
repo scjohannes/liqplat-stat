@@ -37,7 +37,7 @@ source("./functions/load-rhat-values.R")
 
 ## Markov Models
 
-### Resampling H0
+### Resampling H0 (empirical)
 
 #### Load draws + diagnostics
 ```{r}
@@ -45,6 +45,11 @@ source("./functions/load-rhat-values.R")
 path <- "./2-hosp/output/sim-resampling-H0-no-int/"
 no_int_h0 <- load_draws(path)
 rhat_no_int_h0 <- load_rhat_values(path = path)
+
+# H0 no interaction with regularizing prior
+path <- "./2-hosp/output/sim-resampling-H0-no-int-regularizing/"
+no_int_h0_reg <- load_draws(path)
+rhat_no_int_h0_reg <- load_rhat_values(path = path)
 
 # H0 linear interaction
 path <- "./2-hosp/output/sim-resampling-H0-linear-int/"
@@ -67,22 +72,28 @@ rhat_no_int_h0_cluster <- load_rhat_values(path = path)
 rhat_plot_no_int_h0 <- rhat_no_int_h0 |> 
     plot_rhat(y = `tx=1`)
 
+rhat_plot_no_int_h0_reg <- rhat_no_int_h0_reg |>
+    plot_rhat(y = `tx=1`)
+
 rhat_plot_linear_int_h0 <- rhat_linear_int_h0 |>
     plot_rhat(y = `tx=1`)
 
 rhat_plot_full_int_h0 <- rhat_full_int_h0 |>
     plot_rhat(y = `tx=1`)
 
-rhat_plot_no_int_h0 <- rhat_no_int_h0_cluster |> 
+rhat_plot_no_int_h0_cluster <- rhat_no_int_h0_cluster |> 
     plot_rhat(y = beta.1.)
 
 # ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
 
-### Plot probability of benefit
+#### Plot probability of benefit
 
 ```{r}
 p1 <- no_int_h0 |> 
+    plot_p_benefit(param = `tx=1`)
+
+p1_reg <- no_int_h0_reg |>
     plot_p_benefit(param = `tx=1`)
 
 p2 <- linear_int_h0 |>
@@ -94,7 +105,7 @@ p3 <- full_int_h0 |>
 p4 <- no_int_h0_cluster |>
     plot_p_benefit(param = `tx=1`)
 
-p1 + p2 + p3
+(p1 + p2) / (p3 + p4)
 
 
 
@@ -106,6 +117,9 @@ p1 + p2 + p3
 post_no_int_h0 <- no_int_h0 |> 
   plot_posterior_distribution(x_variable = `tx=1`)
 
+post_no_int_h0_reg <- no_int_h0_reg |>
+  plot_posterior_distribution(x_variable = `tx=1`)
+
 post_linear_int_h0 <- linear_int_h0 |>
   plot_posterior_distribution(x_variable = `tx=1`)
 
@@ -115,13 +129,21 @@ post_full_int_h0 <- full_int_h0 |>
 post_no_int_h0_cluster <- no_int_h0_cluster |> 
   plot_posterior_distribution(x_variable = `tx=1`)
 
-post_no_int_h0 + post_linear_int_h0 + post_full_int_h0
+(post_no_int_h0 + post_linear_int_h0) / (post_full_int_h0 + post_no_int_h0_cluster)
 
 # ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
 summary_no_int_h0 <- no_int_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_no_int_h0_reg <- no_int_h0_reg |>
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx=1`, 
@@ -161,10 +183,58 @@ all_summaries <- bind_rows(
   'no_int' = summary_no_int_h0,
   'linear_int' = summary_linear_int_h0,
   'full_int' = summary_full_int_h0,
+  'no_int_cluster' = summary_no_int_h0_cluster,
   .id = 'model_type'
 )
 
+all_summaries |> tinytable::tt()
+
+formatted_summary <- all_summaries |> 
+  # transmute creates new columns and drops the old ones
+  transmute(
+    Model = model_type,
+    # sprintf() formats the numbers and combines them into one string
+    `Point Estimate` = sprintf("%.3f (%.3f)", mean_point_estimate, mcse_point_estimate),
+    `Rejection Rate` = sprintf("%.3f (%.3f)", prob_rejection, mcse_prob_rejection),
+    Bias             = sprintf("%.3f (%.3f)", mean_bias, mcse_bias),
+    Coverage         = sprintf("%.3f (%.3f)", mean_coverage, mcse_coverage),
+    `Empirical SE`   = sprintf("%.3f (%.3f)", emp_SE, mcse_emp_SE),
+    `Model SE`       = sprintf("%.3f (%.3f)", mean_modSE, mcse_modSE)
+  )
+
+formatted_summary |> knitr::kable()
+
 saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
+```
+
+### SIMULATED DATA UNDER H0 -------------------
+
+```{r}
+# Load the simulated data
+
+# model used to simulate data and model used to analyze data match
+# no interaction
+# N = 250
+path <- "./2-hosp/output/sim-simdata-H0-no-int-bayes-250-correct/"
+no_int_h0 <- load_draws(path)
+rhat_no_int_h0 <- load_rhat_values(path = path)
+
+rhat_plot_no_int_h0 <- rhat_no_int_h0 |> 
+    plot_rhat(y = `tx=1`)
+
+p_benefit_plot_no_int_h0 <- no_int_h0 |> 
+    plot_p_benefit(param = `tx=1`)
+
+post_no_int_h0 <- no_int_h0 |> 
+  plot_posterior_distribution(x_variable = `tx=1`)
+
+summary_no_int_h0 <- no_int_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
 ```
 
 ## Count Regression
@@ -226,3 +296,86 @@ summary_neg_binom_h0 <- neg_binom_h0 |>
         threshold = 0.95) |> 
     summarise_iterations()
 ```
+
+## DRS 26
+
+Not actually 26 categories, but 1 to max(number of days not at home) + 1 worse for people who died. In our resample dataset that 15 categories.
+
+### Resampling H0
+
+#### Load draws + diagnostics
+```{r}
+# H0 rmsb (default dirichlet prior)
+path <- "./2-hosp/output/sim-resampling-H0-drs26-rmsb/"
+drs26_rmsb_h0 <- load_draws(path)
+rhat_drs26_rmsb_h0 <- load_rhat_values(path = path)
+
+# H0 brms (default priors)
+path <- "./2-hosp/output/sim-resampling-H0-drs26-brms/"
+drs26_brms_h0 <- load_draws(path)
+rhat_drs26_brms_h0 <- load_rhat_values(path = path)
+```
+
+#### Convergence diagnostics
+```{r}
+rhat_plot_drs26_rmsb_h0 <- rhat_drs26_rmsb_h0 |> 
+    plot_rhat(y = `tx=1`)
+
+rhat_plot_drs26_rmsb_h0
+
+rhat_plot_drs26_brms_h0 <- rhat_drs26_brms_h0 |> 
+    plot_rhat(y = b_tx1)
+
+rhat_plot_drs26_brms_h0
+
+# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
+```
+
+### Plot probability of benefit
+
+```{r}
+p1 <- drs26_rmsb_h0 |> 
+    plot_p_benefit(param = `tx=1`)
+
+p1
+
+p2 <- drs26_brms_h0 |>
+    plot_p_benefit(param = b_tx1)
+p2
+
+# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_drs26_rmsb_h0 <- drs26_rmsb_h0 |> 
+  plot_posterior_distribution(x_variable = `tx=1`)
+
+post_drs26_rmsb_h0
+
+post_drs26_brms_h0 <- drs26_brms_h0 |> 
+  plot_posterior_distribution(x_variable = b_tx1)
+
+post_drs26_brms_h0
+
+# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+summary_drs26_rmsb_h0 <- drs26_rmsb_h0 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+summary_drs26_brms_h0 <- drs26_brms_h0 |>
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = b_tx1, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+```
+

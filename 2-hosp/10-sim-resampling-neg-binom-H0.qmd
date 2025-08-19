@@ -12,12 +12,14 @@ library(glue)
 library(fs)
 library(here)
 library(brms)
+library(rmsb)
 ```
 
 ## Load data
 
 ```{r}
 set.seed(1234)
+refit_model <- FALSE
 
 # Load full dataset
 # Collapse staet 3 and 4
@@ -30,14 +32,13 @@ df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |>
         tx = factor(tx)) |> 
     select(id, tx, y, yprev, time = week)
 
-model <- readRDS(here("2-hosp", "models", "model_neg_binom.rds"))
 
 surv_time <- df |> group_by(id) |> 
     mutate(surv_time = n()) |> 
     select(id, surv_time) |> 
     distinct()
 
-# weeks spent with at least one day in state 3 (hospital or ER)
+# weeks spent with at least one day in state 3 or 2 (hospital or ER)
 count_df <- df |> 
     group_by(id, tx) |> 
     count(y) |> 
@@ -46,24 +47,25 @@ count_df <- df |>
     filter(y == 3 | y == 2) |> # weeks in hospital
     summarise(n = sum(n)) |> 
     left_join(surv_time, by = "id") |>
-    # calcualte weeks not at home
     ungroup()
 
-# then we count something like weeks in hospital with offset of survival time 
-# some expsure weighted ratio, but not sure which one
+if(refit_model){
+    model <- brm(
+        n | rate(surv_time) ~ tx,
+        data = count_df, 
+        family = negbinomial(),
+        prior = c(
+            prior(normal(0, 100), class = "b")
+        ),
+        iter = 2000,
+        seed = 1234,
+        cores = 4,
+        file = here("2-hosp", "models", "model_neg_binom.rds")
+    )
 
-rm(df, surv_time)
-
-# model <- brm(
-#     n | rate(surv_time) ~ tx,
-#     data = count_df, 
-#     family = negbinomial(),
-#     prior = c(
-#         prior(normal(0, 100), class = "b")
-#     ),
-#     iter = 2000,
-#     seed = 1234,
-#     cores = 4)
+} else {
+    model <- readRDS(here("2-hosp", "models", "model_neg_binom.rds"))
+}
 ```
 
 I'm really not sure what estimand we are targeting, when we sum the days not at home (and not dead), and add a offset for the survival_time. For each patient, the prediction based on the model would be the number of days not at home, considering his survival time (at assuming a constant rate of the events). So is it just the same as summing SOP state 2 and 3 over time / the probabilities? The predicted value is the exp(log(linpred)) * survival time.
@@ -150,41 +152,56 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model) {
 }
 ```
 
-## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 1000
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-neg-binom")
-N_CORES <- 8
+check_completed_simulations <- function(output_path, total_sims) {
+    completed_files <- fs::dir_ls(
+        path = output_path, 
+        glob = "*/model_draws.rds", 
+        recurse = TRUE
+    )
 
-message("Checking for previously completed simulation runs...")
+    completed_iters <- integer(0) 
+    if (length(completed_files) > 0) {
+        completed_iters <- stringr::str_extract(completed_files, "(?<=run_)\\d+") |>
+            as.integer() |>
+            na.omit() |>
+            unique()
+    }
 
-completed_files <- fs::dir_ls(path = OUTPUT_PATH, glob = "*/model_draws.rds", recurse = TRUE)
+    all_possible_iters <- 1:total_sims
+    iters_to_run <- setdiff(all_possible_iters, completed_iters)
 
-completed_iters <- integer(0) 
-if (length(completed_files) > 0) {
-    completed_iters <- stringr::str_extract(completed_files, "(?<=run_)\\d+") |>
-        as.integer() |>
-        na.omit() |>
-        unique()
+    return(list(
+        iters_to_run = iters_to_run,
+        n_to_run = length(iters_to_run),
+        n_completed = length(completed_iters)
+    ))
 }
+```
 
-# Determine which iterations still need to be run
-all_possible_iters <- 1:N_SIMULATIONS
-iters_to_run <- setdiff(all_possible_iters, completed_iters)
+## Simulations
 
-n_to_run <- length(iters_to_run)
-n_completed <- length(completed_iters)
+Setup
+```{r}
+N_SIMULATIONS <- 1008
+N_CORES <- 8
+future::plan(future.callr::callr, workers = N_CORES)
+```
 
-message(glue("{n_completed} of {N_SIMULATIONS} iterations are already complete."))
-t1 <- Sys.time()
-if (n_to_run > 0) {
-    message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
+Parallelized Simulation
+```{r}
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-neg-binom")
+sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
+
+
+if (sim_status$n_to_run > 0) {
+    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
     
     future::plan(future.callr::callr, workers = N_CORES)
     
     # --- Run Simulations in Parallel ---
     furrr::future_walk(
-        .x = iters_to_run,
+        .x = sim_status$iters_to_run,
         .f = ~run_simulation_iteration(
             iter_num = .x,
             base_path = OUTPUT_PATH,
@@ -195,13 +212,10 @@ if (n_to_run > 0) {
         .progress = TRUE
     )
     
-    message(glue("Finished {n_to_run} simulations."))
+    message(glue("Finished {sim_status$n_to_run} simulations."))
 } else {
     message("All simulations were already complete. No new runs started.")
 }
-t2 <- Sys.time()
 
 message("Simulation process finished.")
-#Duration of Simulation
-t2-t1
 ```
