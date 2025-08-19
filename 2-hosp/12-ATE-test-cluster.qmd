@@ -10,17 +10,31 @@ library(tidyverse)
 library(data.table)
 library(arrow)
 library(rmsb)
+library(here)
+library(Hmisc)
 ```
 
 ## Load model
 
 ```{r}
+df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
+    mutate(
+        y = if_else(y == 4, 3, y),
+        y = if_else(y == 5, 4, y),
+        yprev = if_else(yprev == "4", "3", yprev),
+        yprev = factor(yprev)) |> 
+    select(id, tx, y, yprev, time = week)
+
 model <- readRDS("./2-hosp/models/model_hosp_rcs_cluster_no_int.rds")
+```
+
+```{r}
+generate_SOPS <- TRUE
 ```
 
 ## Marginalized State Occupancy Probabilities for model 1 (full int, non clustered)
 ```{r}
-baseline_df <- filter(df, week == 1) |> as.data.table()
+baseline_df <- filter(df, time == 1) |> as.data.table()
 ```
 
 ```{r}
@@ -31,11 +45,11 @@ write_SOP <- function(i, tx, baseline_df){
   sops <-
   soprobMarkovOrdm(
     model,
-    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, age = row$age, gender = row$gender, albumin = row$albumin, c_reactive_protein = row$c_reactive_protein, yprev=row$yprev),
+    data = list(id = row$id, tx = tx, yprev=row$yprev),
     times = 1:26,
-    ylevels = 1:5,
-    absorb = 5,
-    tvarname = "week",
+    ylevels = 1:4,
+    absorb = 4,
+    tvarname = "time",
     pvarname = "yprev"
   )
   
@@ -47,14 +61,14 @@ write_SOP <- function(i, tx, baseline_df){
   # Rename columns
   setnames(sops,
            old = c("V1", "V2", "V3", "value"),
-           new = c("draw", "week", "state", "sop"))
+           new = c("draw", "time", "state", "sop"))
   
-  sops$week <- as.integer(sops$week)
+  sops$time <- as.integer(sops$time)
   sops$state <- as.factor(sops$state)
   sops$tx <- tx
   sops$i <- i
   
-  folder <- glue::glue("./2-hosp/output/sops-sim-model/marginalized_sop_{tx}/msop_{i}.parquet")
+  folder <- glue::glue("./2-hosp/output/sops-cluster-model/marginalized_sop_{tx}/msop_{i}.parquet")
   
   arrow::write_parquet(
     x = sops,
@@ -66,13 +80,13 @@ write_SOP <- function(i, tx, baseline_df){
 ### Generate marginalized SOPs
 
 ```{r}
-future::plan(future.callr::callr, workers=10)
+future::plan(future.callr::callr, workers=8)
 
 # Control
 if (generate_SOPS) {
     furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df),
                        .progress=TRUE,
-                       .options = furrr_options(seed=TRUE))
+                       .options = furrr_options(seed=TRUE, packages=c("rmsb", "data.table", "tidyverse")))
 }
 ```
 
@@ -81,7 +95,7 @@ if (generate_SOPS) {
 if (generate_SOPS) {
     furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df),
                        .progress=TRUE,
-                       .options = furrr_options(seed=TRUE))
+                       .options = furrr_options(seed=TRUE, packages=c("rmsb", "data.table", "tidyverse")))
 }
 ```
 
@@ -89,25 +103,25 @@ if (generate_SOPS) {
 
 ```{r}
 # Get list of all files
-files <- fs::dir_ls("./2-hosp/output/sops-sim-model/marginalized_sop_0/", glob = "*.parquet")
+files <- fs::dir_ls("./2-hosp/output/sops-cluster-model/marginalized_sop_0/", glob = "*.parquet")
 
 # Read in each parquet file as a data.frame and merge into a data.table
 soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
 
 # Average SOPs over covariate settings -- for each state, day, and MCMC draw
-soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
+soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, time, draw, tx)]
 soc_df[, state := as.factor(state)]
 ```
 
 ```{r}
 # Get list of all files
-files <- fs::dir_ls("./2-hosp/output/sops-sim-model/marginalized_sop_1/", glob = "*.parquet")
+files <- fs::dir_ls("./2-hosp/output/sops-cluster-model/marginalized_sop_1/", glob = "*.parquet")
 
 # Read in each parquet file as a data.frame and merge into a data.table
 tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
 
 # Average SOPs over covariate settings -- for each state, day, and MCMC draw
-tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
+tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, time, draw, tx)]
 tx_df[, state := as.factor(state)]
 ```
 
@@ -125,7 +139,7 @@ sop_df <-
 fig_marginalized <-
 sop_df |>
   ggplot() +
-  aes(x = week, y = sop) +
+  aes(x = time, y = sop) +
   ggdist::stat_lineribbon(aes(fill = state, linetype = tx),
                           linewidth = 0.6,
                           alpha = 0.5,
@@ -142,18 +156,16 @@ sop_df |>
    linetype = "Treatment")
 
 fig_marginalized
-
-ggsave("./img/hosp-marginalized_sop-full-int.svg", fig_marginalized, width = 10, height = 6)
 ```
 
 Stacked bar chart using median point estimate
 
 ```{r}
 sop_df |>
-  group_by(state, week, tx) |> 
+  group_by(state, time, tx) |> 
   summarise(sop = median(sop)) |> 
   ggplot() +
-  aes(x = week, y = sop, fill = state) +
+  aes(x = time, y = sop, fill = state) +
   geom_col(position = "fill") +
   scale_fill_viridis_d(end = 0.9) +
   scale_x_continuous(breaks = 1:26) +
@@ -165,8 +177,6 @@ sop_df |>
    subtitle = "Marginalized state occupancy probabilities",
    fill = "State",
    linetype = "Treatment")
-
-ggsave("./img/hosp-marginalized_sop-stacked-full-int.svg", width = 10, height = 6)
 ```
 
 Posterior of Estimand (Time out of hospital)
@@ -183,8 +193,6 @@ difference_in_mean_time_home |>
   ggplot() +
   aes(x = difference) +
   ggdist::stat_dist_halfeye(fill = "orange")
-
-ggsave("./img/hosp-difference-in-mean-time-home-full-int.svg", width = 8, height = 7)
 ```
 
 
