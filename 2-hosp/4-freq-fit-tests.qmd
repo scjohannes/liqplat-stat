@@ -77,8 +77,7 @@ AIC(fit_first); AIC(fit_first_int); AIC(fit_second)
 BIC(fit_first); BIC(fit_first_int); BIC(fit_second)
 ```
 
-- According to AIC first-order fit with interaction
-- Improvement in fit is significant per likelihood ratio test
+Second order fit seems to be better than first order fit.
 
 ## Daily States
 

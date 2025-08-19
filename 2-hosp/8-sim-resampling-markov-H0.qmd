@@ -36,7 +36,7 @@ df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |>
 ## Functions
 
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data, model_formula) {
+run_simulation_iteration <- function(iter_num, base_path, full_data, model_formula, prior_spec = NULL) {
     # This function runs one full simulation iteration.
     
     # --- 1. Setup for the current iteration ---
@@ -69,19 +69,32 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model_formu
    
     if (nrow(data_for_model) > 0) {
         options(mc.cores = 1)
-        model <- tryCatch({        
-            blrm(
-                formula = model_formula,
-                data = data_for_model,
-                ppo = ~ time,
-                cppo = function(y) y,
-                refresh = 0,
-                iter = 2000,
-                chains = 4,
-                seed = 1234,
-                loo = FALSE,
-                method = "sampling"
-            )
+        dd <- datadist(data_for_model)
+        options(datadist = 'dd')
+
+        # Forcefully place the 'dd' object into the global environment of the worker.
+        assign("dd", dd, envir = .GlobalEnv)
+        on.exit(rm(dd, envir = .GlobalEnv))
+
+        blrm_args <- list(
+            formula = model_formula,
+            data = data_for_model,
+            ppo = ~ time,
+            cppo = function(y) y,
+            refresh = 0,
+            iter = 2000,
+            chains = 4,
+            seed = 1234,
+            loo = FALSE,
+            method = "sampling"
+        )
+        
+        if (!is.null(prior_spec)) {
+            blrm_args$pcontrast <- prior_spec
+        }
+
+        model <- tryCatch({
+            do.call(blrm, blrm_args)
         }, error = function(e) {
             message(glue("ERROR in iteration {iter_num}: {e$message}"))
             
@@ -149,8 +162,8 @@ check_completed_simulations <- function(output_path, total_sims) {
 ```
 ## Run Simulations
 ```{r}
-N_SIMULATIONS <- 1204
-N_CORES <- 28
+N_SIMULATIONS <- 100
+N_CORES <- 8
 future::plan(future.callr::callr, workers = N_CORES)
 ```
 
@@ -232,6 +245,49 @@ if (sim_status$n_to_run > 0) {
             base_path = OUTPUT_PATH,
             full_data = df,
             model_formula = formula
+        ),
+        .options = furrr_options(seed = TRUE),
+        .progress = FALSE
+    )
+    
+    message(glue("Finished {sim_status$n_to_run} simulations."))
+} else {
+    message("All simulations were already complete. No new runs started.")
+}
+```
+
+### No Interaction, but regularizing prior
+
+I want to test if a regularizing prior impact the frequentist type I error rate, as I could imaginge that the default prior of Normal(0, 100) could cause some issues. 
+
+Note: After 71 iterations it does not seem to change a lot, slightly lower bias, but impact seems neglibible. 
+
+```{r}
+OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int-regularizing")
+sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
+
+if (sim_status$n_to_run > 0) {
+    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
+    
+    formula <- y  ~ tx + yprev + rcs(time, 4)
+    
+    # Define the regularizing prior
+    prior_tx <- list(
+      c1 = list(tx = "1"),
+      contrast = expression(c1),
+      mu = 0,
+      sd = 2
+    )
+    
+    # --- Run Simulations in Parallel ---
+    furrr::future_walk(
+        .x = sim_status$iters_to_run,
+        .f = ~run_simulation_iteration(
+            iter_num = .x,
+            base_path = OUTPUT_PATH,
+            full_data = df,
+            model_formula = formula,
+            prior_spec = prior_tx
         ),
         .options = furrr_options(seed = TRUE),
         .progress = FALSE
