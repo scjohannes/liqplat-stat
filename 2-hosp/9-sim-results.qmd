@@ -137,7 +137,10 @@ summary_linear_int_h0 <- linear_int_h0 |>
         threshold = 0.95) |> 
     summarise_iterations()
 
-summary_full_int_h0 <- full_int_h0 |>
+summary_full_int_h0 <- full_int_h0 
+
+
+|>
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx=1`, 

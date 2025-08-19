@@ -112,12 +112,22 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
             saveRDS(data_for_model, file.path(iter_path, "problematic_data.rds"))
             
             return(NULL)
-        })
+        }, finally = {
+        message(glue("Cleaning up files for iteration {iter_num}..."))
+        
+        # Define the full path to the temporary file
+        file_to_delete <- file.path(iter_path, "lrmconppo")
+        
+        # Check if the file exists, then delete it
+        if (file.exists(file_to_delete)) {
+            unlink(file_to_delete)
+        }
+    })
         
         # --- 7. Save the results ONLY if the model ran successfully ---
         if (!is.null(model)) {
-            # Save the full model object
-            saveRDS(model, file.path(iter_path, "model_object.rds"))
+            # Save the full model object (it's too large)
+            # saveRDS(model, file.path(iter_path, "model_object.rds"))
             
             # Save just the MCMC draws to a separate file
             saveRDS(as.data.table(model$draws), file.path(iter_path, "model_draws.rds"))
@@ -135,6 +145,8 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
                 mutate_all(~ . / (model$iter * model$chains))
 
              saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
+
+             saveRDS(model$diagnostics, file.path(iter_path, "model_diagnostics.rds"))
         }
     }
     # Return a status message for progress tracking
@@ -144,7 +156,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 1000
+N_SIMULATIONS <- 1200
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int-cluster")
 N_CORES <- 28
 
