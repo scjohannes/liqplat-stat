@@ -553,14 +553,14 @@ all_predictions_tidy_1 <- all_predictions_raw_1 |>
   # 1. Turn rownames (which are the weeks) into a column
   rownames_to_column(var = "week") |> 
   group_by(pat_id) |> 
-  mutate(week = row_number()) |> 
+  mutate(week = row_number()+1) |> 
   ungroup()
 
 all_predictions_tidy_0 <- all_predictions_raw_0 |> 
   # 1. Turn rownames (which are the weeks) into a column
   rownames_to_column(var = "week") |> 
   group_by(pat_id) |> 
-  mutate(week = row_number()) |> 
+  mutate(week = row_number()+1) |> 
   ungroup()
 
 marginalized_sops <- bind_rows(
@@ -585,6 +585,7 @@ marginalized_sops |>
   geom_line() +
   scale_color_viridis_d(end = 0.9, name = "State") +
   scale_y_continuous(breaks = seq(0, 1, by = 0.1), limits = c(0, 1)) +
+  scale_x_continuous(breaks = seq(2, 26, by = 2)) +
   labs(
     title = "Marginalized State Occupancy Probabilities Over Time",
     x = "Week",
@@ -731,6 +732,7 @@ sim_df_forward |>
   geom_line() +
   scale_color_viridis_d(end = 0.9, name = "State") +
   scale_y_continuous(breaks = seq(0, 1, by = 0.1), limits = c(0, 1)) +
+  scale_x_continuous(breaks = seq(2, 26, by = 2)) +
   labs(
     title = "Simulated State Occupancy Over Time",
     x = "Week",
