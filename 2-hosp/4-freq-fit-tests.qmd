@@ -15,6 +15,8 @@ library(rmsb)
 library(furrr)
 library(VGAM)
 library(Hmisc)
+library(ordinal)
+library(marginaleffects)
 ```
 
 ## Load data
@@ -30,7 +32,8 @@ df <- read_parquet("./data/hosp_long_weeks.parquet") |>
 df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
     mutate(
         tx = factor(tx),
-        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        y = ordered(y)
     ) |> 
       select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
 
@@ -54,30 +57,416 @@ df_daily <- read_parquet("./data/hosp_long_daily.parquet") |>
 
 ## Weekly States
 
+### VGAM constrained
+
 ```{r}
-fit_first <- vglm(
-    ordered(y)  ~ rcs(week, 3) + yprev,
-    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(week, 3)),
-    data = na.omit(df_ypprev))
+d <- as.data.table(na.omit(df_ypprev))
+week_spl_m <- rcs(d$week, 4)
 
-fit_first_int <- vglm(
-    ordered(y)  ~ rcs(week, 3) * yprev,
-    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(week, 3)),
-    data = na.omit(df_ypprev))
+d$week_linear <- week_spl_m[, 1]
+d$week_nonlinear_1 <- week_spl_m[, 2]
+d$week_nonlinear_2 <- week_spl_m[, 3]
 
-fit_second <- vglm(
-    ordered(y)  ~ rcs(week, 3) + yprev + ypprev,
-    cumulative(reverse = TRUE, parallel = FALSE ~  rcs(week, 3)),
-    data = na.omit(df_ypprev))
+M <- 4
 
-lrtest(fit_second, fit_first)
-lrtest(fit_first_int, fit_first)
+cons <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
 
-AIC(fit_first); AIC(fit_first_int); AIC(fit_second)
-BIC(fit_first); BIC(fit_first_int); BIC(fit_second)
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+# PO model, first order -------------------------------------------------------------------
+fit_po <- vglm(
+  y ~ tx + yprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = TRUE, reverse = TRUE),
+  data = d
+)
+
+# pPO for linear time, first order ---------------------------------------------------------
+fit_non_po <- vglm(
+  y ~ tx + yprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons
+)
+
+AIC(fit_po); AIC(fit_non_po)
+
+# non-PO with interaction of yprev and linear time ------------------------------------------
+# constraints when we add interaction
+cons_lin_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+  "yprev:week_linear"  = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_non_po_lin_int <- vglm(
+  y ~ tx + yprev * week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_lin_int
+)
+
+# improves fit by a lot
+AIC(fit_non_po); AIC(fit_non_po_lin_int)
+
+
+# Second order, partial PO ------------------------------------------------------------------
+
+# constraints when we add interaction
+cons_second <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "ypprev"            = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_second_non_po <- vglm(
+  y ~ tx + yprev + ypprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second
+)
+
+# second order fit is substantially better
+AIC(fit_non_po); AIC(fit_second_non_po)
+
+# second order with interaction of yprev and linear time -------------------------------------------
+cons_second_lin_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "ypprev"            = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+  "yprev:week_linear"  = cbind(PO_effect = 1),
+  "ypprev:week_linear" = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_second_non_po_lin_int <- vglm(
+  y ~ tx + (yprev + ypprev) * week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second_lin_int
+)
+
+# dramatic improvement in fit
+AIC(fit_second_non_po); AIC(fit_second_non_po_lin_int)
+
+# second order model, no interaction with time, but interaction between yprev and ypprev ----------------------
+cons_second_yprev_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "ypprev"            = cbind(PO_effect = 1),
+  "yprev:ypprev"      = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_second_non_po_yprev_int <- vglm(
+  y ~ tx + yprev * ypprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second_yprev_int
+)
+# Results in intersecting linear predictors
 ```
 
-Second order fit seems to be better than first order fit.
+
+Second order fit seems to be better than first order fit, interaction of yprev and ypprev with previous time improves fit by a lot. 
+Interaction between yprev and ypprev results in intersecting linear predictors.
+
+### Bootstrapping CIs
+
+```{r}
+# Ensure the patient_id column is keyed for maximum data.table speed
+setkey(d, pat_id)
+
+M <- length(levels(d$y))-1 # NUmber of thresholds
+
+# Fit the original model to get the point estimate
+week_spl_m <- rcs(d$week, 4)
+d$week_linear <- week_spl_m[, 1]
+d$week_nonlinear_1 <- week_spl_m[, 2]
+d$week_nonlinear_2 <- week_spl_m[, 3]
+
+cons_second_lin_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"        = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                 = cbind(PO_effect = 1),
+  "yprev"              = cbind(PO_effect = 1),
+  "ypprev"             = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+  "yprev:week_linear"  = cbind(PO_effect = 1),
+  "ypprev:week_linear" = cbind(PO_effect = 1),
+  "ecog_fstcnt"        = cbind(PO_effect = 1),
+  "diagnosis"          = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_second_non_po_lin_int <- vglm(
+  y ~ tx + (yprev + ypprev) * week_linear + week_nonlinear_1 + week_nonlinear_2 + ecog_fstcnt + diagnosis,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second_lin_int
+)
+
+original_coefs <- coef(fit_second_non_po_lin_int)
+num_coefs <- length(original_coefs)
+
+# This function is designed to be called repeatedly inside a loop.
+run_single_bootstrap_all <- function(original_data, unique_ids, constraints, n_coef) {
+  
+  boot_ids <- sample(unique_ids, size = length(unique_ids), replace = TRUE)
+  
+  boot_d <- original_data[J(boot_ids), allow.cartesian = TRUE]
+
+  week_spl_m_boot <- tryCatch(rcs(boot_d$week, 4), error = function(e) NULL)
+  
+  if (is.null(week_spl_m_boot)) return(rep(NA_real_, n_coef))
+  
+  boot_d$week_linear      <- week_spl_m_boot[, 1]
+  boot_d$week_nonlinear_1 <- week_spl_m_boot[, 2]
+  boot_d$week_nonlinear_2 <- week_spl_m_boot[, 3]
+  
+  boot_coef_vector <- tryCatch({
+    fit_boot <- vglm(
+      y ~ tx + (yprev + ypprev) * week_linear + week_nonlinear_1 + week_nonlinear_2 + ecog_fstcnt + diagnosis,
+      family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+      data = boot_d,
+      constraints = constraints
+    )
+
+    coef(fit_boot)
+  }, error = function(e) {
+    rep(NA_real_, n_coef)
+  })
+  
+  return(boot_coef_vector)
+}
+
+B <- 1000
+patient_ids <- unique(d$pat_id)
+
+t1 <- Sys.time()
+boot_results_matrix <- sapply(1:B, function(i) {
+  if (i %% 100 == 0) cat("..", i)
+  run_single_bootstrap_all(
+    original_data = d, 
+    unique_ids = patient_ids, 
+    constraints = cons_second_lin_int,
+    n_coef = num_coefs
+  )
+})
+t2 <- Sys.time()
+cat("Bootstrapping took", round(difftime(t2, t1, units = "mins"), 2), "minutes\n")
+
+# Check for failed iterations (any column with all NAs)
+failed_boots <- sum(apply(boot_results_matrix, 2, function(col) all(is.na(col))))
+ci_percentile_matrix <- t(apply(boot_results_matrix, 1, quantile, probs = c(0.025, 0.975), na.rm = TRUE))
+
+# Combine original estimates with CIs into a single data frame for printing
+results_df <- data.frame(
+  Parameter = names(original_coefs),
+  Estimate = original_coefs,
+  CI_Lower = ci_percentile_matrix[, 1],
+  CI_Upper = ci_percentile_matrix[, 2]
+)
+row.names(results_df) <- NULL # Clean up row names
+```
+
+Bootstrapping SEs takes longer than fitting a Bayesian model. 
+
+
+
+
+
+### Ordinal package
+```{r}
+# PO for time
+fit_first_po <- clm(
+  formula = y ~ rcs(week, 4) + yprev,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+
+# PO for time with linear interaction
+fit_first_po_lin_int <- clm(
+  formula = y ~ rcs(week, 4) + yprev + yprev %ia% week,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+
+AIC(fit_first_po); AIC(fit_first_po_lin_int)
+
+# Better fit with linear interaction
+
+# Non-PO for time for linear term only
+fit_first_nonpo <- clm(
+  formula = y ~ rcs(week, 4) + yprev,
+  nominal = ~ week,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+
+AIC(fit_first_po); AIC(fit_first_nonpo)
+
+# Fit with non-PO for time is a lot better --> keep that
+
+# Non-PO for time with linear interaction
+fit_first_nonpo_lin_int <- clm(
+  formula = y ~ rcs(week, 4) + yprev + yprev %ia% week,
+  nominal = ~ week,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+
+AIC(fit_first_nonpo); AIC(fit_first_nonpo_lin_int)
+# Fit for interaction with time is marginally better, not sure if that's enough to matter
+
+# Remove interaction and add second lag
+fit_second_nonpo <- clm(
+  formula = y ~ rcs(week, 4) + yprev + ypprev,
+  nominal = ~ week,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+AIC(fit_first_nonpo); AIC(fit_second_nonpo)
+
+# fit with second lag is substantially better than first order fit
+
+fit_second_nonpo_yprev_int <- clm(
+  formula = y ~ rcs(week, 4) + yprev + ypprev,
+  nominal = ~ week,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+
+AIC(fit_second_nonpo); AIC(fit_second_nonpo_yprev_int)
+
+# Add interaction to to second order fit
+fit_second_nonpo_lin_int <- clm(
+  formula = y ~ rcs(week, 4) + yprev + ypprev + yprev %ia% week + ypprev %ia% week,
+  nominal = ~ week,
+  link = "logit",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE))
+)
+
+AIC(fit_second_nonpo); AIC(fit_second_nonpo_lin_int)
+# interaction again improves fit
+
+# add random intercept and check SD
+fit_second_nonpo_ri <- clmm2(
+  location = y ~ rcs(week, 4) + yprev + ypprev + yprev %ia% week + ypprev %ia% week,
+  nominal = ~ week,
+  random = id,
+  link = "logistic",
+  data = na.omit(df_ypprev) |> mutate(y = factor(y, ordered = TRUE), id = factor(pat_id)),
+  control = clmm2.control(
+    method = "nlminb")
+)
+
+fit_second_nonpo_ri
+```
+
+```{r}
+model_list <- list(
+  "fit_first_po" = fit_first_po,
+  "fit_first_po_lin_int" = fit_first_po_lin_int,
+  "fit_first_nonpo" = fit_first_nonpo,
+  "fit_first_nonpo_lin_int" = fit_first_nonpo_lin_int,
+  "fit_second_nonpo" = fit_second_nonpo,
+  "fit_second_nonpo_lin_int" = fit_second_nonpo_lin_int
+)
+
+results_df <- data.frame(
+  Step = 1:length(model_list),
+  Description = c(
+      "Baseline 1st-order PO",
+      "PO w/ time interaction",
+      "1st-order Non-PO (NPO)",
+      "NPO w/ time interaction",
+      "2nd-order NPO",
+      "2nd-order NPO w/ interactions"
+  ),
+  AIC = sapply(model_list, AIC)
+)
+
+results_df <- data.frame(
+  Description = c(
+      "Baseline 1st-order PO",
+      "PO w/ time interaction",
+      "1st-order Non-PO for time (NPO)",
+      "NPO w/ time interaction",
+      "2nd-order NPO",
+      "2nd-order NPO w/ interactions"
+  ),
+  AIC = sapply(model_list, AIC)
+)
+
+results_df |> knitr::kable()
+```
 
 ## Daily States
 
