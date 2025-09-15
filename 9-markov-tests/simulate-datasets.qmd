@@ -1,0 +1,264 @@
+---
+title: "Varying the Strength of a single continuous covariates"
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(VGAM)
+library(arrow)
+```
+
+## Simulate baseline data
+
+```{r}
+N <- 250000
+x_effects <- seq(-4, 4, by = 0.5)
+times <- 1:28
+
+# intercept and parameters
+ints <- c(-6, -3, -2.5, -2)
+
+# treatment effect
+parameter <- 0
+```
+
+## Simulation Function
+
+```{r}
+g <- function(yprev, t, tx_val, x_val, parameter = 0, extra_params) {
+    # 1. Treatment Effect
+    tx_effect <- parameter * tx_val
+    # 2. Effect of covariate X
+    cov_effect <- extra_params["X"] * x_val
+    # 3. Effect of time
+    time_effect <- extra_params["week"] * t
+    # 4. Previous state effect
+    yprev_effect <- 0
+    # Create the name to look up in the 'extra' vector, e.g., "yprev=2"
+    yprev_coef_name <- paste0('yprev=', yprev)
+    if (yprev_coef_name %in% names(extra_params)) {
+        yprev_effect <- extra_params[[yprev_coef_name]]
+    }
+    # Sum all effects to get the linear predictor
+    lp <- as.numeric(tx_effect + cov_effect + time_effect + yprev_effect)
+    return(lp)
+}
+```
+
+## Apply simulation function
+
+Create baseline data
+```{r}
+X_base <- data.frame(
+    tx = sample(c(0, 1), size = N, replace = TRUE),
+    X = rnorm(N),
+    yprev = sample(c("1", "2", "3", "4"), N, replace = TRUE,  prob = c(0.8, 0.1, 0.05, 0.05))
+) |>
+mutate(patient_id = row_number())
+```
+
+Generate datasets
+
+```{r}
+for (current_x_effect in x_effects) {
+    
+    cat(paste0("--- Starting simulation for X effect = ", current_x_effect, " ---\n"))
+
+    # a. Set the model parameters for the current scenario.
+    extra <- c(
+        `yprev=2` = log(10), 
+        `yprev=3` = log(3), 
+        `yprev=4` = log(40),
+        week      = log(0.95)
+    )
+    extra["X"] <- current_x_effect
+
+    # b. Initialize the matrix to store patient states over time.
+    state_matrix <- matrix(
+        as.numeric(X_base$yprev), 
+        nrow = N, 
+        ncol = length(times) + 1,
+        dimnames = list(X_base$patient_id, 0:28)
+    )
+
+    # c. Run the simulation over the time points.
+    for (t in times) {
+        yprev <- state_matrix[, t]
+        active_idx <- which(yprev != 5)
+        
+        if (length(active_idx) == 0) {
+          if (t <= max(times)) {
+            state_matrix[, (t + 1):ncol(state_matrix)] <- 5
+          }
+          break
+        }
+        
+        yprev_active <- yprev[active_idx]
+        X_active <- X_base[active_idx, ]
+        
+        lp <- mapply(
+            FUN = g,
+            yprev = yprev_active,
+            tx_val = X_active$tx,
+            x_val = X_active$X,
+            MoreArgs = list(t = t, parameter = parameter, extra_params = extra)
+        )
+        
+        thresholds_matrix <- outer(ints, lp, FUN = "+")
+        cum_probs <- t(plogis(thresholds_matrix))
+        prob_matrix <- cbind(cum_probs, 1) - cbind(0, cum_probs)
+        
+        y_new_active <- apply(prob_matrix, 1, function(p) {
+            sample(5:1, size = 1, prob = p)
+        })
+        
+        state_matrix[, t + 1] <- yprev
+        state_matrix[active_idx, t + 1] <- y_new_active
+    }
+
+    # d. Format the results into a long data frame.
+    final_data <- as.data.frame(state_matrix) |>
+        tibble::rownames_to_column(var = "patient_id") |>
+        tidyr::pivot_longer(
+            cols = -patient_id,
+            names_to = "time",
+            values_to = "state"
+        ) |>
+        mutate(
+            patient_id = as.integer(patient_id),
+            time = as.integer(time)
+        ) |>
+        left_join(X_base |> rename(yprev_initial = yprev), by = "patient_id") |>
+        arrange(patient_id, time) |>
+        group_by(patient_id) |>
+        mutate(yprev = lag(state)) |>
+        ungroup()
+
+    # e. Save the final data to a Parquet file.
+    file_name <- sprintf("simulation_x_effect_%.1f.parquet", current_x_effect)
+    write_parquet(final_data, file_name)
+    
+    cat(paste0("Saved data to '", file_name, "'\n\n"))
+}
+
+cat("--- All simulations complete. ---\n")
+
+```
+
+```{r}
+# # Create a matrix to store the state of each patient (row) at each time (col).
+# # Initialize with the baseline state (at time 0).
+# state_matrix <- matrix(as.numeric(X$yprev), nrow = N, ncol = length(times) + 1,
+#                        dimnames = list(X$id, 0:28))
+
+# for (t in times) {
+#     # Get the state of all patients from the previous time point.
+#     # For t=1, this gets column 1 (time 0). For t=2, it gets column 2 (time 1), etc.
+#     yprev <- state_matrix[, t]
+
+#     # Identify patients not yet in the absorbing state (5). These are 'active'.
+#     active_idx <- which(yprev != 5)
+    
+#     # If all patients are in the absorbing state, no need to continue.
+#     if (length(active_idx) == 0) {
+#       # Fill remaining time steps for any absorbed patients and break.
+#       if (t <= max(times)) {
+#         state_matrix[, (t+1):ncol(state_matrix)] <- 5
+#       }
+#       break
+#     }
+    
+#     # --- Calculation for active patients only ---
+    
+#     # a. Get the previous state and baseline covariate data for active patients.
+#     yprev_active <- yprev[active_idx]
+#     X_active <- X[active_idx, ]
+    
+#     # b. Apply the 'g' function to each active patient to get their linear predictor.
+#     lp <- mapply(
+#         FUN = g,
+#         yprev = yprev_active,
+#         tx_val = X_active$tx,
+#         x_val = X_active$X,
+#         MoreArgs = list(t = t, parameter = parameter, extra_params = extra)
+#     )
+
+#     # c. Calculate state probabilities from the linear predictor.
+#     # `outer` creates a matrix of thresholds (4 intercepts x n_active patients).
+#     thresholds_matrix <- outer(ints, lp, FUN = "+")
+    
+#     # `plogis` computes the cumulative probabilities P(Y<=j).
+#     # Transpose to get a matrix where each row is a patient.
+#     cum_probs <- t(plogis(thresholds_matrix))
+    
+#     # Calculate the probability for each state: P(Y=j) = P(Y<=j) - P(Y<=j-1).
+#     prob_matrix <- cbind(cum_probs, 1) - cbind(0, cum_probs)
+    
+#     # d. Sample the new state for each active patient.
+#     # Note: Y is reverse coded, so we sample from 5 to 1, and NOT from 1 to 5.
+#     y_new_active <- apply(prob_matrix, 1, function(p) {
+#       sample(5:1, size = 1, prob = p)
+#     })
+
+#     # --- Update the main state matrix ---
+    
+#     # First, carry forward the previous state for everyone pateints for the new time step t.
+#     # This is needed for absorbed patients
+#     state_matrix[, t+1] <- yprev
+#     # Then, update the states for the active patients with their newly sampled state.
+#     state_matrix[active_idx, t+1] <- y_new_active
+# }
+
+# long_data_forward <- as_tibble(state_matrix, rownames = "id") |> 
+#   pivot_longer(
+#     cols = -id,
+#     names_to = "time",
+#     values_to = "state"
+#   ) |> 
+#   mutate(
+#     id = as.integer(id),
+#     time = as.integer(time)
+#   ) |> 
+#   left_join(X |> rename(yprev_initial = yprev), by = "id") |> 
+#   group_by(id) |> 
+#   mutate(yprev = factor(lag(state, n = 1))) |> 
+#   filter(time > 0)
+```
+
+
+```{r}
+
+long_data_forward |> 
+    group_by(time, state) |> 
+    summarise(n = n(), .groups = "drop") |>
+    group_by(time) |>
+    mutate(
+        sop = n / sum(n),
+        state = factor(state)) |>
+    ggplot(aes(x = time, y = sop, group = state, color = state)) +
+    geom_line() +
+    theme_minimal()
+```
+
+## Fit model
+
+Fit model with and without covariate X. We want to examine bias. We will also want to examine how this affects the type I error rate. 
+
+```{r}
+d <- long_data_forward |> 
+    filter(yprev != "5")
+
+m <- vglm(
+        ordered(state) ~ tx + X + yprev + time, 
+        family = cumulative(reverse = TRUE, parallel = TRUE), 
+        data = d
+    )
+
+m2 <- vglm(
+        ordered(state) ~ tx + yprev + time, 
+        family = cumulative(reverse = TRUE, parallel = TRUE), 
+        data = d
+    )
+```
