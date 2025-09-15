@@ -75,3 +75,6 @@ nohup.out
 2-hosp/8.3-sim-resampling-markov-H0-full-int.rmarkdown
 2-hosp/8.4-sim-resampling-markov-H0-no-int-cluster.html
 .vscode/settings.json
+
+9-markov-tests/data
+9-markov-tests/output
