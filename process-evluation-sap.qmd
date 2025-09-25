@@ -52,22 +52,22 @@ sim_data <- tibble(
 group_assignments <- character(n_total_screened)
 is_eligible <- sim_data$eligible == 1
 group_assignments[!is_eligible] <- "Ineligible"
-group_assignments[is_eligible] <- sample(c(rep("Intervention", n_invited), rep("Control", n_control)))
+group_assignments[is_eligible] <- sample(c(rep("SAT", n_invited), rep("Control", n_control)))
 
 sim_data <- sim_data |>
   mutate(
     # Add the pre-defined group assignments
-    group = factor(group_assignments, levels = c("Intervention", "Control", "Ineligible")),
+    group = factor(group_assignments, levels = c("SAT", "Control", "Ineligible")),
 
     # Process outcomes based on group
-    offered_invitation = rbinom(n(), 1, ifelse(group == "Intervention", 0.95, 0)),
+    offered_invitation = rbinom(n(), 1, ifelse(group == "SAT", 0.95, 0)),
     accepted_invitation = rbinom(n(), 1, ifelse(offered_invitation == 1, 0.90, 0)),
 
-    # ctDNA outcomes (only for the intervention group)
-    ctdna_error = ifelse(group == "Intervention", rbinom(n(), 1, 0.05), NA),
-    ctdna_detected_baseline = ifelse(group == "Intervention", rbinom(n(), 1, 0.75), NA),
-    chip_suspicion = ifelse(group == "Intervention" & ctdna_detected_baseline == 1, rbinom(n(), 1, 0.20), NA),
-    actionable_alteration = ifelse(group == "Intervention", rbinom(n(), 1, 0.20), NA),
+    # ctDNA outcomes (only for the SAT group)
+    ctdna_error = ifelse(group == "SAT", rbinom(n(), 1, 0.05), NA),
+    ctdna_detected_baseline = ifelse(group == "SAT", rbinom(n(), 1, 0.75), NA),
+    chip_suspicion = ifelse(group == "SAT" & ctdna_detected_baseline == 1, rbinom(n(), 1, 0.20), NA),
+    actionable_alteration = ifelse(group == "SAT", rbinom(n(), 1, 0.20), NA),
 
     # Follow-up and survival endpoints for all patients
     follow_up_time = 12, # months
@@ -78,7 +78,7 @@ sim_data <- sim_data |>
     event_bsc = if_else(time_to_bsc < follow_up_time, 1, 0),
 
     targeted_therapy = rbinom(n(), 1, prob = case_when(
-        group == "Intervention" ~ 0.1,
+        group == "SAT" ~ 0.1,
         group == "Control" ~ 0.05,
         TRUE ~ 0.05 # For ineligible group
     )),
@@ -127,13 +127,13 @@ pred_eligible |>
 
 ## Invitation Offered by Physician
 
-To quantify the proportion of patients in the intervention arm who were scheduled for invitation and were subsequently offered participation by their physician.
+To quantify the proportion of patients who were scheduled for invitation and were subsequently offered participation by their physician.
 
 ```{r}
 #| label: offered
 
 offered_summary <- sim_data |> 
-  filter(grp == "Intervention") |> 
+  filter(grp == "SAT") |> 
   count(offered_invitation) |> 
   mutate(prop = n / sum(n))
 
@@ -141,7 +141,7 @@ offered_summary
 
 fit_offered <- brm(
   offered_invitation ~ 1,
-  data = sim_data |> filter(grp == "Intervention"),
+  data = sim_data |> filter(grp == "SAT"),
   family = bernoulli(),
   iter = 2000, 
   chains = 4, 
@@ -158,7 +158,7 @@ avg_predictions(fit_offered) |>
   stat_halfeye() +
   labs(
     title = "Posterior Distribution of Invitation Offer Probability",
-    subtitle = "For patients in the intervention group",
+    subtitle = "For patients in the SAT group",
     x = "Probability of being offered invitation", y = "Density"
   )
 ```
@@ -233,6 +233,7 @@ fit_ctdna_error <- brm(
   family = bernoulli(),
   iter = 2000, chains = 4, cores = 4, seed = 123,
   file = "9-process-evaluation/models/fit_ctdna_error.rds",
+  backend = "cmdstanr",
   file_refit = "on_change"
 )
 
@@ -243,6 +244,7 @@ fit_ctdna_detected <- brm(
   family = bernoulli(),
   iter = 2000, chains = 4, cores = 1, seed = 123,
   file = "9-process-evaluation/models/fit_ctdna_detected.rds",
+  backend = "cmdstanr",
   file_refit = "on_change"
 )
 
@@ -295,6 +297,7 @@ fit_chip <- brm(
   cores = 4, 
   seed = 123,
   file = "9-process-evaluation/models/fit_chip.rds",
+  backend = "cmdstanr",
   file_refit = "on_change"
 )
 
@@ -354,17 +357,17 @@ p5
 
 ## 5. Time to Treatment Switch or Stop or Death
 
-To compare the time from treatment initiation to the composite endpoint of treatment switch, stop, or death between the intervention and external control groups.
+To compare the time from treatment initiation to the composite endpoint of treatment switch, stop, or death between the SAT and external control groups.
 
 ```{r}
 #| label: time_to_switch
 #| output: false
 
 surv_data <- sim_data |> 
-  filter(grp %in% c("Intervention", "Control")) |> 
+  filter(grp %in% c("SAT", "Control")) |> 
   mutate(time_to_switch = pmin(time_to_switch, follow_up_time),
          event_switch = ifelse(time_to_switch < follow_up_time, 1, 0),
-         grp = factor(grp, levels = c("Intervention", "Control")))
+         grp = factor(grp, levels = c("SAT", "Control")))
 
 fit_surv_switch <- stan_surv(
   formula = Surv(time_to_switch, event_switch) ~ grp,
@@ -382,12 +385,12 @@ fit_surv_switch <- stan_surv(
 # label: time_to_switch_plots
 ps_switch <- posterior_survfit(
   fit_surv_switch, 
-  newdata = data.frame(grp = c("Intervention", "Control")),
+  newdata = data.frame(grp = c("SAT", "Control")),
   times = 0, 
   extrapolate = TRUE,
   control = list(edist = 12))
 
-panel_labels <- c('1' = "Intervention", '2' = "Control")
+panel_labels <- c('1' = "SAT", '2' = "Control")
 
 plot(ps_switch) + 
   ggplot2::facet_wrap(~ id, labeller = ggplot2::labeller(id = panel_labels))
@@ -397,7 +400,7 @@ plot(ps_switch)
 
 ph <- posterior_survfit(
   fit_surv_switch, 
-  newdata = data.frame(grp = c("Intervention", "Control")),
+  newdata = data.frame(grp = c("SAT", "Control")),
   type = "haz"
 )
 
@@ -408,7 +411,7 @@ plot(ph)
 # calculate median time to switch
 ps_switch_matrix <- posterior_survfit(
   fit_surv_switch, 
-  newdata = data.frame(grp = factor(c("Intervention", "Control"))),
+  newdata = data.frame(grp = factor(c("SAT", "Control"))),
   times = 0, 
   extrapolate = TRUE,
   control = list(edist = 12),
@@ -416,7 +419,7 @@ ps_switch_matrix <- posterior_survfit(
 )
 
 time_points <- sapply(ps_switch_matrix, function(x) attr(x, "times")[1])
-intervention_matrix <- sapply(ps_switch_matrix, function(x) x[, 1])
+SAT_matrix <- sapply(ps_switch_matrix, function(x) x[, 1])
 control_matrix <- sapply(ps_switch_matrix, function(x) x[, 2])
 
 get_posterior_median_times <- function(posterior_matrix, time_points) {
@@ -436,16 +439,16 @@ get_posterior_median_times <- function(posterior_matrix, time_points) {
   return(median_times)
 }
   
-intervention_medians <- get_posterior_median_times(intervention_matrix, time_points)
+SAT_medians <- get_posterior_median_times(SAT_matrix, time_points)
 # Get the full posterior distribution of median times for the Control group
 control_medians <- get_posterior_median_times(control_matrix, time_points)
-# Calculate the posterior distribution of the difference (Intervention - Control)
-difference_in_medians <- intervention_medians - control_medians
+# Calculate the posterior distribution of the difference (SAT - Control)
+difference_in_medians <- SAT_medians - control_medians
 
 group_medians_df <- data.frame(
-  median_time = c(intervention_medians, control_medians),
-  group = rep(c("Intervention", "Control"), 
-              each = length(intervention_medians))
+  median_time = c(SAT_medians, control_medians),
+  group = rep(c("SAT", "Control"), 
+              each = length(SAT_medians))
 )
 ggplot(group_medians_df, aes(x = median_time, y = group)) +
   ggdist::stat_halfeye() +
@@ -463,7 +466,7 @@ ggplot(difference_df, aes(x = difference)) +
   geom_vline(xintercept = 0, linetype = "dashed") +
   labs(
     title = "Posterior Distribution of the Difference in Median Times",
-    subtitle = "(Intervention - Control)",
+    subtitle = "(SAT - Control)",
     x = "Difference in Median Time",
     y = NULL
   )
@@ -471,7 +474,7 @@ ggplot(difference_df, aes(x = difference)) +
 
 ## 6. Actionable Alterations and Targeted Therapies
 
- To (1) estimate the proportion of patients in the intervention arm with at least one actionable alteration identified via ctDNA analysis, and (2) compare the proportion of patients receiving targeted therapies between the intervention and external control groups.
+ To (1) estimate the proportion of patients in the SAT arm with at least one actionable alteration identified via ctDNA analysis, and (2) compare the proportion of patients receiving targeted therapies between the SAT and external control groups.
 
 ```{r}
 #| label: actionable
@@ -479,7 +482,7 @@ ggplot(difference_df, aes(x = difference)) +
 # 6.1 Actionable Alterations
 fit_actionable <- brm(
   actionable_alteration ~ 1 + cancer_type,
-  data = sim_data |> filter(grp == "Intervention"),
+  data = sim_data |> filter(grp == "SAT"),
   family = bernoulli(),
   iter = 2000,chains = 4, cores = 1,
   seed = 123,
@@ -499,7 +502,7 @@ plot_predictions(fit_actionable, by = "cancer_type") +
 # 6.2 Comparison of Targeted Therapies
 fit_targeted <- brm(
   targeted_therapy ~ 1 + grp + age + cancer_type,
-  data = sim_data |> filter(grp %in% c("Intervention", "Control")),
+  data = sim_data |> filter(grp %in% c("SAT", "Control")),
   family = bernoulli(),
   iter = 2000,chains = 4, cores = 1,
   seed = 123,
@@ -522,7 +525,7 @@ comp_targeted |>
   geom_vline(xintercept = 0, linetype = "dashed") +
   labs(
     title = "Posterior of Difference in Probability of Receiving Targeted Therapy",
-    subtitle = "Intervention vs. Control",
+    subtitle = "SAT vs. Control",
     x = "Pr(Targeted Therapy under Invitation) - Pr(Targeted Therapy under no Invitation)",
     y = "Density"
   )
@@ -530,7 +533,7 @@ comp_targeted |>
 
 ## 7. Blood Product Transfusions
 
-To compare the rate of blood product transfusions (red blood cells or platelets) between the intervention and external control groups over the course of follow-up.
+To compare the rate of blood product transfusions (red blood cells or platelets) between the SAT and external control groups over the course of follow-up.
 
 ```{r}
 #| label: blood_products
@@ -540,7 +543,7 @@ To compare the rate of blood product transfusions (red blood cells or platelets)
 
 fit_blood <- brm(
   n_blood_products | rate(time_to_bsc) ~ 1 + grp + age + cancer_type,
-  data = sim_data |> filter(grp %in% c("Intervention", "Control")),
+  data = sim_data |> filter(grp %in% c("SAT", "Control")),
   family = negbinomial(),
   iter = 2000, chains = 4, cores = 4,
   seed = 123,	
@@ -563,7 +566,7 @@ comp_blood_rates |>
 
 ## 8. Time to Palliative Care
 
-To compare the time from first-line treatment to the composite endpoint of a switch to best supportive care or death between the intervention and external control groups.
+To compare the time from first-line treatment to the composite endpoint of a switch to best supportive care or death between the SAT and external control groups.
 
 ```{r}
 #| label: time_to_palliative
@@ -592,7 +595,7 @@ fit_surv_bsc <- stan_surv(
 
 ps_pal <- posterior_survfit(
   fit_surv_bsc, 
-  newdata = data.frame(grp = c("Intervention", "Control")),
+  newdata = data.frame(grp = c("SAT", "Control")),
   time = 0,
   control = list(edist = 12))
 
