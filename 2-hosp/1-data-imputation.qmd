@@ -1,5 +1,5 @@
 ---
-Title: QoL - Data imputation
+Title: Long Ordinal - Data imputation
 ---
 
 ## Setup
@@ -175,27 +175,13 @@ The diagnostics look fine to me.
 
 ```{r}
 plot(imputed_data)
-densityplot(imputed_data, ~albumin)
-densityplot(imputed_data, ~bilirubin)
-densityplot(imputed_data, ~c_reactive_protein)
-densityplot(imputed_data, ~leukocytes)
-densityplot(imputed_data, ~lactate_dehydrogenase)
-densityplot(imputed_data, ~lymphocytes_relative)
-densityplot(imputed_data, ~ecog_fstcnt)
-densityplot(imputed_data, ~diagnosis)
+densityplot(imputed_data)
 
 stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
 ```
 ```{r}
-plot(imputed_data)
-densityplot(imputed_data_wide, ~albumin)
-densityplot(imputed_data_wide, ~bilirubin)
-densityplot(imputed_data_wide, ~c_reactive_protein)
-densityplot(imputed_data_wide, ~leukocytes)
-densityplot(imputed_data_wide, ~lactate_dehydrogenase)
-densityplot(imputed_data_wide, ~lymphocytes_relative)
-densityplot(imputed_data_wide, ~ecog_fstcnt)
-densityplot(imputed_data_wide, ~diagnosis) #only 1 diagnosis category is missing out of 255 patients
+plot(imputed_data_wide)
+densityplot(imputed_data_wide)
 
 stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
 ```

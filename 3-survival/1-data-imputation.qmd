@@ -1,0 +1,110 @@
+---
+Title: Overall Survival - Data imputation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(here)
+library(mice)
+library(arrow)
+```
+
+## Load data
+
+```{r}
+data_raw <- read_parquet(here("data", "wide_data_730.parquet"))
+```
+
+## Format data, add Nelson-Aalen estimates
+
+Everybody had at least 182 days of follow-up.
+
+```{r}
+data <- data_raw |> 
+  mutate(
+    diagnosis_cat = fct_lump_n(diagnosis, n = 4),
+    diagnosis_cat = factor(as.integer(diagnosis_cat)),
+    event_death   = if_else(survival_time <= 182, 1, 0),
+    survival_time = pmin(survival_time, 182),
+    tx            = if_else(randomselect_liqplat == "1", 1, 0)) |> 
+  select(
+    pat_id,
+    gender,
+    age,
+    ecog_fstcnt,
+    tx,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    event_death,
+    event_next_treatment,
+    event_progression,
+    lactate_dehydrogenase,
+    leukocytes,
+    lymphocytes_relative,
+    n_biopsies,
+    n_blood_products_all,
+    n_doses_treatment,
+    n_imaging_all,
+    n_stay_plus_ER,
+    survival_time,
+    diagnosis_cat
+  ) |> 
+  relocate(pat_id, event_death, survival_time)
+
+data$na_est <- nelsonaalen(data, timevar = survival_time, statusvar = event_death)
+```
+
+## Multiple imputation
+
+```{r}
+#check if imputation methods correct
+init <- mice(data, maxit = 0)
+meth <- init$method
+pred_matrix <- init$predictorMatrix
+
+# ensure patient ID and survival time are not used for imputation
+pred_matrix[, "survival_time"] <- 0
+pred_matrix["survival_time", ] <- 0
+pred_matrix[, "pat_id"] <- 0
+pred_matrix["pat_id", ] <- 0
+meth["pat_id"] <- ""
+meth["survival_time"] <- ""
+
+imputed_data <- mice(data,
+                     m = 5,
+                     maxit = 50,
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     seed = 1234)
+```
+
+## Diagnostics
+
+```{r}
+plot(imputed_data)
+```
+
+Plot for diagnosis categories don't look 
+
+```{r}
+densityplot(imputed_data)
+```
+
+In this data diagnosis_cat was only missing in 1 patient and ecog_fstcnt had no missing values at all. The plots for all the other data look fine. 
+
+## Select one imputation
+
+For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. I will use the data imputed in long format for the time being.
+
+```{r}
+complete_data <- complete(imputed_data, 4)
+```
+
+## Export
+
+```{r}
+write_parquet(complete_data, sink = here("data", "survival_complete.parquet"))
+```
