@@ -1,0 +1,203 @@
+---
+Title: "Calculating Marginal State Occupancy Probabilities from a Bayesian Markov Model"
+---
+
+This document demonstrates how to simulate patient trajectories and calculate State Occupancy Probabilities (SOPs) from a second-order Bayesian Markov model fit with the blrm function. The workflow is designed to handle posterior draws efficiently and save results to disk to prevent memory overflow.
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+library(zoo)
+library(Hmisc)
+```
+
+## Fit model to use
+
+```{r}
+df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        y = ordered(y)
+    ) |> 
+      select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+d <- df_ypprev
+```
+
+```{r}
+Sys.setenv(RSTUDIO = 1)
+  
+  dd <- datadist(d)
+  options(datadist = 'dd')
+  options(mc.cores = 4)
+  
+fit_second_order <- blrm(
+  y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin + cluster(pat_id),
+  data = d,
+  refresh = 5,
+  iter = 2000,
+  chains = 4,
+  seed = 1234,
+  method = "sampling",
+  backend = "cmdstan"
+)
+Sys.setenv(RSTUDIO = 0)
+```
+```{r}
+convert_to_states <- function(cumulative_probs) {
+    if (!is.matrix(cumulative_probs)) {
+        cumulative_probs <- t(as.matrix(cumulative_probs))
+    }
+    
+    n_rows <- nrow(cumulative_probs)
+    n_states <- ncol(cumulative_probs) + 1
+    
+    # Initialize the matrix for state probabilities
+    state_probs <- matrix(NA, nrow = n_rows, ncol = n_states)
+    
+    # P(y=1)
+    state_probs[, 1] <- 1 - cumulative_probs[, 1]
+    
+    # P(y=2) to P(y=4)
+    for (j in 2:(n_states - 1)) {
+        state_probs[, j] <- cumulative_probs[, j - 1] - cumulative_probs[, j]
+    }
+    
+    # P(y=5)
+    state_probs[, n_states] <- cumulative_probs[, n_states - 1]
+    
+    return(state_probs)
+}
+
+predict_markov_sops_blrm <- function(model,
+                                     baseline_data,
+                                     n_states,
+                                     times,
+                                     time_var_name,
+                                     yprev_name,
+                                     ypprev_name,
+                                     absorbing_state = NULL) {
+
+  # --- 1. Setup ---
+  pat_id <- baseline_data$pat_id
+  all_states <- factor(1:n_states)
+  first_pred_time <- min(times)
+  iter_times <- times[times > first_pred_time]
+  n_cats <- n_states - 1
+  all_draws_results <- list()
+
+
+  initial_pred_data <- as.data.frame(baseline_data)
+  initial_pred_data[[time_var_name]] <- first_pred_time
+
+  pred_obj_initial <- predict(model, newdata = initial_pred_data, type = "fitted")
+  draws_initial <- attr(pred_obj_initial, "draws")
+  pred_first_step_cum_all_draws <- matrix(draws_initial, ncol = n_cats, byrow = TRUE)
+  
+  n_draws <- nrow(pred_first_step_cum_all_draws)
+  
+  # Convert initial cumulative probabilities to state probabilities for all draws
+  pi_first_step_all_draws <- convert_to_states(pred_first_step_cum_all_draws)
+
+  transition_preds_by_time <- list()
+  
+  y_name <- all.vars(formula(model))[1]
+  static_covars <- setdiff(names(baseline_data), c("pat_id", y_name, yprev_name, ypprev_name, time_var_name))
+
+for (t in iter_times) {
+    grid_list <- list(all_states, all_states)
+    names(grid_list) <- c(ypprev_name, yprev_name)
+    newdata_t <- expand.grid(grid_list)
+    newdata_t[[time_var_name]] <- t
+    
+    if (length(static_covars) > 0) {
+        newdata_t <- cbind(newdata_t, baseline_data[, static_covars, drop = FALSE])
+    }
+    
+    model_predict_rows_bool <- rep(TRUE, nrow(newdata_t))
+    if (!is.null(absorbing_state)) {
+      model_predict_rows_bool <- (newdata_t[[yprev_name]] != absorbing_state) & (newdata_t[[ypprev_name]] != absorbing_state)
+    }
+
+    # **CORRECTED LOGIC**: Extract draws and reshape for multiple newdata rows
+    pred_obj_transient <- predict(model, 
+                                  newdata = newdata_t[model_predict_rows_bool, ], 
+                                  type = "fitted")
+    draws_transient <- attr(pred_obj_transient, "draws")
+    
+    # Reshape the vector. The number of rows is n_draws, and R infers the number of columns.
+    pred_transient_cum_all_draws <- matrix(draws_transient, nrow = n_draws, byrow = TRUE)
+
+    transition_preds_by_time[[as.character(t)]] <- list(
+      newdata_t = newdata_t,
+      model_predict_rows_bool = model_predict_rows_bool,
+      predictions = pred_transient_cum_all_draws
+    )
+  }
+
+  # --- 3. Main Loop: Iterate over each posterior draw ---
+  for (d in 1:n_draws) {
+    pi_first_step_d <- pi_first_step_all_draws[d, ]
+    occupancy_probs_d <- list()
+    occupancy_probs_d[[as.character(first_pred_time)]] <- pi_first_step_d
+    joint_prob_prev_d <- matrix(0, nrow = n_states, ncol = n_states)
+    yprev_state <- baseline_data[[yprev_name]]
+    joint_prob_prev_d[yprev_state, ] <- pi_first_step_d
+    
+    for (t in iter_times) {
+      t_preds <- transition_preds_by_time[[as.character(t)]]
+      transition_probs_t_d <- matrix(0, nrow = nrow(t_preds$newdata_t), ncol = n_states)
+
+      if (!is.null(absorbing_state)) {
+        absorbing_rows <- t_preds$newdata_t[[yprev_name]] == absorbing_state
+        transition_probs_t_d[absorbing_rows, absorbing_state] <- 1
+      }
+
+      if (any(t_preds$model_predict_rows_bool)) {
+        pred_vector_d <- t_preds$predictions[d, ]
+        n_pred_rows <- sum(t_preds$model_predict_rows_bool)
+        
+        pred_matrix_d <- matrix(pred_vector_d, nrow = n_pred_rows, ncol = n_cats, byrow = TRUE)
+        pred_transient_d <- convert_to_states(pred_matrix_d)
+        
+        transition_probs_t_d[t_preds$model_predict_rows_bool, ] <- pred_transient_d
+      }
+      
+      initial_array <- array(t(transition_probs_t_d), dim = c(n_states, n_states, n_states))
+      transition_array <- aperm(initial_array, c(2, 3, 1))
+      
+      joint_prob_new_d <- matrix(0, nrow = n_states, ncol = n_states)
+      for (k in 1:n_states) {
+        T_k <- transition_array[, , k]
+        joint_prob_new_d[, k] <- colSums(T_k * joint_prob_prev_d)
+      }
+      
+      pi_t_d <- colSums(joint_prob_new_d)
+      occupancy_probs_d[[as.character(t)]] <- pi_t_d
+      joint_prob_prev_d <- joint_prob_new_d
+    } 
+    
+    final_probs_d <- as.data.frame(do.call(rbind, occupancy_probs_d))
+    colnames(final_probs_d) <- paste0("State_", 1:n_states)
+    
+    final_probs_d$time <- as.integer(rownames(final_probs_d))
+    final_probs_d$draw <- d
+    final_probs_d$pat_id <- pat_id
+    
+    all_draws_results[[d]] <- final_probs_d
+  } 
+  
+  # --- 4. Final Combination and Return ---
+  final_df <- do.call(rbind, all_draws_results)
+  rownames(final_df) <- NULL
+  final_df <- final_df[, c("pat_id", "draw", "time", paste0("State_", 1:n_states))]
+  
+  return(final_df)
+}
+```
+
