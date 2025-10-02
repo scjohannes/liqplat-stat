@@ -1,6 +1,7 @@
 ---
 Title: Calculating unconditional SOPs from second-order Markov model
 ---
+
 ```{r}
 library(tidyverse)
 library(data.table)
@@ -18,11 +19,14 @@ df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |>
     mutate(
         tx = factor(tx),
         ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
+        ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),
         y = ordered(y)
     ) |> 
       select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
 
 d <- df_ypprev
+REFIT <- FALSE
 ```
 
 ```{r}
@@ -30,29 +34,203 @@ fit_second_order <- orm(
   y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin,
   data = d
 )
+model_path_cluster <- "./2-hosp/models/fit_second_order_b_cluster.rds"
+model_path_nocuster <- "./2-hosp/models/fit_second_order_b.rds"
 
-Sys.setenv(RSTUDIO = 1)
+if (REFIT) {
+  Sys.setenv(RSTUDIO = 1)
+    
+    dd <- datadist(d)
+    options(datadist = 'dd')
+    options(mc.cores = 4)
+    
+  fit_second_order_b_cluster <- blrm(
+    y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin + cluster(pat_id),
+    data = d,
+    refresh = 5,
+    iter = 2000,
+    chains = 4,
+    seed = 1234,
+    method = "sampling",
+    backend = "cmdstan"
+  )
+
+  fit_second_order_b <- blrm(
+    y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin,
+    data = d,
+    refresh = 5,
+    iter = 2000,
+    chains = 4,
+    seed = 1234,
+    method = "sampling",
+    backend = "cmdstan"
+  )
+  Sys.setenv(RSTUDIO = 0)
+  saveRDS(fit_second_order_b_cluster, file = model_path_cluster)
+  saveRDS(fit_second_order_b, file = model_path_nocuster)
+} else {
+  # Load the models from disk if they exist
+  if (file.exists(model_path_cluster)) {
+    fit_second_order_b_cluster <- readRDS(model_path_cluster)
+  } else {
+    warning("Model file not found: ", model_path_cluster)
+    fit_second_order_b_cluster <- NULL
+  }
+ 
+  if (file.exists(model_path_nocuster)) {
+    fit_second_order_b <- readRDS(model_path_nocuster)
+  } else {
+    warning("Model file not found: ", model_path_nocuster)
+    fit_second_order_b <- NULL
+  }
+}
+
+```
+
+## Predictions conditional on random effects
+
+In think we need to include the random intercept to correctly perform g-computation. Therefore using the custom function here.
+I think that at the moment this 
+
+```{r}
+library(posterior)
+
+fit <- fit_second_order_b_cluster
+sf  <- rmsb::stanGet(fit)
+
+# 1) collect all parameter names and locate gamma[j] columns
+all_pars <- colnames(as_draws_matrix(sf$draws()))
+gcols    <- grep("^gamma\\[", all_pars, value = TRUE)
+
+# 2) stack all chains and build an n_draws x J matrix of random intercepts
+G <- as_draws_matrix(sf$draws(variables = gcols))  # rows = draws, cols = patients
+
+# 3) per-patient summaries
+per_pat_median <- apply(G, 2, median)
+
+all(per_pat_median == fit$gammas) #Is TRUE !
+
+newdata_row <- d[1,]
+```
+
+
+```{r}
+predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
+  # --- 0) Prerequisite Checks ---
+  if (!is.data.frame(newdata)) {
+    stop("`newdata` must be a data frame.")
+  }
+  if (include_re && !"pat_id" %in% colnames(newdata)) {
+    stop("`newdata` must contain a 'pat_id' column when include_re=TRUE")
+  }
   
-  dd <- datadist(d)
-  options(datadist = 'dd')
-  options(mc.cores = 4)
+  N_new <- nrow(newdata)
+
+  # --- 1) Get the design matrix for the new data ---
+  X <- rms::predictrms(fit, newdata = newdata, type = 'x')
+
+  # --- 2) Extract posterior draws and model information ---
+  draws <- fit$draws
+  ndraws <- nrow(draws)
+  ns <- fit$non.slopes
+  K <- ns + 1
   
-fit_second_order_b <- blrm(
-  y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin,
-  data = d,
-  refresh = 5,
-  iter = 2000,
-  chains = 4,
-  seed = 1234,
-  method = "sampling",
-  backend = "cmdstan"
+  intercept_draws <- draws[, 1:ns, drop = FALSE]
+  beta_draws <- draws[, (ns + 1):ncol(draws), drop = FALSE]
+
+  # --- 3) Calculate the fixed-effect linear predictor (eta_fixed) ---
+  eta_fixed <- beta_draws %*% t(X)
+
+  # --- 4) Get the random effect draws (u_draws) if requested ---
+  u_draws <- matrix(0, nrow = ndraws, ncol = N_new)
+  
+  if (include_re) {
+    if (length(unique(newdata$pat_id)) > 1) {
+      stop("`newdata` contains multiple unique patient IDs. This version is restricted to one at a time.")
+    }
+    if (!requireNamespace("posterior", quietly = TRUE)) {
+      stop("The 'posterior' package is required to extract random effect draws.")
+    }
+    sf <- rmsb::stanGet(fit)
+    all_gamma_draws <- posterior::as_draws_matrix(sf$draws(variables = "gamma"))
+    patient_ids <- newdata$pat_id
+    u_draws <- all_gamma_draws[, patient_ids, drop = FALSE]
+  }
+
+  # --- 5) Calculate the total linear predictor (eta) ---
+  stopifnot(all(dim(eta_fixed) == dim(u_draws)))
+  eta <- eta_fixed + u_draws
+
+  # --- 6) Calculate probabilities for each observation and each draw ---
+  p_cat_draws_list <- vector("list", N_new) 
+  
+  for (i in 1:N_new) {
+    eta_i <- eta[, i]
+    s_ge <- plogis(sweep(intercept_draws, 1, eta_i, "+"))
+    
+    p_cat_draws <- matrix(NA_real_, nrow = ndraws, ncol = K)
+    p_cat_draws[, 1] <- 1 - s_ge[, 1]
+    if (K > 2) {
+      for (kk in 2:(K - 1)) {
+        p_cat_draws[, kk] <- s_ge[, kk - 1] - s_ge[, kk]
+      }
+    }
+    p_cat_draws[, K] <- s_ge[, K - 1]
+    colnames(p_cat_draws) <- paste0("y=", 1:K)
+    
+    p_cat_draws_list[[i]] <- p_cat_draws
+  }
+
+  # --- 7) NEW: Reshape draws into a single 3D array ---
+  draws_array <- array(
+    data = NA_real_,
+    dim = c(ndraws, N_new, K)
+  )
+
+  for (i in 1:N_new) {
+    draws_array[, i, ] <- p_cat_draws_list[[i]]
+  }
+
+  dimnames(draws_array) <- list(
+    NULL,
+    rownames(newdata),
+    colnames(p_cat_draws_list[[1]])
+  )
+
+  return(draws_array)
+}
+```
+
+
+Check whether prediction when ignoring random effects match the predict function in rmsb:
+
+```{r}
+# 1. Get the prediction from your manual function
+pred_manual <- predict_blrm_manual(
+  fit_second_order_b_cluster, 
+  newdata_row, 
+  include_re = FALSE
 )
-Sys.setenv(RSTUDIO = 0)
+
+# 2. Get the prediction from the built-in function
+pred_builtin <- predict(
+  fit_second_order_b_cluster, 
+  newdata = newdata_row, 
+  type = "fitted.ind", 
+  posterior.summary = "all"
+)
+
+# 3. First, check if the dimensions are identical
+dim(pred_manual)
+dim(pred_builtin)
+
+# 4. Then, check if the numeric values are nearly equal
+all.equal(pred_manual, pred_builtin)
 ```
 
 ## Functions
 
-The `predict()` function for `orm()` returns a set of cumulative probabilities, such as $P(Y\geq1)$, $P(Y\geq2)$, etc. To get the actual probability for each individual state, $P(Y=k)$, we need a helper function. The `convert_to_states` function below transforms the model's output into a standard state probability vector.
+The `predict()` function for `orm()` and `blrm()` return a set of cumulative probabilities, such as $P(Y\geq1)$, $P(Y\geq2)$, etc. To get the actual probability for each individual state, $P(Y=k)$, we need a helper function. The `convert_to_states` function below transforms the model's output into a standard state probability vector.
 
 ```{r}
 convert_to_states <- function(cumulative_probs) {
@@ -83,45 +261,50 @@ convert_to_states <- function(cumulative_probs) {
 
 ## Theory
 
-The model gives us the conditional probability of being in a state l at time t, given the states at the two previous time points:
+The model gives us the conditional probability of being in a state l at time t, given the states at the two previous time points: 
 $$
 P(X_t=l \mid X_{t-1}=j,X_{t-2}=h)
 $$
 
-Our goal is to calculate the unconditional state occupancy probability, $P(X_t=l)$, which represents the overall probability of being in state l at time t, regardless of the specific path taken to get there (but still conditional on the two initial states). We can find the unconditional probability of an event by summing the probabilities of all possible ways it can happen (Total Law of Probability). In our case, this means summing over all possible histories (h, j) from the previous two time steps:
+Our goal is to calculate the unconditional state occupancy probability, $P(X_t=l)$, which represents the overall probability of being in state l at time t, regardless of the specific path taken to get there (but still conditional on the two states before randomization). We can find the unconditional probability of an event by summing the probabilities of all possible ways it can happen (Total Law of Probability). In our case, this means summing over all possible histories (h, j) from the previous two time steps:
 
 $$P(X_t = l) = \sum_{h=1}^{M} \sum_{j=1}^{M} \underbrace{P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h)}_{\text{The Model's "Prediction"}} \times \underbrace{P(X_{t-1}=j, X_{t-2}=h)}_{\text{The "Weight" of the History}}$$
 
-How do we find the "weight," which is the joint probability of a specific history occurring?
-We can't get the joint probability $P(X_{t-1}=j, X_{t-2}=h)$ directly. Instead, we calculate it iteratively. This is possible thanks to the Chain Rule of Probability:
-$$P(A, B, C) = P(C | B, A) \times P(B, A)$$
+How do we find the "weight," which is the joint probability of a specific history occurring? We can't get the joint probability $P(X_{t-1}=j, X_{t-2}=h)$ directly from the model. Instead, we have to calculate it iteratively. This is possible thanks to the Chain Rule of Probability: $$P(A, B, C) = P(C | B, A) \times P(B, A)$$
 
-Translating this to our problem, the probability of a three-step path is:
-$$P(X_t=l, X_{t-1}=j, X_{t-2}=h) = P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)$$
+Translating this to our problem, the probability of a three-step path is: $$P(X_t=l, X_{t-1}=j, X_{t-2}=h) = P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)$$
 
-By summing over the earliest state (h), we can derive the next joint probability from the previous one:
+By summing over $X_{t-2} = h$, we calculate the joint probability of the next state $X_t = l$ and lag = 1 $X_{t-1} = j$:
 
 $$P(X_t=l, X_{t-1}=j) = \sum_{h=1}^{M} P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)$$
 
-1. We start with a known history at t=0, so its joint probability is 1.0.
+1.  We start with a known history at t=0, so the joint probability of the observed $j_{obs}$ and $h_{obs}$ and states for $X_{t-1}$ and $X_{t-2}$ is $1.0$
 
-2. We use this known probability as the "weight" to calculate the joint probabilities for t=1.
+2.  We use this known probability as the "weight" to calculate the joint probabilities for t=1.
 
-3. We then use the t=1 joint probabilities as the weights to calculate the joint probabilities for t=2.
+    -   $P(X_{t=1} = l, X_{t-1} = j\_{obs}) = P(X_{t=1}  |  X_{t-1}=j_{obs}, X_{t-2}=h_{obs})$
+    -   So for $t=1$ we have $M$ non-zero joint probabilities, one for each possible state at time $t=1$, because $j$ is fixed to the observed state at $t=0$.
 
-4. ...and so on. The output of one step becomes the input for the next.
+3.  We then use the joint probabilities from $t = 1$ as the weights to calculate the joint probabilities for $t=2$.
+
+    -   $P(X_{t=2} = l, X_{t-1} = j) = \sum_{h=1}^{M} P(X_{t=2}  |  X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)$
+    -   Now for $t=2$ we have $M \times M$ joint probabilities, one for each combination of possible states at times $t=1$ and $t=2$.
+
+4.  ...and so on. The output of one step becomes the input for the next.
 
 ## Calculate Unconditional Second-Order State Occupation Probabilities
 
 Now we implement this recursive logic in R.
 
 ### Setup and Initial Conditions
+
 First, we define our parameters and create two data structures:
 
-- P_joint: A 3D array to store the joint probability "weights" $P(X_{t-1}, X_t)$ at each time step.
-- P_uncond: A matrix to store our final answer, the unconditional probabilities $P(X_t)$ for each state over time.
+-   P_joint: A 3D array to store the joint probability "weights" $P(X_{t-1}, X_t)$ at each time step.
+-   P_uncond: A matrix to store our final answer, the unconditional probabilities $P(X_t)$ for each state over time.
 
 We initialize the process with a known starting history for a specific individual. This means at $t=0$, the joint probability of that specific history is $1$, and all others are $0$.
+
 
 ```{r}
 # --- Parameters ---
@@ -153,12 +336,14 @@ P_joint[initial_state_t_minus_1, initial_state_t_0, 1] <- 1.0
 P_uncond[initial_state_t_0, 1] <- 1.0
 ```
 
+
 The main loop below executes the chain reaction. At each time step `t`, it iterates through all possible histories `(h, j)` from the two preceding steps.
 
 A crucial feature is the handling of absorbing states (e.g., death or discharge). Before getting a prediction, we check if the current state `(j)` is an absorbing one. If it is, we manually set the probability of staying in that state to 1.
 
-A Note on "Impossible" Paths:
-This logic also handles impossible paths. For example, a path segment `... -> 5 -> 4` is impossible if State 5 is absorbing. Our code correctly identifies this because the history_weight for this path will be zero. The absorbing state rule applied at the previous step would have set the probability of the `5 -> 4` transition to zero. The line `if (history_weight == 0) { next }` prunes these impossible branches from the calculation.
+A Note on "Impossible" Paths: This logic also handles impossible paths. For example, a path segment `... -> 5 -> 4` is impossible if State 5 is absorbing. Our code correctly identifies this because the history_weight for this path will be zero. The absorbing state rule applied at the previous step would have set the probability of the `5 -> 4` transition to zero. The line `if (history_weight == 0) { next }` prunes these impossible branches from the calculation, so the initially assigned probability of $0$ remains unchanged.
+
+### Looping through time steps
 
 ```{r}
 t1 <- Sys.time()
@@ -189,7 +374,7 @@ for (t in 1:T_horizon) {
         conditional_probs[j] <- 1.0 
       } else {
         # 3b. If not, call the model to get the stochastic prediction.
-        cum_probs <- predict(
+        conditional_probs <- predict(
           fit_second_order, 
           newdata = list(
               tx = baseline_data$tx,
@@ -198,19 +383,12 @@ for (t in 1:T_horizon) {
               ypprev = factor(h, levels = c(1:M)[-absorbing_states], ordered = FALSE),
               ecog_fstcnt = baseline_data$ecog_fstcnt,
               albumin = baseline_data$albumin),
-          type = "fitted")
-        conditional_probs <- convert_to_states(cum_probs)
+          type = "fitted.ind")
       }
       
-      # --- END OF REFACTORED LOGIC ---
-
       # Loop over all possible outcomes at time t (l)
-      for (l in 1:M) {
-        
-        # The 'conditional_probs' vector now holds the correct probabilities,
-        # either from the rule or from the model.
+      for (l in 1:M) {        
         path_prob <- conditional_probs[l] * history_weight
-        
         # Add this path's probability to the new joint probability
         current_P_joint[j, l] <- current_P_joint[j, l] + path_prob
       }
@@ -227,8 +405,9 @@ P_uncond_slow <- P_uncond
 P_joint_slow <- P_joint
 ```
 
-Now we let Gemini Pro 2.5 have a go at optiimzing this code. 
+### Optimized Code
 
+Now we let Gemini Pro 2.5 have a go at optimizing this code:
 
 ```{r}
 t1 <- Sys.time()
@@ -274,10 +453,10 @@ for (t in 1:T_horizon) {
     prediction_data_subset <- prediction_data[predictable_idx, ]
     prediction_data_subset$week <- t # Set the current time
     
-    cum_probs_batch <- predict(fit_second_order, newdata = prediction_data_subset, type = "fitted")
+    cond_probs_batch <- predict(fit_second_order, newdata = prediction_data_subset, type = "fitted.ind")
     
     # Place the results from the model into the correct rows of our main matrix
-    cond_probs_matrix[predictable_idx, ] <- convert_to_states(cum_probs_batch)
+    cond_probs_matrix[predictable_idx, ] <- cond_probs_batch
   }
   
   cond_probs_array <- array(
@@ -300,7 +479,6 @@ t2 <- Sys.time()
 t2 - t1 # 10 times faster!
 ```
 
-
 ```{r}
 # The `all.equal` function checks for near-equality, which is important
 # for floating-point arithmetic.
@@ -313,11 +491,14 @@ stopifnot(
   all.equal(P_uncond_slow, P_uncond, check.attributes = FALSE)
 )
 
-# If we reach this line, the outputs are identical!
-print("✅ Verification successful: The optimized code produces identical results.")
+print("The optimized code produces identical results.")
 ```
 
+The optimized code from Gemini is 10 times faster and produces identical results
+
 ## Code for RMSB package
+
+We want to extend this to work with the Bayesian model fit using the `rmsb` package. The main difference is that we now have multiple posterior draws. We will calculate the unconditional probabilities for each draw separately, resulting in a 3D array where one dimension corresponds to the different draws.
 
 ```{r}
 # --- Parameters ---
@@ -349,14 +530,15 @@ P_uncond_bayes[, initial_state_t_0, 1] <- 1.0
 ```
 
 
+
 ```{r}
 # Create the static grid for batch predictions (same as before)
 history_grid <- expand.grid(
-  ypprev = factor(1:M, levels = 1:M), # h = X_t-2
-  yprev = factor(1:M, levels = 1:M)   # h = X_t-1
+  ypprev = factor(1:M, levels = 1:M), # h = X_{t-2}
+  yprev = factor(1:M, levels = 1:M)   # h = X_{t-1}
 )
 prediction_data <- cbind(
-  baseline_data[, c("tx", "ecog_fstcnt", "albumin")],
+  baseline_data[, c("pat_id", "tx", "ecog_fstcnt", "albumin")],
   history_grid
 )
 
@@ -376,10 +558,11 @@ for (t in 1:T_horizon) {
   
   # Predict to get the object containing draws
   pred_obj <- predict(fit_second_order_b, newdata = prediction_data_subset, type = "fitted")
+  predict_blrm_manual(fit_second_order_b, prediction_data_subset, include_re = FALSE)$draws 
   
   draws_cum_probs <- attr(pred_obj, "draws")
   # dimension 1 = 4000 draws
-  # dimension 2 = X_t-1 and X_t-2 combinations (rows from prediction_data_subset)
+  # dimension 2 = X_{t-1} and X_{t-2} combinations (rows from prediction_data_subset)
   # dimension 3 = cumulative probabilities (4 columns for 5 states)
   draws_reshaped <- do.call(rbind, lapply(1:dim(draws_cum_probs)[1], function(d) draws_cum_probs[d,,]))
   state_probs_all_draws <- convert_to_states(draws_reshaped)
@@ -421,15 +604,12 @@ for (t in 1:T_horizon) {
     # Reshape and store in the final 4D array
     cond_probs_4d_array[d, , , ] <- array(cond_probs_matrix_d, dim = c(M, M, M))
   }
-
-  # VECTORIZED UPDATE (PERFORMED FOR EACH DRAW)
-  # ------------------------------------------------
   
   # Get joint probabilities from the previous step for all draws: P(X_{t-2}, X_{t-1})
   prev_P_joint_all_draws <- P_joint_bayes[,,, t]
   current_P_joint_all_draws <- array(0, dim = c(n_draws, M, M))
   
-  # Loop through draws to perform the update independently for each
+  # Loop through draws
   for (d in 1:n_draws) {
     # This is P(X_{t-2}=h, X_{t-1}=j) for draw d
     prev_P_joint_d <- prev_P_joint_all_draws[d,,]
@@ -450,7 +630,6 @@ for (t in 1:T_horizon) {
   P_joint_bayes[,,, t + 1] <- current_P_joint_all_draws
 }
 ```
-
 
 ```{r}
 apply(P_uncond_bayes[, , 11], 2, median) 
