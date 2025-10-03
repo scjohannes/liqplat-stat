@@ -11,353 +11,252 @@ library(data.table)
 library(arrow)
 library(rms)
 library(rmsb)
-library(VGAM)
 ```
 
 ## Load data
 
 ```{r}
-df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
     mutate(
         tx = factor(tx),
-        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
+        ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),
+        y = ordered(y)
     ) |> 
-      select(pat_id, tx, y, yprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+      select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+d <- df_ypprev
 ```
 
-Indicator for whether we want to refit the model and calculate marginal state occupancy probabilities.
+Do we want to fit the model?
 ```{r}
 fit <- FALSE
-generate_SOPS <- FALSE
 ```
 
 ## Model fitting
 
-### Full yprev x time interaction
-- We will use model as a basis for simulating different scenarios.
-- We don't interact tx * time because there is not treatment effect in this data. 
-- Therefore also no nonPO for tx.  
-- We use polynomial instead of a spline as it's easier to create the simlations with later on and yielded similar results in testing. 
-- We interact yprev with time, because serial correlation seems to change over time in correlation plots
-- We add clinical variables to add mroe outcome heterogeneity
+We fit a model without a treatment parameter. We will randomly assign a treatment effect during the simulation of the dataset.
+We will use the same for model for HA, but simulate a treatment effect during the simulation of the dataset.
 
 ```{r}
 if (fit) {
-dd <- datadist(df)
-# Set the global option so that rms/rmsb functions know to use 'dd'
-  options(datadist = 'dd')
-
-  options(mc.cores = 8)
-
-  Sys.setenv(RSTUDIO = 1)
-
-      model <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) * yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        refresh = 5,
-        iter = 2000,
-        chains = 4,
-        seed = 1234,
-        method = "sampling"
-    )
-    saveRDS(model, "./2-hosp/models/model_hosp_pol.rds")
-
-
-  Sys.setenv(RSTUDIO = 0)
-} else{
-  model <- readRDS("./2-hosp/models/model_hosp_pol.rds")
-}
-
-model
-
-stanDx(model)
-stanDxplot(model)
-```
-
-
-### No yprev time interaction
-
-```{r}
-if (fit) {
-dd <- datadist(df)
-# Set the global option so that rms/rmsb functions know to use 'dd'
-  options(datadist = 'dd')
-
-  options(mc.cores = 4)
-
-  Sys.setenv(RSTUDIO = 1)
-
-      model_2 <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) + yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        refresh = 5,
-        iter = 2000,
-        chains = 4,
-        method = "sampling"
-    )
-    saveRDS(model_2, "./2-hosp/models/model_hosp_pol_simple.rds")
-
-
-  Sys.setenv(RSTUDIO = 0)
-} else{
-  model_2 <- readRDS("./2-hosp/models/model_hosp_pol_simple.rds")
-}
-
-model_2
-
-stanDx(model_2)
-stanDxplot(model_2)
-```
-
-### Linear interaction yprev x time
-
-```{r}
-if (fit) {
-dd <- datadist(df)
-# Set the global option so that rms/rmsb functions know to use 'dd'
-  options(datadist = 'dd')
-
-  options(mc.cores = 4)
-
-  Sys.setenv(RSTUDIO = 1)
-
-      model_3 <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) + yprev + yprev %ia% week + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        refresh = 5,
-        iter = 2000,
-        chains = 4,
-        method = "sampling"
-    )
-    saveRDS(model_3, "./2-hosp/models/model_hosp_pol_lin_x.rds")
-
-
-  Sys.setenv(RSTUDIO = 0)
-} else{
-  model_3 <- readRDS("./2-hosp/models/model_hosp_pol_lin_x.rds")
-}
-
-model_3
-
-stanDx(model_3)
-stanDxplot(model_3)
-```
-
-### Model with random intercept
-
-```{r}
-if (fit) {
-dd <- datadist(df)
-# Set the global option so that rms/rmsb functions know to use 'dd'
-  options(datadist = 'dd')
-
-  options(mc.cores = 4)
-
-  Sys.setenv(RSTUDIO = 1)
-      model_4 <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) * yprev + cluster(id),
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        refresh = 5,
-        iter = 2000,
-        chains = 4,
-        seed = 1234,
-        method = "sampling",
-        backend = "cmdstan"
-    )
-    saveRDS(model_4, "./2-hosp/models/model_hosp_pol_cluster.rds")
-
-
-  Sys.setenv(RSTUDIO = 0)
-} else{
-  model_4 <- readRDS("./2-hosp/models/model_hosp_pol_cluster.rds")
-}
-
-model_4
-
-stanDx(model_4)
-stanDxplot(model_4)
-```
-
-
-## Marginalized State Occupancy Probabilities for model 1 (full int, non clustered)
-```{r}
-baseline_df <- filter(df, week == 1) |> as.data.table()
-```
-
-```{r}
-write_SOP <- function(i, tx, baseline_df){
-  
-  row <- baseline_df[i]
-  
-  sops <-
-  soprobMarkovOrdm(
-    model,
-    data = list(tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, age = row$age, gender = row$gender, albumin = row$albumin, c_reactive_protein = row$c_reactive_protein, yprev=row$yprev),
-    times = 1:26,
-    ylevels = 1:5,
-    absorb = 5,
-    tvarname = "week",
-    pvarname = "yprev"
+    Sys.setenv(RSTUDIO = 1)
+    
+    dd <- datadist(d)
+    options(datadist = 'dd')
+    options(mc.cores = 4)
+    
+  fit_h0 <- blrm(
+    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age,3),
+    data = d,
+    refresh = 5,
+    iter = 2000,
+    chains = 4,
+    seed = 1234,
+    method = "sampling",
+    backend = "cmdstan"
   )
-  
-  # Because of the size of the data, only use the first 500 MCMC draws
-  sops <- sops[1:500,,]
-  
-  sops <- as.data.table(sops)
+  saveRDS(fit_h0, "./2-hosp/models/fit-hosp-null.rds")
 
-  # Rename columns
-  setnames(sops,
-           old = c("V1", "V2", "V3", "value"),
-           new = c("draw", "week", "state", "sop"))
+
+  Sys.setenv(RSTUDIO = 0)
+} else{
+  fit_h0 <- readRDS("./2-hosp/models/fit-hosp-null.rds")
+}
+
+fit_h0
+
+# stanDx(fit_h0)
+# stanDxplot(fit_h0)
+```
+
+## Simulations function
+
+### Simulate baseline data
+
+```{r}
+N <- 1000
+baseline_data <- d |> 
+  filter(week == 1) |> 
+  select(yprev, ypprev, ecog_fstcnt, gender, diagnosis, age, albumin, c_reactive_protein) |> 
+  slice_sample(n = N, replace = TRUE) |> 
+  mutate(
+    pat_id = row_number(),
+    tx = sample(c(0, 1), size = N, replace = TRUE),
+    x = rnorm(N) # add patient specific offset
+    ) |> 
+  data.frame()
+
+# x_effects <- seq(-1, 1, by = 1)
+times <- 1:26
+# intercept and parameters
+ints <- fit_h0$draws[, 1:4] |> apply(2, median)
+#reverse the order for easier use later
+ints <- rev(ints)
+```
+
+### Simulation Function
+
+```{r}
+predict_new_y <- function(model, t, data, parameter = 0, x_effect = 0, ints) {
+    data$week <- as.integer(t)
+    lp <- predict(model, newdata = data, type = "lp")[1]$linear.predictors
+    
+    lp <- lp + parameter * data$tx + x_effect * data$x
+    cut_points <- outer(ints, lp, FUN = "+")
+
+    cumulative_probs <- t(plogis(cut_points))
+    prob_matrix <- cbind(cumulative_probs, 1) - cbind(0, cumulative_probs)
+    colnames(prob_matrix) <- 1:ncol(prob_matrix)
+
+    y_new_active <- apply(prob_matrix, 1, function(p) {
+            sample(5:1, size = 1, prob = p)
+        })
+
+    return(y_new_active)
+}
+```
+
+There's still a mistake. Transitions are almost not happening. Need to debug more.
+```{r}
+y <- matrix(NA, ncol = 26, nrow = N)
+# Loop over each time point (week)
+for(i in 1:26) { # Loop over the full 26 weeks
   
-  sops$week <- as.integer(sops$week)
-  sops$state <- as.factor(sops$state)
-  sops$tx <- tx
-  sops$i <- i
+  active_patients_idx <- which(baseline_data$yprev != "5")
+  inactive_patients_idx <- which(baseline_data$yprev == "5")
   
-  folder <- glue::glue("./2-hosp/output/sops-sim-model/marginalized_sop_{tx}/msop_{i}.parquet")
+  # For inactive patients, carry the '5' forward
+  if (length(inactive_patients_idx) > 0) {
+    y[inactive_patients_idx, i] <- 5
+  }
   
-  arrow::write_parquet(
-    x = sops,
-    sink = folder
+  # For active patients, run the prediction function
+  if (length(active_patients_idx) > 0) {
+    # Subset data for only the active patients
+    active_data <- baseline_data[active_patients_idx, ]
+    
+    # Predict new outcomes for the active group
+    y_new_active <- predict_new_y(
+      model = fit_h0,
+      t = i,
+      data = active_data,
+      parameter = 0,
+      x_effect = 0,
+      ints = ints
     )
+    
+    # Assign the new outcomes to the correct rows in the main 'y' matrix
+    y[active_patients_idx, i] <- y_new_active
+  }
+  
+  # 4. Update history variables for ALL patients for the next iteration
+  # ypprev gets the old value of yprev
+  baseline_data$ypprev <- baseline_data$yprev
+  # yprev gets the new value from the current week's simulation
+  baseline_data$yprev <- as.character(y[, i])
 }
 ```
 
-### Generate marginalized SOPs
+## Apply simulation function
+
+Create baseline data
+```{r}
+X_base <- data.frame(
+    tx = sample(c(0, 1), size = N, replace = TRUE),
+    X = rnorm(N),
+    yprev = sample(c("1", "2", "3", "4"), N, replace = TRUE,  prob = c(0.8, 0.1, 0.05, 0.05))
+) |>
+mutate(patient_id = row_number())
+```
+
+Generate datasets
 
 ```{r}
-future::plan(future.callr::callr, workers=10)
+for (current_x_effect in x_effects) {
+    
+    cat(paste0("--- Starting simulation for X effect = ", current_x_effect, " ---\n"))
 
-# Control
-if (generate_SOPS) {
-    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df),
-                       .progress=TRUE,
-                       .options = furrr_options(seed=TRUE))
+    # a. Set the model parameters for the current scenario.
+    extra <- c(
+        `yprev=2` = log(10), 
+        `yprev=3` = log(3), 
+        `yprev=4` = log(40),
+        week      = log(0.95)
+    )
+    extra["X"] <- current_x_effect
+
+    # b. Initialize the matrix to store patient states over time.
+    state_matrix <- matrix(
+        as.numeric(X_base$yprev), 
+        nrow = N, 
+        ncol = length(times) + 1,
+        dimnames = list(X_base$patient_id, 0:28)
+    )
+
+    # c. Run the simulation over the time points.
+    for (t in times) {
+        yprev <- state_matrix[, t]
+        active_idx <- which(yprev != 5)
+        
+        if (length(active_idx) == 0) {
+          if (t <= max(times)) {
+            state_matrix[, (t + 1):ncol(state_matrix)] <- 5
+          }
+          break
+        }
+        
+        yprev_active <- yprev[active_idx]
+        X_active <- X_base[active_idx, ]
+        
+        lp <- mapply(
+            FUN = g,
+            yprev = yprev_active,
+            tx_val = X_active$tx,
+            x_val = X_active$X,
+            MoreArgs = list(t = t, parameter = parameter, extra_params = extra)
+        )
+        
+        thresholds_matrix <- outer(ints, lp, FUN = "+")
+        cum_probs <- t(plogis(thresholds_matrix))
+        prob_matrix <- cbind(cum_probs, 1) - cbind(0, cum_probs)
+        
+        y_new_active <- apply(prob_matrix, 1, function(p) {
+            sample(5:1, size = 1, prob = p)
+        })
+        
+        state_matrix[, t + 1] <- yprev
+        state_matrix[active_idx, t + 1] <- y_new_active
+    }
+
+    # d. Format the results into a long data frame.
+    final_data <- as.data.frame(state_matrix) |>
+        tibble::rownames_to_column(var = "patient_id") |>
+        tidyr::pivot_longer(
+            cols = -patient_id,
+            names_to = "time",
+            values_to = "state"
+        ) |>
+        mutate(
+            patient_id = as.integer(patient_id),
+            time = as.integer(time)
+        ) |>
+        left_join(X_base |> rename(yprev_initial = yprev), by = "patient_id") |>
+        arrange(patient_id, time) |>
+        group_by(patient_id) |>
+        mutate(yprev = lag(state)) |>
+        ungroup()
+
+    # e. Save the final data to a Parquet file.
+    file_name <- sprintf("simulation_x_effect_%.1f.parquet", current_x_effect)
+    write_parquet(final_data, file_name)
+    
+    cat(paste0("Saved data to '", file_name, "'\n\n"))
 }
-```
 
-```{r}
-# Treatment
-if (generate_SOPS) {
-    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df),
-                       .progress=TRUE,
-                       .options = furrr_options(seed=TRUE))
-}
-```
+cat("--- All simulations complete. ---\n")
 
-### Read maginalized SOPs
-
-```{r}
-# Get list of all files
-files <- fs::dir_ls("./2-hosp/output/sops-sim-model/marginalized_sop_0/", glob = "*.parquet")
-
-# Read in each parquet file as a data.frame and merge into a data.table
-soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
-
-# Average SOPs over covariate settings -- for each state, day, and MCMC draw
-soc_df <- soc_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
-soc_df[, state := as.factor(state)]
-```
-
-```{r}
-# Get list of all files
-files <- fs::dir_ls("./2-hosp/output/sops-sim-model/marginalized_sop_1/", glob = "*.parquet")
-
-# Read in each parquet file as a data.frame and merge into a data.table
-tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
-
-# Average SOPs over covariate settings -- for each state, day, and MCMC draw
-tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, week, draw, tx)]
-tx_df[, state := as.factor(state)]
-```
-
-```{r}
-sop_df <-
-  bind_rows(soc_df, tx_df) |>
-  mutate(tx = as.factor(tx))
-```
-
-### Plotting
-
-#### Marginalized SOPs
-
-```{r}
-fig_marginalized <-
-sop_df |>
-  ggplot() +
-  aes(x = week, y = sop) +
-  ggdist::stat_lineribbon(aes(fill = state, linetype = tx),
-                          linewidth = 0.6,
-                          alpha = 0.5,
-                          .width = c(0.95)) +
-  scale_color_viridis_d(end = 0.9) +
-  scale_fill_viridis_d(end = 0.9) +
-  scale_x_continuous(breaks = seq(1, 26, by=4)) +
-  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
-  coord_cartesian(ylim = c(0, 1)) +
-  labs(x = "Study Week",
-   y = "SOP",
-   subtitle = "Marginalized state occupancy probabilities",
-   fill = "State",
-   linetype = "Treatment")
-
-fig_marginalized
-
-ggsave("./img/hosp-marginalized_sop-full-int.svg", fig_marginalized, width = 10, height = 6)
-```
-
-Stacked bar chart using median point estimate
-
-```{r}
-sop_df |>
-  group_by(state, week, tx) |> 
-  summarise(sop = median(sop)) |> 
-  ggplot() +
-  aes(x = week, y = sop, fill = state) +
-  geom_col(position = "fill") +
-  scale_fill_viridis_d(end = 0.9) +
-  scale_x_continuous(breaks = 1:26) +
-  scale_y_continuous(breaks = seq(0, 1, by=0.25)) +
-  coord_cartesian(ylim = c(0, 1)) +
-  facet_wrap(~tx, nrow=1) +
-  labs(x = "Study Week",
-   y = "SOP",
-   subtitle = "Marginalized state occupancy probabilities",
-   fill = "State",
-   linetype = "Treatment")
-
-ggsave("./img/hosp-marginalized_sop-stacked-full-int.svg", width = 10, height = 6)
-```
-
-Posterior of Estimand (Time out of hospital)
-
-```{r}
-difference_in_mean_time_home <- sop_df |> 
-  filter(state == 1) |> 
-  group_by(draw, tx) |> 
-  summarise(mean_weeks = sum(sop)) |> 
-  pivot_wider(id_cols = draw, names_from = tx, names_prefix = "mean_time_tx_", values_from = mean_weeks) |> 
-  summarise(difference = mean_time_tx_1 - mean_time_tx_0)
-
-difference_in_mean_time_home |> 
-  ggplot() +
-  aes(x = difference) +
-  ggdist::stat_dist_halfeye(fill = "orange")
-
-ggsave("./img/hosp-difference-in-mean-time-home-full-int.svg", width = 8, height = 7)
 ```
 
 
