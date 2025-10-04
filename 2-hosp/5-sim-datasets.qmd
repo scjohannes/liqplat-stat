@@ -10,7 +10,6 @@ library(tidyverse)
 library(data.table)
 library(arrow)
 library(rms)
-library(rmsb)
 ```
 
 ## Load data

@@ -23,7 +23,7 @@ library(VGAM)
 ```{r}
 source("./functions/jackknife_mcse.R")
 
-simulate <- FALSE
+simulate <- TRUE
 ```
 
 ## Load data
@@ -52,7 +52,7 @@ df_ypprev <- read_parquet(here("data", "hosp_long_weeks_two_lags.parquet")) |>
 ## Simulation function
 
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data, main_formula, cumulative_arg) {
+run_simulation_iteration <- function(iter_num, base_path, full_data, main_formula, cumulative_arg, constraints = NULL) {
     # This function runs one full simulation iteration.
     
     # --- 1. Setup for the current iteration ---
@@ -74,6 +74,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, main_formul
             vglm(
                 main_formula,
                 cumulative_arg,
+                constraints = constraints,
                 data = data_for_model)
             
         }, error = function(e) {
@@ -95,7 +96,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, main_formul
 
 Resampling WITH replacement
 ```{r}
-run_simulation_iteration_boot <- function(iter_num, base_path, full_data, main_formula, cumulative_arg) {
+run_simulation_iteration_boot <- function(iter_num, base_path, full_data, main_formula, cumulative_arg, constraints) {
 
     set.seed(123 + iter_num)
 
@@ -131,6 +132,7 @@ run_simulation_iteration_boot <- function(iter_num, base_path, full_data, main_f
             vglm(
                 main_formula,
                 cumulative_arg,
+                constraints = constraints,
                 data = data_for_model
             )
         }, error = function(e) {
@@ -151,13 +153,10 @@ run_simulation_iteration_boot <- function(iter_num, base_path, full_data, main_f
 }
 ```
 
-Using ordinal package
-
-
 ## Run Parallelized Simulation
 
 ```{r}
-N_SIMULATIONS <- 1000
+N_SIMULATIONS <- 100
 N_CORES <- 8
 ```
 
@@ -168,8 +167,32 @@ RESULTS_FILE_NO <- "sim-resampling-H0-no-int-freq.parquet"
 RESULTS_FILE_NO_BOOT <- "sim-resampling-H0-no-int-freq-boot.parquet"
 
 if(simulate){
-    main_formula <- ordered(y) ~ tx + rcs(time, 4) + yprev
-    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~ rcs(time, 4))
+    main_formula <- ordered(y) ~ tx + yprev + time_linear + time_nonlinear_1 + time_nonlinear_2
+    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~ time_linear)
+
+    time_spl_m <- rcs(df$time, 4)
+    df$time_linear <- time_spl_m[, 1]
+    df$time_nonlinear_1 <- time_spl_m[, 2]
+    df$time_nonlinear_2 <- time_spl_m[, 3]
+
+    M <- 3
+
+    cons <- list(
+        # Intercepts of course have separate parameters
+        "(Intercept)"        = diag(M),
+
+        # Proportional odds terms now get "column of ones" matrix
+        "tx"                 = cbind(PO_effect = 1),
+        "yprev"              = cbind(PO_effect = 1),
+        "time_nonlinear_1"   = cbind(PO_effect = 1),
+        "time_nonlinear_2"   = cbind(PO_effect = 1),
+
+        # The linear component of the spline gets the special constraint
+        "time_linear" = cbind(
+            baseline_effect = 1,
+            linear_trend    = 0:(M - 1))
+    )
+
 
     future::plan(future.callr::callr, workers = N_CORES)
 
@@ -180,7 +203,8 @@ if(simulate){
             iter_num = .x,
             full_data = df,
             main_formula = main_formula,
-            cumulative_arg = cumulative_arg
+            cumulative_arg = cumulative_arg,
+            constraints = cons
         ),
         .options = furrr_options(seed = TRUE, packages = "rms"),
         .progress = TRUE,
@@ -193,14 +217,15 @@ if(simulate){
             iter_num = .x,
             full_data = df,
             main_formula = main_formula,
-            cumulative_arg = cumulative_arg
+            cumulative_arg = cumulative_arg,
+            constraints = cons,
         ),
         .options = furrr_options(seed = TRUE, packages = "rms"),
         .progress = TRUE,
         .id = "iter" # Automatically adds an iteration column
     )
 
-    write_parquet(results, here(OUTPUT_PATH, RESULTS_FILE_NO))
+    write_parquet(results_non, here(OUTPUT_PATH, RESULTS_FILE_NO))
     write_parquet(results_non_boot, here(OUTPUT_PATH, RESULTS_FILE_NO_BOOT))
 }
 ```
@@ -211,8 +236,32 @@ if(simulate){
 RESULTS_FILE_LIN <- "sim-resampling-H0-linear-int-freq.parquet"
 
 if(simulate){
-    main_formula <- ordered(y)  ~ tx + rcs(time, 4) + yprev + time %ia% yprev
-    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  rcs(time, 4))
+    main_formula <- ordered(y)  ~ tx + time_linear * yprev + time_nonlinear_1 + time_nonlinear_2
+    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  time_linear)
+
+    time_spl_m <- rcs(df$time, 4)
+    df$time_linear <- time_spl_m[, 1]
+    df$time_nonlinear_1 <- time_spl_m[, 2]
+    df$time_nonlinear_2 <- time_spl_m[, 3]
+
+    M <- 3
+
+    cons <- list(
+        # Intercepts of course have separate parameters
+        "(Intercept)"        = diag(M),
+
+        # Proportional odds terms now get "column of ones" matrix
+        "tx"                 = cbind(PO_effect = 1),
+        "yprev"              = cbind(PO_effect = 1),
+        "time_linear:yprev"  = cbind(PO_effect = 1),
+        "time_nonlinear_1"   = cbind(PO_effect = 1),
+        "time_nonlinear_2"   = cbind(PO_effect = 1),
+
+        # The linear component of the spline gets the special constraint
+        "time_linear" = cbind(
+            baseline_effect = 1,
+            linear_trend    = 0:(M - 1))
+    )
 
     # --- Run Simulations in Parallel ---
     results_int <- furrr::future_map_dfr(
@@ -221,7 +270,8 @@ if(simulate){
             iter_num = .x,
             full_data = df,
             main_formula = main_formula,
-            cumulative_arg = cumulative_arg
+            cumulative_arg = cumulative_arg,
+            constraints = cons
         ),
         .options = furrr_options(seed = TRUE, packages = "rms"),
         .progress = TRUE,
@@ -237,9 +287,35 @@ if(simulate){
 ```{r}
 RESULTS_FILE_SECOND <- "sim-resampling-H0-second-order.parquet"
 if(simulate){
-    main_formula <- ordered(y)  ~ tx + rcs(time, 4) + yprev + ypprev
-    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  rcs(time, 4))
+    main_formula <- ordered(y)  ~ tx + yprev + ypprev + time_linear + time_nonlinear_1 + time_nonlinear_2
+    cumulative_arg <- cumulative(reverse = TRUE, parallel = FALSE ~  time_linear)
 
+    df_ypprev <- na.omit(df_ypprev) |> 
+        as.data.table()
+
+    time_spl_m <- rcs(df_ypprev$time, 4)
+    df_ypprev$time_linear <- time_spl_m[, 1]
+    df_ypprev$time_nonlinear_1 <- time_spl_m[, 2]
+    df_ypprev$time_nonlinear_2 <- time_spl_m[, 3]
+
+    M <- 3
+
+    cons <- list(
+        # Intercepts of course have separate parameters
+        "(Intercept)"        = diag(M),
+
+        # Proportional odds terms now get "column of ones" matrix
+        "tx"                 = cbind(PO_effect = 1),
+        "yprev"              = cbind(PO_effect = 1),
+        "ypprev"             = cbind(PO_effect = 1),
+        "time_nonlinear_1"   = cbind(PO_effect = 1),
+        "time_nonlinear_2"   = cbind(PO_effect = 1),
+
+        # The linear component of the spline gets the special constraint
+        "time_linear" = cbind(
+            baseline_effect = 1,
+            linear_trend    = 0:(M - 1))
+    )
 
     # --- Run Simulations in Parallel ---
     results_second <- furrr::future_map_dfr(
@@ -248,7 +324,8 @@ if(simulate){
             iter_num = .x,
             full_data = df_ypprev,
             main_formula = main_formula,
-            cumulative_arg = cumulative_arg
+            cumulative_arg = cumulative_arg,
+            constraints = cons
         ),
         .options = furrr_options(seed = TRUE, packages = "rms"),
         .progress = TRUE,

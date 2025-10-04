@@ -78,6 +78,7 @@ if (sim_status$n_to_run > 0) {
 OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-linear-int")
 sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
 
+
 if (sim_status$n_to_run > 0) {
     message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
 

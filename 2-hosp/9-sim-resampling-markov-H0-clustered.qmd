@@ -2,6 +2,7 @@
 Title: Examining Type I Error with Resampling - with clustering
 ---
 We need a new setup to fit transition model with random intercepts for each patient, because it runs on cmdstan not rstan.
+
 ## Setup
 ```{r}
 # Load Libraries

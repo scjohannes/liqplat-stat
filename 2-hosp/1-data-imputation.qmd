@@ -18,7 +18,7 @@ These are historic data from patients of the Division of Medical Oncology at USB
 
 ```{r}
 set.seed(1234)
-df_raw <- read_parquet("data/data_hosp_long.parquet")
+df_raw <- read_parquet("data/long_data.parquet")
 ```
 
 ### Simplify some baseline varaibles
@@ -176,14 +176,10 @@ The diagnostics look fine to me.
 ```{r}
 plot(imputed_data)
 densityplot(imputed_data)
-
-stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
 ```
 ```{r}
 plot(imputed_data_wide)
 densityplot(imputed_data_wide)
-
-stripplot(imputed_data, albumin ~ .imp, pch = 20, cex = 1.2)
 ```
 
 I currently prefer the cluster level imputation.

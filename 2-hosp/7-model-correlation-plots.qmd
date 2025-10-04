@@ -1,6 +1,9 @@
 ---
 Title: Examining correlation of sim data
 ---
+
+Need to add the final analysis model to the previous quarto, so that we can again run this document correctly.
+
 ## Setup
 
 ```{r}

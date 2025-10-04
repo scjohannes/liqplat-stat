@@ -1,5 +1,5 @@
 ---
-Title : QoL Data Preparation
+Title : Hospital Multistate Data Preparation
 ---
 
 ## Setup
@@ -42,6 +42,7 @@ df_weeks <- df |>
         week = ceiling(day / 7),
         surv_weeks = ceiling(survival_time/7)
     ) |> 
+    filter(week > -2) |> 
     group_by(pat_id, week) |> 
     arrange(desc(y)) |> 
     slice_head(n = 1) |> 
@@ -55,7 +56,8 @@ df_weeks <- df |>
         gap = 1) |> 
     slice(-1) |> 
     ungroup() |> 
-    relocate(pat_id, tx, y, yprev)
+    select(-day) |> 
+    relocate(pat_id, tx, y, yprev, week)
 ```
 
 ## Create data set with ypprev (2 weeks ago) for second order model
@@ -71,6 +73,9 @@ df_ypprev <- df_weeks  |>
     slice(-1) |> 
     ungroup() |> 
     relocate(pat_id, tx, y, yprev, ypprev)
+
+df_weeks <- df_weeks |> 
+    filter(week > 0)
 ```
 
 ## Data daily
@@ -94,6 +99,7 @@ df_daily <- df |>
         gap = 1) |> 
     slice(-1) |> 
     ungroup() |> 
+    filter(day > 0) |> 
     relocate(pat_id, tx, y, yprev, ypprev)
 ```
 
