@@ -40,35 +40,12 @@ We fit a model without a treatment parameter. We will randomly assign a treatmen
 We will use the same for model for HA, but simulate a treatment effect during the simulation of the dataset.
 
 ```{r}
-if (fit) {
-    Sys.setenv(RSTUDIO = 1)
-    
-    dd <- datadist(d)
-    options(datadist = 'dd')
-    options(mc.cores = 4)
-    
-  fit_h0 <- blrm(
-    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age,3),
-    data = d,
-    refresh = 5,
-    iter = 2000,
-    chains = 4,
-    seed = 1234,
-    method = "sampling",
-    backend = "cmdstan"
+fit_h0 <- orm(
+    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
+    data = d
   )
-  saveRDS(fit_h0, "./2-hosp/models/fit-hosp-null.rds")
-
-
-  Sys.setenv(RSTUDIO = 0)
-} else{
-  fit_h0 <- readRDS("./2-hosp/models/fit-hosp-null.rds")
-}
 
 fit_h0
-
-# stanDx(fit_h0)
-# stanDxplot(fit_h0)
 ```
 
 ## Simulations function
@@ -76,7 +53,7 @@ fit_h0
 ### Simulate baseline data
 
 ```{r}
-N <- 1000
+N <- 50000
 baseline_data <- d |> 
   filter(week == 1) |> 
   select(yprev, ypprev, ecog_fstcnt, gender, diagnosis, age, albumin, c_reactive_protein) |> 
@@ -87,176 +64,211 @@ baseline_data <- d |>
     x = rnorm(N) # add patient specific offset
     ) |> 
   data.frame()
-
-# x_effects <- seq(-1, 1, by = 1)
-times <- 1:26
-# intercept and parameters
-ints <- fit_h0$draws[, 1:4] |> apply(2, median)
-#reverse the order for easier use later
-ints <- rev(ints)
 ```
 
-### Simulation Function
+### Predict next states
 
 ```{r}
-predict_new_y <- function(model, t, data, parameter = 0, x_effect = 0, ints) {
-    data$week <- as.integer(t)
-    lp <- predict(model, newdata = data, type = "lp")[1]$linear.predictors
-    
-    lp <- lp + parameter * data$tx + x_effect * data$x
-    cut_points <- outer(ints, lp, FUN = "+")
+# Vectorized version: computes category probabilities for all rows in `newdata` at once
+# and returns an integer vector of sampled categories (1..k+1).
+predict_next_state_vec <- function(model, newdata, k,
+                                   tx_effect = log(1), x_effect = log(1)) {
+  N <- nrow(newdata)
 
-    cumulative_probs <- t(plogis(cut_points))
-    prob_matrix <- cbind(cumulative_probs, 1) - cbind(0, cumulative_probs)
-    colnames(prob_matrix) <- 1:ncol(prob_matrix)
+  # Get cumulative-logit linear predictors for each cutpoint, for ALL rows at once.
+  # Had simple loop before, but vapply is much faster
+  # Each call returns a length-N numeric vector.
+  eta_mat <- vapply(
+    X = seq_len(k),
+    FUN = function(i) {
+      as.numeric(predict(model, newdata = newdata, type = "lp", kint = i))
+    },
+    FUN.VALUE = numeric(N)
+  )
+  # Now eta_mat is N x K (rows: patients, cols: cutpoints 1..K)
 
-    y_new_active <- apply(prob_matrix, 1, function(p) {
-            sample(5:1, size = 1, prob = p)
-        })
+  # Add external shifts (same shift to all cutpoints per row)
+  shift <- newdata$tx * tx_effect + newdata$x * x_effect
+  eta_mat <- sweep(eta_mat, 1, shift, FUN = "+")
 
-    return(y_new_active)
+  # Add +/- Inf boundaries, convert to probs via logistic, then difference adjacent CDFs
+  # to get category probabilities (N x (k+1))
+  eta_ext <- cbind(Inf, eta_mat, -Inf)                        # N x (K+2)
+  p_ext   <- plogis(eta_ext)
+  sop     <- p_ext[, 1:(k+1), drop = FALSE] - p_ext[, 2:(k+2), drop = FALSE]  # N x (K+1)
+
+  # Row-wise categorical sampling without loops: inverse-CDF method
+  u <- runif(N) #between 0 and 1 by default
+  # cumulative probabilities by row
+  cs <- t(apply(sop, 1, cumsum))                              # N x (K+1)
+  # first index where cumprob >= u
+  picks <- 1L + rowSums(cs < u)                               # integer in 1..(k+1)
+  return(picks)
 }
 ```
 
-There's still a mistake. Transitions are almost not happening. Need to debug more.
 ```{r}
-y <- matrix(NA, ncol = 26, nrow = N)
-# Loop over each time point (week)
-for(i in 1:26) { # Loop over the full 26 weeks
-  
-  active_patients_idx <- which(baseline_data$yprev != "5")
-  inactive_patients_idx <- which(baseline_data$yprev == "5")
-  
-  # For inactive patients, carry the '5' forward
-  if (length(inactive_patients_idx) > 0) {
-    y[inactive_patients_idx, i] <- 5
+generate_trajectories <- function(model, baseline_data, times, k,
+                                       absorbing_state = NULL,
+                                       tx_effect = log(1), x_effect = log(1),
+                                       seed = 1234, verbose = FALSE) {
+  set.seed(seed)
+
+  # Keep factors as factors; we’ll only update their character levels once where needed.
+  N <- nrow(baseline_data)
+
+  # Validate factor coding just once
+  yprev_levels <- levels(baseline_data$yprev)
+  ypprev_levels <- levels(baseline_data$ypprev)
+  if (is.null(yprev_levels) || is.null(ypprev_levels)) {
+    stop("Error: 'yprev' and 'ypprev' must be factor variables.")
   }
-  
-  # For active patients, run the prediction function
-  if (length(active_patients_idx) > 0) {
-    # Subset data for only the active patients
-    active_data <- baseline_data[active_patients_idx, ]
-    
-    # Predict new outcomes for the active group
-    y_new_active <- predict_new_y(
-      model = fit_h0,
-      t = i,
-      data = active_data,
-      parameter = 0,
-      x_effect = 0,
-      ints = ints
-    )
-    
-    # Assign the new outcomes to the correct rows in the main 'y' matrix
-    y[active_patients_idx, i] <- y_new_active
-  }
-  
-  # 4. Update history variables for ALL patients for the next iteration
-  # ypprev gets the old value of yprev
-  baseline_data$ypprev <- baseline_data$yprev
-  # yprev gets the new value from the current week's simulation
-  baseline_data$yprev <- as.character(y[, i])
-}
-```
 
-## Apply simulation function
+  # Working copy (avoid data.frame conversion thrash)
+  current <- baseline_data
 
-Create baseline data
-```{r}
-X_base <- data.frame(
-    tx = sample(c(0, 1), size = N, replace = TRUE),
-    X = rnorm(N),
-    yprev = sample(c("1", "2", "3", "4"), N, replace = TRUE,  prob = c(0.8, 0.1, 0.05, 0.05))
-) |>
-mutate(patient_id = row_number())
-```
+  # Preallocate results list
+  out <- vector("list", length(times))
 
-Generate datasets
+  # Helper to optionally print
+  msg <- function(...) if (isTRUE(verbose)) message(sprintf(...))
 
-```{r}
-for (current_x_effect in x_effects) {
-    
-    cat(paste0("--- Starting simulation for X effect = ", current_x_effect, " ---\n"))
+  for (i in seq_along(times)) {
+    t <- times[i]
+    if (verbose) msg("Week %s (%d/%d)", t, i, length(times))
 
-    # a. Set the model parameters for the current scenario.
-    extra <- c(
-        `yprev=2` = log(10), 
-        `yprev=3` = log(3), 
-        `yprev=4` = log(40),
-        week      = log(0.95)
-    )
-    extra["X"] <- current_x_effect
+    # Set the week column once for all rows this step
+    current$week <- t
 
-    # b. Initialize the matrix to store patient states over time.
-    state_matrix <- matrix(
-        as.numeric(X_base$yprev), 
-        nrow = N, 
-        ncol = length(times) + 1,
-        dimnames = list(X_base$patient_id, 0:28)
-    )
-
-    # c. Run the simulation over the time points.
-    for (t in times) {
-        yprev <- state_matrix[, t]
-        active_idx <- which(yprev != 5)
-        
-        if (length(active_idx) == 0) {
-          if (t <= max(times)) {
-            state_matrix[, (t + 1):ncol(state_matrix)] <- 5
-          }
-          break
-        }
-        
-        yprev_active <- yprev[active_idx]
-        X_active <- X_base[active_idx, ]
-        
-        lp <- mapply(
-            FUN = g,
-            yprev = yprev_active,
-            tx_val = X_active$tx,
-            x_val = X_active$X,
-            MoreArgs = list(t = t, parameter = parameter, extra_params = extra)
-        )
-        
-        thresholds_matrix <- outer(ints, lp, FUN = "+")
-        cum_probs <- t(plogis(thresholds_matrix))
-        prob_matrix <- cbind(cum_probs, 1) - cbind(0, cum_probs)
-        
-        y_new_active <- apply(prob_matrix, 1, function(p) {
-            sample(5:1, size = 1, prob = p)
-        })
-        
-        state_matrix[, t + 1] <- yprev
-        state_matrix[active_idx, t + 1] <- y_new_active
+    # Absorption mask: absorbed if previous state equals absorbing_state
+    if (!is.null(absorbing_state)) {
+      absorbed <- current$yprev == as.character(absorbing_state)
+    } else {
+      absorbed <- rep(FALSE, N)
     }
 
-    # d. Format the results into a long data frame.
-    final_data <- as.data.frame(state_matrix) |>
-        tibble::rownames_to_column(var = "patient_id") |>
-        tidyr::pivot_longer(
-            cols = -patient_id,
-            names_to = "time",
-            values_to = "state"
-        ) |>
-        mutate(
-            patient_id = as.integer(patient_id),
-            time = as.integer(time)
-        ) |>
-        left_join(X_base |> rename(yprev_initial = yprev), by = "patient_id") |>
-        arrange(patient_id, time) |>
-        group_by(patient_id) |>
-        mutate(yprev = lag(state)) |>
-        ungroup()
+    # Sample next states for the non-absorbed patients in one vectorized call
+    y_new <- integer(N)
 
-    # e. Save the final data to a Parquet file.
-    file_name <- sprintf("simulation_x_effect_%.1f.parquet", current_x_effect)
-    write_parquet(final_data, file_name)
-    
-    cat(paste0("Saved data to '", file_name, "'\n\n"))
+    if (any(!absorbed)) {
+      picks <- predict_next_state_vec(
+        model, current[!absorbed, , drop = FALSE], k = k,
+        tx_effect = tx_effect, x_effect = x_effect
+      )
+      y_new[!absorbed] <- picks
+    }
+    if (any(absorbed)) {
+      y_new[absorbed] <- absorbing_state
+    }
+
+    # Store results for this week (keep as integers; convert to factor later if needed)
+    out[[i]] <- data.frame(
+      pat_id = current$pat_id,
+      week   = t,
+      y      = y_new,
+      stringsAsFactors = FALSE
+    )
+
+    # Roll the state forward:
+    # ypprev <- old yprev ; yprev <- new y
+    # (keep them as character to avoid refactor overhead inside the loop)
+    current$ypprev <- as.character(current$yprev)
+    current$yprev  <- as.character(y_new)
+  }
+
+  
+  res <- do.call(rbind, out)
+  res$y <- factor(res$y, levels = seq_len(k + 1), ordered = TRUE)
+
+  res
 }
-
-cat("--- All simulations complete. ---\n")
-
 ```
 
+```{r}
+patient_trajectories <- generate_trajectories(
+  model = fit_h0,
+  baseline_data = baseline_data,
+  times = 1:26,
+  k = 4,
+  absorbing_state = 5,
+  tx_effect = log(1),
+  x_effect = log(1),
+  seed = 1234,
+  verbose = FALSE
+)
 
+sim_data <- baseline_data |> 
+  rename(
+    yprev_base = yprev, 
+    ypprev_base = ypprev,
+    ) |> 
+  left_join(patient_trajectories, by = "pat_id") |> 
+  arrange(pat_id, week) |> 
+  group_by(pat_id) |> 
+  mutate(
+    yprev  = lag(y, 1),
+    ypprev = lag(y, 2),
+    # For the first one or two weeks, seed lags from baseline
+    yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
+    ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
+  ) |> 
+  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week))) |> 
+  filter(week <= dweek) |> 
+  ungroup() |> 
+  mutate(
+    y          = as.numeric(y),
+    yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
+    ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
+  ) |> 
+    select(-yprev_base, -ypprev_base, -dweek, -x)
+
+
+fit_test <- orm(
+    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
+    data = sim_data
+  )
+
+# we have very close agreement between model used to generate data and same model fit to generated data
+# if we set the treatment effect and x effect to log(1) 
+cbind(round(coef(fit_h0_freq), 3), round(coef(fit_test), 3))
+```
+
+### Visualize simulated data
+
+```{r}
+baseline_data |> 
+  left_join(patient_trajectories, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  ggplot(aes(x = week, y = prop)) +
+  # stacked bar char
+  geom_bar(aes(fill = factor(y)), stat = "identity", position = "fill") +
+  facet_wrap(~ tx) +
+  labs(
+    title = "Simulated patient trajectories",
+    x = "Week",
+    y = "Proportion",
+    fill = "State",
+    color = "State"
+  )
+
+
+baseline_data |> 
+  left_join(patient_trajectories, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  ggplot(aes(x = week, y = prop, color = factor(y))) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ tx) +
+  labs(
+    title = "Simulated patient trajectories",
+    x = "Week",
+    y = "Proportion",
+    fill = "State",
+    color = "State"
+  )
+```
