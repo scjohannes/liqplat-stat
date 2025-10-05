@@ -310,6 +310,7 @@ p2 <- avg_predictions(fit_ctdna_detected) |>
   posterior_draws() |>
   ggplot(aes(x = draw)) + stat_halfeye() + labs(title = "Proportion with ctDNA Detected at Baseline", x = "Probability")
 
+# This is what we observed in our dataset on average (averaged across patients)
 p3 <- avg_predictions(
   fit_chip,
   re_formula = NULL) |> # NA ignores random effects, NULL marginalizes over them
@@ -317,6 +318,11 @@ p3 <- avg_predictions(
   ggplot(aes(x = draw)) + stat_halfeye() + labs(title = "Estimated (marginal) Probability of a found Variant to be CHIP", x = "Probability")
 
 # we marginalize over the covariates to look just at the effect of age, alls things equal
+
+# need to think a bit better about what we want to predict
+# would probably go for prediction for an average patient instead of a marginal prediction
+
+# But this depends heavily on the distribution of genes in our sample...
 p4 <- plot_predictions(
   fit_chip,
   by = "age",
@@ -329,12 +335,18 @@ p4 <- plot_predictions(
     y = "Probability"
   )
 
-# marginalized probability for each gene to be classified as CHIP, intergrates random effects
+# prediction for the median patient (65 years) at at baseline (time_point = 0)
+nd <- datagrid(model = fit_chip, gene_id = unique(sim_data_variants$gene_id), time_point = 0)
+
+# marginalized probability for each gene to be classified as CHIP
+# we ignore the random effects of patients (prediction for an average patient) but make predicitions conditional on random effect of gene
+
 variant_specific <- avg_predictions(
   fit_chip,
+  newdata = nd,
   by = "gene_id",
   variables = "gene_id",
-  re_formula = NULL
+  re_formula = ~(1 | gene_id)
 )
 
 p5 <- variant_specific |> 
