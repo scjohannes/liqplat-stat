@@ -37,52 +37,29 @@ source("./functions/load-rhat-values.R")
 
 ## Markov Models
 
-### Resampling H0 (empirical)
+### H0
 
 #### Load draws + diagnostics
 ```{r}
-# H0 no interaction
-path <- "./2-hosp/output/sim-resampling-H0-no-int/"
-no_int_h0 <- load_draws(path)
-rhat_no_int_h0 <- load_rhat_values(path = path)
+# H0 misspecified, no clustering
+path <- "./2-hosp/output/sim-H0-misspec/"
+misspec_h0 <- load_draws(path)
+rhat_misspec_h0 <- load_rhat_values(path = path)
 
-# H0 no interaction with regularizing prior
-path <- "./2-hosp/output/sim-resampling-H0-no-int-regularizing/"
-no_int_h0_reg <- load_draws(path)
-rhat_no_int_h0_reg <- load_rhat_values(path = path)
-
-# H0 linear interaction
-path <- "./2-hosp/output/sim-resampling-H0-linear-int/"
-linear_int_h0 <- load_draws(path)
-rhat_linear_int_h0 <- load_rhat_values(path = path)
-
-# H0 full interaction
-path <- "./2-hosp/output/sim-resampling-H0-full-int/"
-full_int_h0 <- load_draws(path)
-rhat_full_int_h0 <- load_rhat_values(path = path)
-
-# H0 no interaction w/ clustering
-path <- "./2-hosp/output/sim-resampling-H0-no-int-cluster/"
-no_int_h0_cluster <- load_draws(path)
-rhat_no_int_h0_cluster <- load_rhat_values(path = path)
+path <- "./2-hosp/output/sim-H0-correct-spec/"
+true_h0 <- load_draws(path)
+rhat_true_h0 <- load_rhat_values(path = path)
 ```
 
 #### Convergence diagnostics
 ```{r}
-rhat_plot_no_int_h0 <- rhat_no_int_h0 |> 
-    plot_rhat(y = `tx=1`)
+rhat_plot_misspec_h0 <- rhat_misspec_h0 |> 
+    plot_rhat(y = `beta.1.`)
 
-rhat_plot_no_int_h0_reg <- rhat_no_int_h0_reg |>
-    plot_rhat(y = `tx=1`)
+rhat_plot_true_h0 <- rhat_true_h0 |> 
+    plot_rhat(y = `beta.1.`)
 
-rhat_plot_linear_int_h0 <- rhat_linear_int_h0 |>
-    plot_rhat(y = `tx=1`)
-
-rhat_plot_full_int_h0 <- rhat_full_int_h0 |>
-    plot_rhat(y = `tx=1`)
-
-rhat_plot_no_int_h0_cluster <- rhat_no_int_h0_cluster |> 
-    plot_rhat(y = beta.1.)
+rhat_plot_misspec_h0 + rhat_plot_true_h0
 
 # ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
@@ -90,52 +67,34 @@ rhat_plot_no_int_h0_cluster <- rhat_no_int_h0_cluster |>
 #### Plot probability of benefit
 
 ```{r}
-p1 <- no_int_h0 |> 
+p1 <- misspec_h0 |> 
     plot_p_benefit(param = `tx=1`)
 
-p1_reg <- no_int_h0_reg |>
+p2 <- true_h0 |> 
     plot_p_benefit(param = `tx=1`)
 
-p2 <- linear_int_h0 |>
-    plot_p_benefit(param = `tx=1`)
-
-p3 <- full_int_h0 |>
-    plot_p_benefit(param = `tx=1`)
-
-p4 <- no_int_h0_cluster |>
-    plot_p_benefit(param = `tx=1`)
-
-(p1 + p2) / (p3 + p4)
-
-
+p1 + p2
 
 # ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
 #plotting stacked posteriors
-post_no_int_h0 <- no_int_h0 |> 
-  plot_posterior_distribution(x_variable = `tx=1`)
+p1 <- misspec_h0 |> 
+  plot_posterior_distribution(x_variable = `tx=1`) +
+  labs(title = "Misspecified, no random intercept per patient.")
 
-post_no_int_h0_reg <- no_int_h0_reg |>
-  plot_posterior_distribution(x_variable = `tx=1`)
+p2 <- true_h0 |> 
+  plot_posterior_distribution(x_variable = `tx=1`) +
+  labs(title = "Analysis model = data generating model")
 
-post_linear_int_h0 <- linear_int_h0 |>
-  plot_posterior_distribution(x_variable = `tx=1`)
-
-post_full_int_h0 <- full_int_h0 |>
-  plot_posterior_distribution(x_variable = `tx=1`)
-
-post_no_int_h0_cluster <- no_int_h0_cluster |> 
-  plot_posterior_distribution(x_variable = `tx=1`)
-
-(post_no_int_h0 + post_linear_int_h0) / (post_full_int_h0 + post_no_int_h0_cluster)
+p1 + p2
 
 # ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
-summary_no_int_h0 <- no_int_h0 |> 
+summary_misspec_h0 <- misspec_h0 |> 
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx=1`, 
@@ -143,34 +102,7 @@ summary_no_int_h0 <- no_int_h0 |>
         threshold = 0.95) |> 
     summarise_iterations()
 
-summary_no_int_h0_reg <- no_int_h0_reg |>
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = `tx=1`, 
-        true_param_value = log(1), 
-        threshold = 0.95) |> 
-    summarise_iterations()
-
-summary_linear_int_h0 <- linear_int_h0 |>
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = `tx=1`, 
-        true_param_value = log(1), 
-        threshold = 0.95) |> 
-    summarise_iterations()
-
-summary_full_int_h0 <- full_int_h0 
-
-
-|>
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = `tx=1`, 
-        true_param_value = log(1), 
-        threshold = 0.95) |> 
-    summarise_iterations()
-
-summary_no_int_h0_cluster <- no_int_h0_cluster |> 
+summary_true_h0 <- true_h0 |>
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx=1`, 
@@ -180,14 +112,12 @@ summary_no_int_h0_cluster <- no_int_h0_cluster |>
 
 # create dataframe with for comparison
 all_summaries <- bind_rows(
-  'no_int' = summary_no_int_h0,
-  'linear_int' = summary_linear_int_h0,
-  'full_int' = summary_full_int_h0,
-  'no_int_cluster' = summary_no_int_h0_cluster,
+  'true_model' = summary_true_h0,
+  'misspec_model' = summary_misspec_h0,
   .id = 'model_type'
 )
 
-all_summaries |> tinytable::tt()
+# all_summaries |> tinytable::tt()
 
 formatted_summary <- all_summaries |> 
   # transmute creates new columns and drops the old ones
@@ -205,36 +135,6 @@ formatted_summary <- all_summaries |>
 formatted_summary |> knitr::kable()
 
 saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
-```
-
-### SIMULATED DATA UNDER H0 -------------------
-
-```{r}
-# Load the simulated data
-
-# model used to simulate data and model used to analyze data match
-# no interaction
-# N = 250
-path <- "./2-hosp/output/sim-simdata-H0-no-int-bayes-250-correct/"
-no_int_h0 <- load_draws(path)
-rhat_no_int_h0 <- load_rhat_values(path = path)
-
-rhat_plot_no_int_h0 <- rhat_no_int_h0 |> 
-    plot_rhat(y = `tx=1`)
-
-p_benefit_plot_no_int_h0 <- no_int_h0 |> 
-    plot_p_benefit(param = `tx=1`)
-
-post_no_int_h0 <- no_int_h0 |> 
-  plot_posterior_distribution(x_variable = `tx=1`)
-
-summary_no_int_h0 <- no_int_h0 |> 
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = `tx=1`, 
-        true_param_value = log(1), 
-        threshold = 0.95) |> 
-    summarise_iterations()
 ```
 
 ## Count Regression
