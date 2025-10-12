@@ -1,7 +1,7 @@
 ---
-Title: Examining Type I Error with Resampling - with clustering
+Title: Type I Error  - Misspecified with clustering
 ---
-We need a new setup to fit transition model with random intercepts for each patient, because it runs on cmdstan not rstan.
+
 
 ## Setup
 ```{r}
@@ -23,39 +23,18 @@ library(rmsb)
 set.seed(1234)
 
 # Load full dataset
-# If we reasign the treatment again and again, emergency room visits are a bit too rare and mess up transitions
-# We therefore collapse staet 3 and 4
-df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
-    mutate(
-        y = if_else(y == 4, 3, y),
-        y = if_else(y == 5, 4, y),
-        yprev = if_else(yprev == "4", "3", yprev),
-        yprev = factor(yprev)) |> 
-    select(id, tx, y, yprev, time = week)
-
-if(FALSE){# fit original model
-    cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
-        options(mc.cores = 4)
-        model <- blrm(
-                    formula = y  ~ tx + yprev + rcs(time, 4) + cluster(id),
-                    data = df,
-                    ppo = ~ time,
-                    cppo = function(y) y,
-                    refresh = 0,
-                    iter = 2000,
-                    chains = 4,
-                    seed = 1234,
-                    loo = FALSE,
-                    method = "sampling",
-                    backend = "cmdstan"
-                )
-        saveRDS(model, file = here("2-hosp", "models", "model_hosp_rcs_cluster_no_int.rds"))
-} else{
-    model <- readRDS(here("2-hosp", "models", "model_hosp_rcs_cluster_no_int.rds"))
-}
+df <- read_parquet(here("2-hosp", "sim-data", "h0.parquet")) |> 
+    relocate(pat_id, week, tx, y, yprev, ypprev) |> 
+    mutate(y = as.integer(y),
+           yprev = as.factor(yprev),
+           ypprev = as.factor(ypprev)) |> 
+    rename(id = pat_id) |> 
+    ungroup()
 ```
 
 ## Simulation function
+
+We assume 20% non-uptake, so n = 270.
 
 ```{r}
 run_simulation_iteration <- function(iter_num, base_path, full_data) {
@@ -69,17 +48,17 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     }
 
     # Resample from data with no effect
-    tx_ids <- full_data |> 
-        distinct(id) |> 
-        sample_frac(2/3) |> pull(id)
+    # "Re-Randomize" treatment assignment for more variability
+    tx_ids <- sample(unique(full_data$id), size = 180, replace = FALSE)
+    soc_ids <- sample(unique(full_data$id), size = 90, replace = FALSE)
 
     data_for_model <- full_data |> 
+        filter(id %in% c(tx_ids, soc_ids)) |>
         mutate(
-            tx = if_else(id %in% tx_ids, "1", "0"),
-            tx = factor(tx, levels = c(0, 1)))
+            tx = if_else(id %in% tx_ids, "1", "0")
+        )
     
     rm(full_data)
-
 
     # --- 5. Save the data used for model fitting ---
     saveRDS(data_for_model, file.path(iter_path, "data_for_model.rds"))
@@ -90,16 +69,15 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
     
     if (nrow(data_for_model) > 0) {
-        cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
+        # cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
+
         options(rmsbdir=iter_path) # for cmd need to save commpiled code to disk. 
 
         options(mc.cores = 1)
         model <- tryCatch({        
             blrm(
-                    formula = y  ~ tx + yprev + rcs(time, 4) + cluster(id),
+                    formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + cluster(id),
                     data = data_for_model,
-                    ppo = ~ time,
-                    cppo = function(y) y,
                     refresh = 0,
                     iter = 2000,
                     chains = 4,
@@ -127,10 +105,11 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
         
         # --- 7. Save the results ONLY if the model ran successfully ---
         if (!is.null(model)) {
-            # Save the full model object (it's too large)
+            # Don't save the full model object (it's too large)
             # saveRDS(model, file.path(iter_path, "model_object.rds"))
             
             # Save just the MCMC draws to a separate file
+            # we actually need to the full model object for marginalization
             saveRDS(as.data.table(model$draws), file.path(iter_path, "model_draws.rds"))
 
             rhat_values <- model$diagnostics$summary  |> 
@@ -157,9 +136,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 1200
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-no-int-cluster")
-N_CORES <- 28
+N_SIMULATIONS <- 8
+OUTPUT_PATH <- here("2-hosp", "output", "sim-H0-cluster-misspec")
+N_CORES <- 4
 
 message("Checking for previously completed simulation runs...")
 

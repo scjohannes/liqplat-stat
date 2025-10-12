@@ -2,7 +2,8 @@
 Title: Examining correlation of sim data
 ---
 
-Need to add the final analysis model to the previous quarto, so that we can again run this document correctly.
+Have to replace this simdata with the sim data from our analysis model.
+Because right now it's actually from the data generating model, which contains far more variables.
 
 ## Setup
 
@@ -15,47 +16,15 @@ library(data.table)
 
 ## Load data
 ```{r}
-linear_interaction <- read_parquet("./2-hosp/sim-data/sim_data_linear_interaction_forward.parquet")
-no_interaction <- read_parquet("./2-hosp/sim-data/sim_data_no_interaction_forward.parquet")
-full_interaction <- read_parquet("./2-hosp/sim-data/sim_data_po_const_forward.parquet")
-real_data <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+sim_data <- read_parquet("./2-hosp/sim-data/h0_forward.parquet") |> 
     rename(
         id = pat_id, 
         time = week)
-```
-
-Reminder on model specificaions:
-
-```
-model_full_int <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) * yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        iter = 2000,
-        chains = 4
-    )
-
-model_lin_int <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) + yprev + yprev %ia% week + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        iter = 2000,
-        chains = 4
-    )
-
-model_no_int <-
-      blrm(
-        formula = y  ~ tx + pol(week, 3) + yprev + ecog_fstcnt + diagnosis + age + gender + albumin + c_reactive_protein,
-        data = df,
-        ppo = ~ week,
-        cppo = function(y) y,
-        iter = 2000,
-        chains = 4
-    )
+real_data <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
+    filter(week > 0) |> 
+    rename(
+        id = pat_id, 
+        time = week)
 ```
 
 ## Carry Death Forward
@@ -131,12 +100,11 @@ corr_actual |>
 ggsave(filename = "./img/fig-emp-cor-heat-hosp-weekly.svg", height = 10, width = 11)
 ```
 
-### No interaction
+### Simulated Data based on model
 
 ```{r}
-corr_no <-
-    no_interaction |> 
-    filter(tx == 0) |> 
+corr_sim <-
+    sim_data |> 
     select(id, time, y) |>
     arrange(time) |>
     mutate(y = as.integer(y)) |>
@@ -145,7 +113,7 @@ corr_no <-
     select(-id) |>
     cor(method="spearman", use="pairwise.complete.obs")
 
-corr_no |>
+corr_sim |>
   as.data.frame() |>
   rownames_to_column() |>
   pivot_longer(-rowname) |>
@@ -173,123 +141,21 @@ corr_no |>
          fill="",
          subtitle = "Simulated Data (no interaction)")
 
-ggsave(filename = "./img/fig-sim-cor-heat-hosp-weekly-no-int.svg", height = 10, width = 11)
+ggsave(filename = "./img/fig-sim-cor-heat.svg", height = 10, width = 11)
 ```
-
-### Linear interaction
-
-```{r}
-corr_lin <-
-  linear_interaction |> 
-  filter(tx == 0) |> 
-    select(id, time, y) |>
-    arrange(time) |>
-    mutate(y = as.integer(y)) |>
-    pivot_wider(names_from = time, values_from = y) |>
-    ungroup() |>
-    select(-id) |>
-    cor(method="spearman", use="pairwise.complete.obs")
-
-corr_lin |>
-  as.data.frame() |>
-  rownames_to_column() |>
-  pivot_longer(-rowname) |>
-  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
-  filter(rowname < name) |> #remove tiles below diagonal, because redundant
-  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
-  ggplot() + 
-    aes(x=rowname, y=name, fill=value) +
-    geom_tile() +
-    geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
-              color="black",
-              size = 3) +
-    scale_fill_viridis_c(limits=c(-0.01,1), n.breaks = 10) +
-    expand_limits(value = c(0, 1)) +
-    # cowplot::theme_half_open(font_size=FONT_SIZE,
-    #           font_family = "Source Sans Pro") +
-    theme(plot.title = element_text(hjust = 0.5),
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank()) +
-    theme(axis.line = element_blank(),
-          axis.ticks = element_blank()) +
-    theme(legend.key.height = unit(0.8, "in")) +
-    labs(x="Study week",
-         y="Study week",
-         fill="", 
-         subtitle = "Simulated Data (linear interaction only)")
-
-ggsave(filename = "./img/fig-sim-cor-heat-hosp-weekly-lin-int.svg", height = 10, width = 11)
-```
-
-### Full interaction
-
-```{r}
-corr_full <-
-  full_interaction |>
-    filter(tx == 0, id <= 20000) |> 
-    select(id, time, y) |>
-    arrange(time) |>
-    mutate(y = as.integer(y)) |>
-    pivot_wider(names_from = time, values_from = y) |>
-    ungroup() |>
-    select(-id) |>
-    cor(method="spearman", use="pairwise.complete.obs")
-
-corr_full |>
-  as.data.frame() |>
-  rownames_to_column() |>
-  pivot_longer(-rowname) |>
-  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
-  filter(rowname < name) |> #remove tiles below diagonal, because redundant
-  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
-  ggplot() + 
-    aes(x=rowname, y=name, fill=value) +
-    geom_tile() +
-    geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
-              color="black",
-              size = 3) +
-    scale_fill_viridis_c(limits=c(-0.01,1), n.breaks = 10) +
-    expand_limits(value = c(0, 1)) +
-    # cowplot::theme_half_open(font_size=FONT_SIZE,
-    #           font_family = "Source Sans Pro") +
-    theme(plot.title = element_text(hjust = 0.5),
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank()) +
-    theme(axis.line = element_blank(),
-          axis.ticks = element_blank()) +
-    theme(legend.key.height = unit(0.8, "in")) +
-    labs(x="Study week",
-         y="Study week",
-         fill="", 
-         subtitle = "Simulated Data (full interaction yprev * poly(week, 3))")
-
-ggsave(filename = "./img/fig-sim-cor-heat-hosp-weekly-full-int.svg", height = 10, width = 11)
-```
-
 ### Absolute differences between correlation matrices
 
 Means of absolute differences, stratified by the day involved.
 ```{r}
-ad <- abs(corr_actual - corr_no)
+ad <- abs(corr_actual - corr_sim)
 m <- round(apply(ad, 1, mean), 2) |> data.table() |> 
-    rename(no_int = V1)
-
-ad <- abs(corr_actual - corr_lin)
-m <- round(apply(ad, 1, mean), 2) |> data.table() |> 
-    rename(lin_int = V1) |> 
-    cbind(m)
-
-ad <- abs(corr_actual - corr_full)
-m <- round(apply(ad, 1, mean), 2) |> data.table() |> 
-    rename(full_int = V1) |> 
-    cbind(m)
+    rename(abs_diff = V1)
 
 m |> 
   rownames_to_column("rownames") |>
   pivot_longer(names_to = "model", values_to = "value", -rownames) |>
   pivot_wider(names_from = rownames, values_from = value) |> 
   knitr::kable()
-
 
 
 m |> summarise_all(sum)

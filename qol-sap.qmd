@@ -300,38 +300,49 @@ The primary analysis uses a Bayesian first-order Markov state transition model f
 
 #### Mathematical Notation
 
-Let $y_{it}$ be the ordinal QoL state (from 1 to 7, where 1 is best) for patient $i$ at week $t$. Let $y_{it'}$ be their last observed state at a prior week $t'$, and let the time gap be $\Delta t = t - t'$. The model is specified as a cumulative logit model for the transition probabilities:
+Let $y_{it}$ be the ordinal QoL state for patient $i$ at week $t$. The outcome has $K = 7$ ordered categories, where $y_{it} \in \{1, 2, \dots, K\}$ (1=best). Let $y_{it'}$ be the patient's last observed state at a prior week $t'$ where, and let the time gap be $\Delta t = t - t'$.
+
+The model is specified as a cumulative logit model for the transition probabilities. For each threshold $j \in \{2, \dots, K\}$ we model the log-odds that a patient's QoL is in category $j$ or higher (worse):
 
 $$
 \begin{align*}
-\operatorname{logit}\left( P(y_{it} \ge j | y_{it'}) \right) & = \alpha_j - (\eta_{it} + \gamma_{it,j}) \\
+\operatorname{logit}\left( P(y_{it} \ge j | y_{it'}) \right) & = \alpha_j + \eta_{it} + \gamma_{it,j} && \text{for }j = 2, \dots, K\\
 \eta_{it} & = \beta_{\text{tx}} \cdot \text{Treatment}_i + f(t) + \sum_{k=2}^{7} \beta_{\text{yprev}=k} \cdot \mathbb{I}(y_{it'} = k) \\
 & \qquad + \beta_{\text{gap}} \cdot \Delta t + \sum_{k=2}^{7} \beta_{\text{yprev}=k \times \text{gap}} \cdot \mathbb{I}(y_{it'} = k) \cdot \Delta t + \mathbf{X}_i \beta_{\text{covars}} \\
 \gamma_{it,j} & = (\tau \cdot t) \cdot j \\
-\alpha & \sim \text{Dirichlet}(0.308) \\
+\end{align*}
+$$
+
+The priors are specified as:
+
+$$
+\begin{align*}
+\text{For baseline cell probabilities }(\pi_1, \dots, \pi_K) & \sim \text{Dirichlet}(0.308)\text{, which induces priors on } \alpha_j \\
 \beta_k, & \sim \operatorname{Normal}(0, 100) \\
-\tau & \sim \operatorname{Normal}(0, 100)
+\tau & \sim \operatorname{Normal}(0, 100)\\
 \end{align*}
 $$
 
 Where:
 
--   the log-odds of a patient's QoL being in state $j$ or worse at week $t$ (conditional on their prior state $y_{it'}$) is a function of the intercepts ($\alpha_j$) and two linear predictor components.
+-   $\mathbb{I}(\cdot)$ is the indicator function
 
--   $\eta_{it}$ is the main linear predictor for effects assumed to satisfy the proportional odds assumption (i.e., their effect is constant across the $j-1$ cumulative logits). It includes:
+-   In the summations $k$ is an index representing the possible last observed QoL states, ranging from $2$ to $K$. State $k = 1$ servers as the reference category.
+
+-   $\eta_{it}$ is the main linear predictor for effects assumed to satisfy the proportional odds assumption. It includes:
 
     -   $\beta_{\text{tx}}$: The main effect of the treatment arm.
-    -   $f(t)$: A flexible function of study week $t$ to model potentially non-linear time trends. This will be specified as a restricted cubic spline with four knots.
-    -   $\sum_{k=2}^{7} \beta_{\text{yprev}=k} \cdot I(y_{it'} = k)$: The effect of the previous QoL state, modeled as a categorical variable with 6 parameters relative to state 1 as the reference category. $I(\cdot)$ is an indicator function.
+    -   $f(t)$: A flexible function of study week $t$ (restricted cubic spline).
+    -   $\beta_{\text{yprev}=k}$: The effect of the previous QoL state.
     -   $\beta_{\text{gap}}$: The linear effect of the time gap since the last measurement.
-    -   $\sum_{k=2}^{7} \beta_{\text{yprev}=k \times \text{gap}} \cdot I(y_{it'} = k) \cdot \Delta t$: An interaction term allowing the effect of the patient's previous QoL state to differ depending on the gap.
-    -   $\mathbf{X}_i \beta_{\text{covars}}$: A vector representing the effects of other baseline covariates, specifically functional status at baseline and diagnosis category.
+    -   $\beta_{\text{yprev}=k \times \text{gap}}$: An interaction term between the last state and the time gap.
+    -   $\mathbf{X}_i \beta_{\text{covars}}$: A vector baseline covariate effects, specifically functional status at baseline and diagnosis category.
 
--   $\gamma_{it,j}$ models a deviation from the proportional odds assumption. We allow the effect of time to be non-proportional, but constrain the effect to be linear in the outcome category $j$. This means the odds ratio for $t$ can change linearly across the different cutpoints of the QoL scale. We chose a linear constraint as a parsimonious way to relax the proportional-odds assumption, allowing for a simple trend in the effect of time without overfitting.
+-   $\gamma_{it,j}$ models a deviation from the proportional odds assumption. We allow the effect of time to be non-proportional, but constrain the effect to be linear in the outcome category $j$.
 
 -   **Prior Specifications**:
 
-    -   **Intercepts (**$\alpha$): The priors for the $j=2, \dots, 7$ intercepts are induced by a Dirichlet distribution on the baseline cell probabilities when all covariates are set to their mean or reference values. The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome. This enforces the necessary ordering of the cutpoints ($\alpha_2 < \alpha_3 < \dots < \alpha_7$) for a typical subject, from which the model then estimates covariate effects.
+    -   **Intercepts (**$\alpha$): The priors for the $j=2, \dots, K$ intercepts are induced by a Dirichlet distribution on the baseline cell probabilities when all covariates are set to their mean or reference values. The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome. This enforces the necessary ordering of the cutpoints ($\alpha_2 < \alpha_3 < \dots < \alpha_7$) for a typical subject, from which the model then estimates covariate effects.
     -   **Coefficients** ($\beta_k, \tau$): All regression coefficients, including the non-proportional odds parameter $\tau$, are assigned the default almost non-informative $\operatorname{Normal}(0, 100)$ priors. This serves to regularize the model by penalizing extreme parameter values while allowing the data to dominate the posterior inference.
 
 This primary estimand is a derived quantity calculated from the model's posterior distribution. The expected values, $\mathbb{E}[W_i^1]$ and $\mathbb{E}[W_i^0]$, are computed by summing the SOPs for states 1 to 3 across the 26 weeks. These probabilities are marginalized over the observed distribution of baseline covariates and baseline QoL states to obtain the population-averaged result.
@@ -418,7 +429,7 @@ The simulation tested the following models on the Principal Stratum of survivors
 
 ### Frequentist Operating Characteristics
 
-@tbl-oper-char shows frequentist operating characteristics of the different analyses from our simulation study. The data-generating mechanism assumed an initial sample size of $N = 270$, before conditioning on the Principal Stratum, with an average cumulative incidence of death by $6$ months of $17.8 \%$ for both groups, i.e., on average $49$ patients were excluded. $85\%$ of post-baseline observations are missing completely at random (MCAR), which equals about $4$ post-baseline measurements per patient. Power and Type I error were assessed under a constant true odds ratio (OR) of $0.8$ ($H_A$) and $1.0$ ($H_0$). 
+@tbl-oper-char shows frequentist operating characteristics of the different analyses from our simulation study. The data-generating mechanism assumed an initial sample size of $N = 270$, before conditioning on the Principal Stratum, with an average cumulative incidence of death by $6$ months of $17.8 \%$ for both groups, i.e., on average $49$ patients were excluded. $85\%$ of post-baseline observations are missing completely at random (MCAR), which equals about $4$ post-baseline measurements per patient. Power and Type I error were assessed under a constant true odds ratio (OR) of $0.8$ ($H_A$) and $1.0$ ($H_0$).
 
 For LIQPLAT, we will not use the posterior to make a dichotomous claim of benefit. However, for the purpose of evaluating the operating characteristics of our analysis plan, we assess power and Type I error under the hypothetical decision rule of requiring a posterior probability of benefit greater than 0.95. This allows for a standardized comparison of different analytical methods. Details on model specifications, convergence diagnostics, probability of benefit of each iteration can be found in @sec-appendix-alt-models.
 
@@ -858,7 +869,7 @@ Where:
 
 #### Cumulative Logit Multilevel Model with a Random Intercept
 
-::: {.callout-note}
+::: callout-note
 I have not yet run all 1000 simulation for this model.
 :::
 
@@ -1146,7 +1157,7 @@ model <-
 
 We found a substantial overestimate of the cumulative incidence of the absorbing state (death), as shown in @fig-sop-cens-overestimate.
 
-![Comparison of empirical state occupancy probabilities (SOPs) from a complete dataset (A) vs. model-derived marginalized SOPs from a dataset with heavy censoring ($85\%$) for non-absorbing states (B). $N = 1250$ per treatment group, the population average odds-ratio from which the $2500$ patients were sampled is $0.8$. The model-derived SOP for state 8 (death) is severely overestimated, leading to underestimates of SOPs for  non-absorbing states.](img/sop-cens-overestimate.svg){#fig-sop-cens-overestimate}
+![Comparison of empirical state occupancy probabilities (SOPs) from a complete dataset (A) vs. model-derived marginalized SOPs from a dataset with heavy censoring ($85\%$) for non-absorbing states (B). $N = 1250$ per treatment group, the population average odds-ratio from which the $2500$ patients were sampled is $0.8$. The model-derived SOP for state 8 (death) is severely overestimated, leading to underestimates of SOPs for non-absorbing states.](img/sop-cens-overestimate.svg){#fig-sop-cens-overestimate}
 
 We hypothesize this bias arises from the differential missingness between the absorbing and non-absorbing states. With the time of death being known precisely while the intermediate QoL states are overwhelmingly missing, the model appears to incorrectly attribute too much probability mass to the known absorbing state over time. As the SOPs must sum to one at every timepoint, this overestimation for the death state necessarily leads to an underestimation of the time spent in the living QoL states, which would directly bias our primary estimand.
 
