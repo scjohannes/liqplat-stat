@@ -37,27 +37,47 @@ df <- read_parquet(here("2-hosp", "sim-data", "ha_07.parquet")) |>
 We assume 20% non-uptake, so n = 270.
 
 ```{r}
-run_simulation_iteration <- function(iter_num, base_path, full_data) {
+run_simulation_iteration <- function(iter_num, base_path, data_path) {
     # This function runs one full simulation iteration.
-    
-    # --- 1. Setup for the current iteration ---
     set.seed(123 + iter_num)
+
+    # --- 1. Setup for the current iteration ---
     iter_path <- file.path(base_path, glue("run_{iter_num}"))
     if (!dir.exists(iter_path)) {
         dir.create(iter_path, recursive = TRUE)
     }
 
-    tx_ids <- sample(unique(full_data$id[full_data$tx == 1]), size = 180, replace = FALSE)
-    soc_ids <- sample(unique(full_data$id[full_data$tx == 0]), size = 90, replace = FALSE)
+    # --- Load data INSIDE the function ---
+    patient_info <- arrow::open_dataset(data_path) |>
+        select(pat_id, tx) |>
+        distinct() |>
+        collect()
 
-    data_for_model <- full_data |> 
-        filter(id %in% c(tx_ids, soc_ids))
-    
-    rm(full_data)
+    # Second, perform the sampling on this small, in-memory data frame.
+    tx_ids <- sample(patient_info$pat_id[patient_info$tx == 1], size = 180, replace = FALSE)
+    soc_ids <- sample(patient_info$pat_id[patient_info$tx == 0], size = 90, replace = FALSE)
+    selected_pat_ids <- c(tx_ids, soc_ids)
+
+
+    # --- 2. Load ONLY the required subset of data ---
+
+    # Now, filter the full on-disk dataset using the IDs we just sampled.
+    # The `collect()` step executes the query and pulls ONLY the required rows into RAM.
+    data_for_model <- arrow::open_dataset(data_path) |>
+        filter(pat_id %in% selected_pat_ids) |>
+        collect() |>
+        # Now, perform the rest of your mutations on the much smaller, in-memory data.
+        relocate(pat_id, week, tx, y, yprev, ypprev) |>
+        mutate(
+            y = as.integer(y),
+            yprev = as.factor(yprev),
+            ypprev = as.factor(ypprev)
+        ) |>
+        rename(id = pat_id) |>
+        ungroup()
 
     # --- 5. Save the data used for model fitting ---
     saveRDS(data_for_model, file.path(iter_path, "data_for_model.rds"))
-
 
     # --- 6. Fit the Model and Save ---
 
@@ -129,11 +149,13 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 }
 ```
 
+
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 4
+N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-HA-07")
-N_CORES <- 4
+DATA_FILE_PATH <- here::here("2-hosp", "sim-data", "ha_07.parquet")
+N_CORES <- 24
 
 message("Checking for previously completed simulation runs...")
 
@@ -167,7 +189,7 @@ if (n_to_run > 0) {
         .f = ~run_simulation_iteration(
             iter_num = .x,
             base_path = OUTPUT_PATH,
-            full_data = df
+            data_path = DATA_FILE_PATH
         ),
         .options = furrr_options(seed = TRUE, packages = "rmsb"),
         .progress = FALSE

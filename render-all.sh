@@ -1,9 +1,9 @@
 #!/bin/bash
 echo "--- Starting Quarto render process ---"
 
-quarto render 2-hosp/9-markov-H0-matching-sim.qmd && \
-quarto render 2-hosp/9-markov-H0-misspec-clustered.qmd && \
-quarto render 2-hosp/9-markov-H0-misspec.qmd && \
+quarto render 2-hosp/10-power-or-09.qmd && \
+quarto render 2-hosp/10-power-or-08.qmd && \
+quarto render 2-hosp/10-power-or-07.qmd && \
 
 echo "--- Shutting Down Instance ---"
 sudo shutdown -h now
