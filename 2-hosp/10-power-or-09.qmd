@@ -1,0 +1,185 @@
+---
+Title: Power  - Underlying OR = 0.9
+---
+
+
+## Setup
+```{r}
+# Load Libraries
+library(Hmisc)
+library(arrow)
+library(tidyverse)
+library(data.table)
+library(furrr)
+library(glue)
+library(fs)
+library(here)
+library(rmsb)
+```
+
+## Load data
+
+```{r}
+set.seed(1234)
+
+# Load full dataset
+df <- read_parquet(here("2-hosp", "sim-data", "ha_09.parquet")) |> 
+    relocate(pat_id, week, tx, y, yprev, ypprev) |> 
+    mutate(y = as.integer(y),
+           yprev = as.factor(yprev),
+           ypprev = as.factor(ypprev)) |> 
+    rename(id = pat_id) |> 
+    ungroup()
+```
+
+## Simulation function
+
+We assume 20% non-uptake, so n = 270.
+
+```{r}
+run_simulation_iteration <- function(iter_num, base_path, full_data) {
+    # This function runs one full simulation iteration.
+    
+    # --- 1. Setup for the current iteration ---
+    set.seed(123 + iter_num)
+    iter_path <- file.path(base_path, glue("run_{iter_num}"))
+    if (!dir.exists(iter_path)) {
+        dir.create(iter_path, recursive = TRUE)
+    }
+
+    tx_ids <- sample(unique(full_data$id[full_data$tx == 1]), size = 180, replace = FALSE)
+    soc_ids <- sample(unique(full_data$id[full_data$tx == 0]), size = 90, replace = FALSE)
+
+    data_for_model <- full_data |> 
+        filter(id %in% c(tx_ids, soc_ids))
+    
+    rm(full_data)
+
+    # --- 5. Save the data used for model fitting ---
+    saveRDS(data_for_model, file.path(iter_path, "data_for_model.rds"))
+
+
+    # --- 6. Fit the Model and Save ---
+
+    # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
+    
+    if (nrow(data_for_model) > 0) {
+        # cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
+
+        options(rmsbdir=iter_path) # for cmd need to save commpiled code to disk. 
+
+        options(mc.cores = 4)
+        model <- tryCatch({        
+            blrm(
+                    formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + cluster(id),
+                    data = data_for_model,
+                    refresh = 0,
+                    iter = 2000,
+                    chains = 4,
+                    seed = 1234,
+                    loo = FALSE,
+                    method = "sampling",
+                    backend = "cmdstan"
+                )
+        }, error = function(e) {
+            message(glue("ERROR in iteration {iter_num}: {e$message}"))
+            saveRDS(data_for_model, file.path(iter_path, "problematic_data.rds"))
+            
+            return(NULL)
+        }, finally = {
+        message(glue("Cleaning up files for iteration {iter_num}..."))
+        
+        # Define the full path to the temporary file
+        file_to_delete <- file.path(iter_path, "lrmconppo")
+        
+        # Check if the file exists, then delete it
+        if (file.exists(file_to_delete)) {
+            unlink(file_to_delete)
+        }
+    })
+        
+        # --- 7. Save the results ONLY if the model ran successfully ---
+        if (!is.null(model)) {
+            # Don't save the full model object (it's too large)
+            # saveRDS(model, file.path(iter_path, "model_object.rds"))
+            
+            # Save just the MCMC draws to a separate file
+            # we actually need to the full model object for marginalization
+            saveRDS(as.data.table(model$draws), file.path(iter_path, "model_draws.rds"))
+
+            rhat_values <- model$diagnostics$summary  |> 
+                select(variable, rhat) |> 
+                pivot_wider(names_from = variable, values_from = rhat) |> 
+                data.frame()
+
+            saveRDS(rhat_values, file.path(iter_path, "rhat_values.rds"))
+
+            ess_ratios <- model$diagnostics$summary |> 
+                select(variable, ess_bulk) |> 
+                pivot_wider(names_from = variable, values_from = ess_bulk) |> 
+                mutate_all(~ . / (model$iter * model$chains))
+
+             saveRDS(ess_ratios, file.path(iter_path, "ess_ratios.rds"))
+
+             saveRDS(model$diagnostics, file.path(iter_path, "model_diagnostics.rds"))
+        }
+    }
+    # Return a status message for progress tracking
+    return(glue("Iteration {iter_num} completed."))
+}
+```
+
+## Run Parallelized Simulation
+```{r}
+N_SIMULATIONS <- 4
+OUTPUT_PATH <- here("2-hosp", "output", "sim-HA-09")
+N_CORES <- 4
+
+message("Checking for previously completed simulation runs...")
+
+completed_files <- fs::dir_ls(path = OUTPUT_PATH, glob = "*/model_draws.rds", recurse = TRUE)
+
+completed_iters <- integer(0) 
+if (length(completed_files) > 0) {
+    completed_iters <- stringr::str_extract(completed_files, "(?<=run_)\\d+") |>
+        as.integer() |>
+        na.omit() |>
+        unique()
+}
+
+# Determine which iterations still need to be run
+all_possible_iters <- 1:N_SIMULATIONS
+iters_to_run <- setdiff(all_possible_iters, completed_iters)
+
+n_to_run <- length(iters_to_run)
+n_completed <- length(completed_iters)
+
+message(glue("{n_completed} of {N_SIMULATIONS} iterations are already complete."))
+t1 <- Sys.time()
+if (n_to_run > 0) {
+    message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
+    
+    future::plan(future.callr::callr, workers = N_CORES)
+    
+    # --- Run Simulations in Parallel ---
+    furrr::future_walk(
+        .x = iters_to_run,
+        .f = ~run_simulation_iteration(
+            iter_num = .x,
+            base_path = OUTPUT_PATH,
+            full_data = df
+        ),
+        .options = furrr_options(seed = TRUE, packages = "rmsb"),
+        .progress = FALSE
+    )
+    
+    message(glue("Finished {n_to_run} simulations."))
+} else {
+    message("All simulations were already complete. No new runs started.")
+}
+t2 <- Sys.time()
+
+message("Simulation process finished.")
+#Duration of Simulation
+t2-t1
+```
