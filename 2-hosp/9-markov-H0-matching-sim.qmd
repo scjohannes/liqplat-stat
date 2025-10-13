@@ -69,14 +69,14 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
     
     if (nrow(data_for_model) > 0) {
-        # cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
+        cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
 
         options(rmsbdir=iter_path) # for cmd need to save commpiled code to disk. 
 
         options(mc.cores = 1)
         model <- tryCatch({        
             blrm(
-                    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
+                    y ~ tx + rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
                     data = data_for_model,
                     refresh = 0,
                     iter = 2000,
@@ -136,9 +136,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 4
+N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-H0-correct-spec")
-N_CORES <- 4
+N_CORES <- 28
 
 message("Checking for previously completed simulation runs...")
 

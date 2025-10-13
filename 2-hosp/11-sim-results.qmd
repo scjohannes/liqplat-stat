@@ -49,6 +49,10 @@ rhat_misspec_h0 <- load_rhat_values(path = path)
 path <- "./2-hosp/output/sim-H0-correct-spec/"
 true_h0 <- load_draws(path)
 rhat_true_h0 <- load_rhat_values(path = path)
+
+path <- "./2-hosp/output/sim-H0-cluster-misspec/"
+misspec_cluster_h0 <- load_draws(path)
+rhat_misspec_clsuter_h0 <- load_rhat_values(path = path)
 ```
 
 #### Convergence diagnostics
@@ -59,7 +63,10 @@ rhat_plot_misspec_h0 <- rhat_misspec_h0 |>
 rhat_plot_true_h0 <- rhat_true_h0 |> 
     plot_rhat(y = `beta.1.`)
 
-rhat_plot_misspec_h0 + rhat_plot_true_h0
+rhat_plot_misspec_cluster_h0 <- rhat_misspec_clsuter_h0 |> 
+    plot_rhat(y = `beta.1.`)
+
+rhat_plot_misspec_h0 + rhat_plot_true_h0 + rhat_plot_misspec_cluster_h0
 
 # ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
@@ -73,7 +80,10 @@ p1 <- misspec_h0 |>
 p2 <- true_h0 |> 
     plot_p_benefit(param = `tx=1`)
 
-p1 + p2
+p3 <- misspec_cluster_h0 |> 
+    plot_p_benefit(param = `tx=1`)
+
+p1 + p2 + p3
 
 # ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
 ```
@@ -110,10 +120,19 @@ summary_true_h0 <- true_h0 |>
         threshold = 0.95) |> 
     summarise_iterations()
 
+summary_misspec_cluster_h0 <- misspec_cluster_h0 |>
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx=1`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
 # create dataframe with for comparison
 all_summaries <- bind_rows(
   'true_model' = summary_true_h0,
   'misspec_model' = summary_misspec_h0,
+  'misspec_cluster_model' = summary_misspec_cluster_h0,
   .id = 'model_type'
 )
 

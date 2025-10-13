@@ -69,7 +69,7 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
     # we'll stick to evaluating type I error rate via OR of tx for the time being, then we don't need to marginalize
     
     if (nrow(data_for_model) > 0) {
-        # cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
+        cmdstanr::set_cmdstan_path("/home/ubuntu/cmdstan")
 
         options(rmsbdir=iter_path) # for cmd need to save commpiled code to disk. 
 
@@ -136,9 +136,9 @@ run_simulation_iteration <- function(iter_num, base_path, full_data) {
 
 ## Run Parallelized Simulation
 ```{r}
-N_SIMULATIONS <- 8
+N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-H0-cluster-misspec")
-N_CORES <- 4
+N_CORES <- 28
 
 message("Checking for previously completed simulation runs...")
 

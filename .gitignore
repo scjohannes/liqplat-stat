@@ -74,9 +74,20 @@ nohup.out
 2-hosp/8.1-sim-resampling-markov-H0-no-int.rmarkdown
 2-hosp/8.3-sim-resampling-markov-H0-full-int.rmarkdown
 2-hosp/8.4-sim-resampling-markov-H0-no-int-cluster.html
+2-hosp/9-markov-H0-matching-sim_files
+2-hosp/9-markov-H0-misspec-clustered_files
+2-hosp/9-markov-H0-misspec_files
+
 .vscode/settings.json
 
 9-markov-tests/data
 9-markov-tests/output
 99-code-dump/
 copilot-instructions.md
+2-hosp/9-markov-H0-matching-sim.html
+2-hosp/9-markov-H0-misspec-clustered.html
+2-hosp/9-markov-H0-matching-sim.rmarkdown
+2-hosp/9-markov-H0-misspec.html
+sim-H0-cluster-misspec.zip
+sim-H0-correct-spec.zip
+sim-H0-misspec.zip
