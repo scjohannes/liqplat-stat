@@ -1,5 +1,5 @@
 ---
-Title: Type I Error Rate with Poisson Regression
+Title: Type I Error & Power with Non-Longitudinal Ordinal Model
 ---
 
 ## Setup
@@ -20,64 +20,56 @@ library(data.table)
 
 ```{r}
 set.seed(1234)
-refit_model <- FALSE
 
-# Load full dataset
-# Collapse staet 3 and 4
-df <- read_parquet(here("data", "hosp_long_weeks_anon.parquet")) |> 
-    mutate(
-        y = if_else(y == 4, 3, y),
-        y = if_else(y == 5, 4, y),
-        yprev = if_else(yprev == "4", "3", yprev),
-        yprev = factor(yprev),
-        tx = factor(tx)) |> 
-    select(id, tx, y, yprev, time = week)
+ha_09 <- read_parquet(here("2-hosp", "sim-data", "ha_09.parquet")) |> 
+    relocate(pat_id, week, tx, y, yprev, ypprev) |> 
+    mutate(y = as.integer(y),
+           yprev = as.factor(yprev),
+           ypprev = as.factor(ypprev)) |> 
+    rename(id = pat_id) |> 
+    ungroup()
+
+h0 <- read_parquet(here("2-hosp", "sim-data", "h0.parquet")) |> 
+    relocate(pat_id, week, tx, y, yprev, ypprev) |> 
+    mutate(y = as.integer(y),
+           yprev = as.factor(yprev),
+           ypprev = as.factor(ypprev)) |> 
+    rename(id = pat_id) |> 
+    ungroup()
 
 
-surv_time <- df |> group_by(id) |> 
+surv_time <- h0 |> group_by(id) |> 
     mutate(surv_time = n()) |> 
     select(id, surv_time) |> 
     distinct()
 
 # weeks spent with at least one day in state 3 or 2 (hospital or ER)
-drs_df <- df |> 
+drs_h0_df <- h0 |> 
     group_by(id, tx) |> 
-    count(y) |> 
-    # complete each group with n = 0 if y is missing
-    complete(y = 0:4, fill = list(n = 0)) |>
-    filter(y == 3 | y == 2) |> # weeks in hospital
-    summarise(n = sum(n)) |> 
+    filter(y == 1) |> # weeks out of hospital
+    summarise(n = n()) |> 
     left_join(surv_time, by = "id") |>
     ungroup() |> 
     mutate(
-        n = if_else(surv_time < 26, max(n) + 1, n),
-        n = as.integer(n)
+        n = if_else(surv_time < 26, -1, n),
+        n = n+1
     )
 
-if(refit_model){
-Sys.setenv(RSTUDIO = 1)
-    model_brms <- brm(
-        n ~ tx,
-        family = cumulative("logit"),
-        data = drs_df  |> mutate(n = factor(n, ordered = TRUE)),
-        iter = 2000,
-        seed = 1234,
-        cores = 4,
-        file = here("2-hosp", "models", "model_drs_brms.rds")
-    )
+surv_time_09 <- ha_09 |> group_by(id) |> 
+    mutate(surv_time = n()) |> 
+    select(id, surv_time) |> 
+    distinct()
 
-    model_rmsb <- blrm(
-        formula = n ~ tx,
-        data = drs_df,
-        refresh = 5,
-        seed = 1234
+drs_09_df <- ha_09 |> 
+    group_by(id, tx) |> 
+    filter(y == 1) |> # weeks out of hospital
+    summarise(n = n()) |> 
+    left_join(surv_time_09, by = "id") |>
+    ungroup() |> 
+    mutate(
+        n = if_else(surv_time < 26, -1, n),
+        n = n+1
     )
-    Sys.setenv(RSTUDIO = 0)
-} else {
-    model_brms <- readRDS(here("2-hosp", "models", "model_drs_brms.rds"))
-}
-
-rm(df)
 ```
 
 Default prior normal(0, 100)
@@ -102,14 +94,14 @@ run_simulation_iteration <- function(iter_num, base_path, full_data, model = NUL
     }
 
     # Resample from data with no effect
-    tx_ids <- full_data |> 
-        distinct(id) |> 
-        sample_frac(2/3) |> pull(id)
+    tx_ids <- sample(unique(full_data$id), size = 180, replace = FALSE)
+    soc_ids <- sample(unique(full_data$id), size = 90, replace = FALSE)
 
     data_for_model <- full_data |> 
+        filter(id %in% c(tx_ids, soc_ids)) |>
         mutate(
-            tx = if_else(id %in% tx_ids, "1", "0"),
-            tx = factor(tx, levels = c(0, 1)))
+            tx = if_else(id %in% tx_ids, "1", "0")
+        )
     
     rm(full_data)
 
@@ -245,7 +237,7 @@ future::plan(future.callr::callr, workers = N_CORES)
 
 Parallelized Simulation
 ```{r}
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-drs26-rmsb")
+OUTPUT_PATH <- here("2-hosp", "output", "sim-drs26-h0")
 sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
 
 if (sim_status$n_to_run > 0) {
@@ -259,39 +251,8 @@ if (sim_status$n_to_run > 0) {
         .f = ~run_simulation_iteration(
             iter_num = .x,
             base_path = OUTPUT_PATH,
-            full_data = drs_df,
+            full_data = drs_h0_df,
             model_type = "rmsb"
-        ),
-        .options = furrr_options(seed = TRUE),
-        .progress = TRUE
-    )
-    
-    message(glue("Finished {sim_status$n_to_run} simulations."))
-} else {
-    message("All simulations were already complete. No new runs started.")
-}
-
-message("Simulation process finished.")
-```
-
-```{r}
-OUTPUT_PATH <- here("2-hosp", "output", "sim-resampling-H0-drs26-brms")
-sim_status <- check_completed_simulations(OUTPUT_PATH, N_SIMULATIONS)
-
-if (sim_status$n_to_run > 0) {
-    message(glue("Starting {sim_status$n_to_run} new simulations on {N_CORES} cores..."))
-    
-    future::plan(future.callr::callr, workers = N_CORES)
-    
-    # --- Run Simulations in Parallel ---
-    furrr::future_walk(
-        .x = sim_status$iters_to_run,
-        .f = ~run_simulation_iteration(
-            iter_num = .x,
-            base_path = OUTPUT_PATH,
-            full_data = drs_df  |> mutate(n = factor(n, ordered = TRUE)),
-            model_type = "brms",
-            model = model_brms
         ),
         .options = furrr_options(seed = TRUE),
         .progress = TRUE
