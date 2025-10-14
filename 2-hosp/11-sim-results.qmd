@@ -174,40 +174,83 @@ rhat_ha_08 <- load_rhat_values(path = path)
 
 ```{r}
 rhat_09 <- rhat_ha_09 |> 
-    plot_rhat(y = `beta.1.`)
+    plot_rhat(y = `beta.1.`) +
+    labs(
+        subtitle = 'HA: OR = 0.9'
+    )
 
 rhat_08 <- rhat_ha_08 |> 
-    plot_rhat(y = `beta.1.`)
+    plot_rhat(y = `beta.1.`) +
+    labs(
+        subtitle = 'HA: OR = 0.8'
+    )
 
 rhat_09 + rhat_08
 ```
 
-#### Power
+#### P (Benefit)
+
+```{r}
+p1 <- ha_09 |> 
+    plot_p_benefit(param = `tx`)
+
+p2 <- ha_08 |> 
+    plot_p_benefit(param = `tx`)
+
+p1 + p2
+
+ha_08 |> 
+    group_by(iter) |> 
+    summarise(
+        p_benefit = mean(tx < 0)
+    ) |> 
+    summarise(
+        mean_p_benefit = mean(p_benefit),
+        sd_p_benefit = sd(p_benefit),
+        n = n()
+    )
+```
+
+#### Summary
 
 ```{r}
 summary_ha_09 <- ha_09 |> 
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx`, 
-        true_param_value = log(1), 
+        true_param_value = log(0.9), 
         threshold = 0.95) |> 
     summarise_iterations()
-
-length(unique(ha_09$iter))
-summary_ha_09
 
 summary_ha_08 <- ha_08 |> 
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx`, 
-        true_param_value = log(1), 
+        true_param_value = log(0.8), 
         threshold = 0.95) |> 
     summarise_iterations()
 
-length(unique(ha_08$iter))
-summary_ha_08
+# create dataframe for comparison
+all_summaries <- bind_rows(
+    'or_09' = summary_ha_09,
+    'or_08' = summary_ha_08,
+    .id = 'model_type'
+)
 
-setdiff(1:1000, unique(ha_08$iter))
+formatted_summary <- all_summaries |> 
+    # transmute creates new columns and drops the old ones
+    transmute(
+        `True OR` = model_type,
+        # sprintf() formats the numbers and combines them into one string
+        `Point Estimate (Median)` = sprintf("%.3f (%.3f)", mean_point_estimate, mcse_point_estimate),
+        `Rejection Rate` = sprintf("%.3f (%.3f)", prob_rejection, mcse_prob_rejection),
+        Bias             = sprintf("%.3f (%.3f)", mean_bias, mcse_bias),
+        Coverage         = sprintf("%.3f (%.3f)", mean_coverage, mcse_coverage),
+        `Empirical SE`   = sprintf("%.3f (%.3f)", emp_SE, mcse_emp_SE),
+        `Model SE`       = sprintf("%.3f (%.3f)", mean_modSE, mcse_modSE)
+    )
+
+formatted_summary |> knitr::kable()
 ```
 
 ## Count Regression
@@ -272,83 +315,121 @@ summary_neg_binom_h0 <- neg_binom_h0 |>
 
 ## DRS 26
 
-Not actually 26 categories, but 1 to max(number of days not at home) + 1 worse for people who died. In our resample dataset that 15 categories.
+Not actually 26 categories, but 1 to max(number of days not at home) + 1 worse for people who died.
 
-### Resampling H0
+### H0
 
 #### Load draws + diagnostics
 ```{r}
 # H0 rmsb (default dirichlet prior)
-path <- "./2-hosp/output/sim-resampling-H0-drs26-rmsb/"
-drs26_rmsb_h0 <- load_draws(path)
-rhat_drs26_rmsb_h0 <- load_rhat_values(path = path)
-
-# H0 brms (default priors)
-path <- "./2-hosp/output/sim-resampling-H0-drs26-brms/"
-drs26_brms_h0 <- load_draws(path)
-rhat_drs26_brms_h0 <- load_rhat_values(path = path)
+path <- "./2-hosp/output/sim-drs26-h0/"
+drs26_h0 <- load_draws(path) |> 
+    mutate(`tx=1` = -`tx=1`) # change sign to match interpretation of other models
+rhat_drs26_h0 <- load_rhat_values(path = path)
 ```
 
 #### Convergence diagnostics
 ```{r}
-rhat_plot_drs26_rmsb_h0 <- rhat_drs26_rmsb_h0 |> 
+rhat_plot_drs26_h0 <- rhat_drs26_h0 |> 
     plot_rhat(y = `tx=1`)
-
-rhat_plot_drs26_rmsb_h0
-
-rhat_plot_drs26_brms_h0 <- rhat_drs26_brms_h0 |> 
-    plot_rhat(y = b_tx1)
-
-rhat_plot_drs26_brms_h0
-
+rhat_plot_drs26_h0
 # ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
 
-### Plot probability of benefit
+#### Plot probability of benefit
 
 ```{r}
-p1 <- drs26_rmsb_h0 |> 
+p1 <- drs26_h0 |> 
     plot_p_benefit(param = `tx=1`)
 
 p1
-
-p2 <- drs26_brms_h0 |>
-    plot_p_benefit(param = b_tx1)
-p2
 
 # ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
 #plotting stacked posteriors
-post_drs26_rmsb_h0 <- drs26_rmsb_h0 |> 
+post_drs26_rmsb_h0 <- drs26_h0 |> 
   plot_posterior_distribution(x_variable = `tx=1`)
-
-post_drs26_rmsb_h0
-
-post_drs26_brms_h0 <- drs26_brms_h0 |> 
-  plot_posterior_distribution(x_variable = b_tx1)
-
-post_drs26_brms_h0
 
 # ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
-summary_drs26_rmsb_h0 <- drs26_rmsb_h0 |> 
+summary_drs26_h0 <- drs26_h0 |> 
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx=1`, 
         true_param_value = log(1), 
         threshold = 0.95) |> 
     summarise_iterations()
+```
 
-summary_drs26_brms_h0 <- drs26_brms_h0 |>
+### HA - Markov OR = 0.8
+
+#### Load draws + diagnostics
+```{r}
+# H0 rmsb (default dirichlet prior)
+path <- "./2-hosp/output/sim-drs26-HA-08/"
+drs26_ha_08 <- load_draws(path) |> 
+    mutate(tx = -tx) # change sign to match logodds <0 = benefit
+rhat_drs26_ha_08 <- load_rhat_values(path = path)
+```
+
+#### Convergence diagnostics
+```{r}
+rhat_plot_drs26_ha_08 <- rhat_drs26_ha_08 |> 
+    plot_rhat(y = tx)
+rhat_plot_drs26_ha_08
+# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
+```
+
+#### Plot probability of benefit
+
+```{r}
+# average p(benefit) over iterations
+drs26_ha_08 |> 
+    group_by(iter) |> 
+    summarise(
+        p_benefit = mean(tx < 0)
+    ) |> 
+    summarise(
+        mean_p_benefit = mean(p_benefit),
+        sd_p_benefit = sd(p_benefit),
+        n = n()
+    )
+
+p1 <- drs26_ha_08 |> 
+    plot_p_benefit(param = tx)
+
+p1
+
+# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+#plotting stacked posteriors
+post_drs26_ha_08 <- drs26_ha_08 |> 
+  plot_posterior_distribution(x_variable = tx)
+
+post_drs26_ha_07 <- drs26_ha_07 |> 
+  plot_posterior_distribution(x_variable = tx)
+
+
+# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
+```
+
+```{r}
+summary_drs26_ha_08 <- drs26_ha_08 |> 
     group_by(iter) |> 
     summarise_posterior(
-        param_name = b_tx1, 
-        true_param_value = log(1), 
+        param_name = tx, 
+        true_param_value = log(1), #true param unclear
         threshold = 0.95) |> 
     summarise_iterations()
+
+summary_drs26_ha_08
 ```
+
+
 

@@ -1,156 +1,65 @@
 ---
-Title: Calculating unconditional SOPs from second-order Markov model
+Title: Primary Estimand
 ---
 
+## Setup
+
 ```{r}
-library(tidyverse)
-library(reshape2)
-library(data.table)
-library(Hmisc)
-library(zoo)
-library(arrow)
-library(splines)
-library(brms)
-library(marginaleffects)
-library(rms)
-library(rmsb)
 library(furrr)
-library(posterior)
-
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+library(here)
+library(Hmisc)
+library(patchwork)
 ```
 
-## Load Data
+## Load model
+
+We use simulated data with constant OR of 0.8.
 
 ```{r}
-df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
-    mutate(
-        tx = factor(tx),
-        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
-        yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
-        ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),
-        y = ordered(y)
-    ) |> 
-      select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+set.seed(1234)
+df_full <- read_parquet(here("2-hosp", "sim-data", "ha_08.parquet")) |> 
+    select(id = pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis)
 
-d <- df_ypprev
-REFIT <- FALSE
+tx_id <- sample(unique(df_full$id[df_full$tx == 1]), 180, replace = FALSE)
+soc_id <- sample(unique(df_full$id[df_full$tx == 0]), 90, replace = FALSE)
+
+df <- df_full |> 
+  filter(id %in% c(tx_id, soc_id))
+
+# we need to change the patient id to be sequential starting from 1
+# otherwise the random effects gammas won't match
+df <- df |> 
+  arrange(id, week) |> 
+  mutate(id = as.integer(factor(id)))
 ```
 
-## Fit Models
+## Fit model
+
 ```{r}
-fit_second_order <- orm(
-  y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin,
-  data = d
-)
-model_path_cluster <- "./2-hosp/models/fit_second_order_b_cluster.rds"
-model_path_nocuster <- "./2-hosp/models/fit_second_order_b.rds"
-model_path_cluster_no_int <- "./2-hosp/models/fit_second_order_b_cluster_no_int.rds"
-model_path_brms <- "./2-hosp/models/fit_second_order_brms_cluster.rds"
-
-if (REFIT) {
-  Sys.setenv(RSTUDIO = 1)
-    
-    dd <- datadist(d)
-    options(datadist = 'dd')
-    options(mc.cores = 4)
-    
-  fit_second_order_b_cluster <- blrm(
-    y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin + cluster(pat_id),
-    data = d,
-    refresh = 5,
-    iter = 2000,
-    chains = 4,
-    seed = 1234,
-    method = "sampling",
-    backend = "cmdstan"
-  )
-
-  fit_second_order_b_cluster_no_int <- blrm(
-    y ~ tx + rcs(week, 4) + yprev + ypprev + ecog_fstcnt + albumin + cluster(pat_id),
-    data = d,
-    refresh = 5,
-    iter = 2000,
-    chains = 4,
-    seed = 1234,
-    method = "sampling",
-    backend = "cmdstan"
-  )
-
-  fit_second_order_b <- blrm(
-    y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + albumin,
-    data = d,
-    refresh = 5,
-    iter = 2000,
-    chains = 4,
-    seed = 1234,
-    method = "sampling",
-    backend = "cmdstan"
-  )
-  priors <- c(
-  # Priors for Intercepts/Cutpoints
-  prior(normal(1, 0.5), class = "Intercept", coef = 1), # Corresponds to y>=2
-  prior(normal(1.5, 0.5), class = "Intercept", coef = 2), # Corresponds to y>=3
-  prior(normal(2, 0.5), class = "Intercept", coef = 3), # Corresponds to y>=4
-  prior(normal(5, 0.5), class = "Intercept", coef = 4)
-    )
-
-    fit_brms <- brm(
-    formula = bf(
-        y ~ tx + ns(week, df = 4) + yprev + ypprev +
-            ecog_fstcnt + albumin + (1 | pat_id)
-    ),
-    data = d,
-    family = cumulative("logit"),
-    prior = priors,
-    iter = 2000,
-    chains = 4,
-    cores = 4,
-    seed = 1234,
-    refresh = 5,
-    backend = "cmdstanr",
-    file = "./2-hosp/models/fit_second_order_brms_cluster.rds",
-    file_refit = "on_change"
-    )
-
-  Sys.setenv(RSTUDIO = 0)
-  saveRDS(fit_second_order_b_cluster, file = model_path_cluster)
-  saveRDS(fit_second_order_b, file = model_path_nocuster)
-  saveRDS(fit_second_order_b_cluster_no_int, file = model_path_cluster_no_int)
-} else {
-  # Load the models from disk if they exist
-  if (file.exists(model_path_cluster)) {
-    fit_second_order_b_cluster <- readRDS(model_path_cluster)
-  } else {
-    warning("Model file not found: ", model_path_cluster)
-    fit_second_order_b_cluster <- NULL
-  }
- 
-  if (file.exists(model_path_nocuster)) {
-    fit_second_order_b <- readRDS(model_path_nocuster)
-  } else {
-    warning("Model file not found: ", model_path_nocuster)
-    fit_second_order_b <- NULL
-  }
-
-  if (file.exists(model_path_cluster_no_int)) {
-    fit_second_order_b_cluster_no_int <- readRDS(model_path_cluster_no_int)
-  } else {
-    warning("Model file not found: ", model_path_cluster_no_int)
-    fit_second_order_b_cluster_no_int <- NULL
-  }
-
-  if(file.exists(model_path_brms)) {
-    fit_brms <- readRDS(model_path_brms)
-  } else {
-    warning("Model file not found: ", model_path_brms)
-    fit_brms <- NULL
-  }
+if(FALSE){
+  options(mc.cores = 6)
+  model <-       
+      blrm(
+              formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + cluster(id),
+              data = df,
+              refresh = 5,
+              iter = 2000,
+              chains = 4,
+              seed = 1234,
+              loo = FALSE,
+              method = "sampling",
+              backend = "cmdstan"
+          )
 }
-
 ```
 
+## Functions
 
-## Predictions conditional on random effects
+### Predictions conditional on random effects
 
 ```{r}
 predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
@@ -158,8 +67,8 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
   if (!is.data.frame(newdata)) {
     stop("`newdata` must be a data frame.")
   }
-  if (include_re && !"pat_id" %in% colnames(newdata)) {
-    stop("`newdata` must contain a 'pat_id' column when include_re=TRUE")
+  if (include_re && !"id" %in% colnames(newdata)) {
+    stop("`newdata` must contain a 'id' column when include_re=TRUE")
   }
   
   N_new <- nrow(newdata)
@@ -183,7 +92,7 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
   u_draws <- matrix(0, nrow = ndraws, ncol = N_new)
   
   if (include_re) {
-    if (length(unique(newdata$pat_id)) > 1) {
+    if (length(unique(newdata$id)) > 1) {
       stop("`newdata` contains multiple unique patient IDs. This version is restricted to one at a time.")
     }
     if (!requireNamespace("posterior", quietly = TRUE)) {
@@ -191,7 +100,7 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
     }
     sf <- rmsb::stanGet(fit)
     all_gamma_draws <- posterior::as_draws_matrix(sf$draws(variables = "gamma"))
-    patient_ids <- newdata$pat_id
+    patient_ids <- newdata$id
     u_draws <- all_gamma_draws[, patient_ids, drop = FALSE]
   }
 
@@ -239,76 +148,7 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
 }
 ```
 
-
-Check whether prediction when ignoring random effects match the predict function in rmsb:
-
-```{r}
-pred_manual <- predict_blrm_manual(
-  fit_second_order_b_cluster, 
-  d[1,], 
-  include_re = FALSE
-)
-
-pred_builtin <- predict(
-  fit_second_order_b_cluster, 
-  newdata = d[1,], 
-  type = "fitted.ind", 
-  posterior.summary = "all"
-)
-
-dim(pred_manual)
-dim(pred_builtin)
-
-all.equal(pred_manual, pred_builtin)
-```
-
-## Theory
-
-The model gives us the conditional probability of being in a state l at time t, given the states at the two previous time points: 
-$$
-P(X_t=l \mid X_{t-1}=j,X_{t-2}=h)
-$$
-
-Our goal is to calculate the unconditional state occupancy probability, $P(X_t=l)$, which represents the overall probability of being in state l at time t, regardless of the specific path taken to get there (but still conditional on the two states before randomization). We can find the unconditional probability of an event by summing the probabilities of all possible ways it can happen (Total Law of Probability). In our case, this means summing over all possible histories (h, j) from the previous two time steps:
-
-$$
-P(X_t = l) = \sum_{h=1}^{M} \sum_{j=1}^{M} \underbrace{P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h)}_{\text{The Model's "Prediction"}} \times \underbrace{P(X_{t-1}=j, X_{t-2}=h)}_{\text{The "Weight" of the History}}
-$$
-
-How do we find the "weight," which is the joint probability of a specific history occurring? We can't get the joint probability $P(X_{t-1}=j, X_{t-2}=h)$ directly from the model. Instead, we have to calculate it iteratively. This is possible thanks to the Chain Rule of Probability: 
-
-$$
-P(A, B, C) = P(C | B, A) \times P(B, A)
-$$
-
-Translating this to our problem, the probability of a three-step path is: 
-$$
-P(X_t=l, X_{t-1}=j, X_{t-2}=h) = P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)
-$$
-
-By summing over $X_{t-2} = h$, we calculate the joint probability of the next state $X_t = l$ and lag = 1 $X_{t-1} = j$:
-
-$$
-P(X_t=l, X_{t-1}=j) = \sum_{h=1}^{M} P(X_t=l \ | \ X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)
-$$
-
-1.  We start with a known history at t=0, so the joint probability of the observed $j_{obs}$ and $h_{obs}$ and states for $X_{t-1}$ and $X_{t-2}$ is $1.0$
-
-2.  We use this known probability as the "weight" to calculate the joint probabilities for t=1.
-
-    -   $P(X_{t=1} = l, X_{t-1} = j\_{obs}) = P(X_{t=1}  |  X_{t-1}=j_{obs}, X_{t-2}=h_{obs})$
-    -   So for $t=1$ we have $M$ non-zero joint probabilities, one for each possible state at time $t=1$, because $j$ is fixed to the observed state at $t=0$.
-
-3.  We then use the joint probabilities from $t = 1$ as the weights to calculate the joint probabilities for $t=2$.
-
-    -   $P(X_{t=2} = l, X_{t-1} = j) = \sum_{h=1}^{M} P(X_{t=2}  |  X_{t-1}=j, X_{t-2}=h) \times P(X_{t-1}=j, X_{t-2}=h)$
-    -   Now for $t=2$ we have $M \times M$ joint probabilities, one for each combination of possible states at times $t=1$ and $t=2$.
-
-4.  ...and so on. The output of one step becomes the input for the next.
-
-## Implementation
-
-Now we implement this recursive logic in R for `rmsb` and `brms`. We will calculate the unconditional probabilities for each draw separately, resulting in a 3D array where one dimension corresponds to the different draws.
+### Calculate SOPs
 
 ```{r}
 #' Calculate Second-Order State Occupation Probabilities
@@ -340,7 +180,7 @@ sop_markov_second_order <- function(model_fit,
                                     absorbing_states,
                                     include_re = FALSE) {
 
-  # --- Auto-detect model type and get number of draws ---
+  # --- Detect model type and get number of draws ---
   if (inherits(model_fit, "brmsfit")) {
     detected_type <- "brms"
     if (!requireNamespace("marginaleffects", quietly = TRUE) || !requireNamespace("posterior", quietly = TRUE)) {
@@ -502,46 +342,7 @@ sop_markov_second_order <- function(model_fit,
 }
 ```
 
-## Visualizing Results
-```{r}
-results_1 <- sop_markov_second_order(
-  model_fit = fit_second_order_b_cluster,
-  baseline_data = d[1,],
-  col_yprev = "yprev",
-  col_ypprev = "ypprev",
-  col_time = "week",
-  times = 1:26,
-  n_states = 5,
-  absorbing_states = c(5),
-  include_re = TRUE
-)
-
-results_2 <- sop_markov_second_order(
-  model_fit = fit_second_order_b_cluster_no_int,
-  baseline_data = d[1,],
-  col_yprev = "yprev",
-  col_ypprev = "ypprev",
-  col_time = "week",
-  times = 1:26,
-  n_states = 5,
-  absorbing_states = c(5),
-  include_re = TRUE
-)
-
-results_2_brms <- sop_markov_second_order(
-  model_fit = fit_brms,
-  baseline_data = d[1,],
-  col_yprev = "yprev",
-  col_ypprev = "ypprev",
-  col_time = "week",
-  times = 1:26,
-  n_states = 5,
-  absorbing_states = c(5),
-  include_re = TRUE
-)
-```
-
-## Marginalize over whole population
+### Marginalize over whole population
 
 ```{r}
 write_SOP <- function(i, tx, baseline_df, path, model){
@@ -551,7 +352,7 @@ write_SOP <- function(i, tx, baseline_df, path, model){
   sops <-
   sop_markov_second_order(
     model_fit = model,
-    baseline_data = data.frame(pat_id = row$pat_id, tx = tx, ecog_fstcnt = row$ecog_fstcnt, albumin = row$albumin, yprev = row$yprev, ypprev = row$ypprev),
+    baseline_data = data.frame(id = row$id, tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, yprev = row$yprev, ypprev = row$ypprev),
     col_yprev = "yprev",
     col_ypprev = "ypprev",
     col_time = "week",
@@ -561,7 +362,7 @@ write_SOP <- function(i, tx, baseline_df, path, model){
     include_re = TRUE
   )
   
-  sops <- melt(sops, 
+  sops <- reshape2::melt(sops, 
                    varnames = c("draw", "state", "time"), 
                    value.name = "probability")
   sops <- sops |> 
@@ -588,27 +389,33 @@ write_SOP <- function(i, tx, baseline_df, path, model){
 }
 ```
 
-### Generate marginalized SOPs
+## Marginalized SOPs
+
+### Generate SOPs
 
 ```{r}
-path <- "./9-markov-tests/output/second_order_marginalized/"
-future::plan(future::multisession, workers=6)
-baseline_df <- d |> 
-    filter(week == 1) |> 
-    select(pat_id, week, ecog_fstcnt, albumin, yprev, ypprev) |> 
-    distinct() |> 
-    arrange(pat_id)
-
 generate_SOPS <- FALSE
+```
+
+```{r}
+path <- here("2-hosp", "output", "primary-estimand")
+future::plan(future::multisession, workers=6)
+
+baseline_df <- df |> 
+    filter(week == 1) |> 
+    select(id, week, ecog_fstcnt, diagnosis, yprev, ypprev) |> 
+    distinct() |> 
+    arrange(id)
+
 # Control
 if (generate_SOPS) {
-    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df, path, model = fit_second_order_b_cluster),
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df, path, model = model),
                        .progress=TRUE,
                        .options = furrr_options(seed=TRUE))
 }
 # Treatment
 if (generate_SOPS) {
-    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df, path, model = fit_second_order_b_cluster),
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df, path, model = model),
                        .progress=TRUE,
                        .options = furrr_options(seed=TRUE))
 }
@@ -617,18 +424,17 @@ if (generate_SOPS) {
 ### Read marginalized SOPs
 
 ```{r}
-files <- fs::dir_ls("./9-markov-tests/output/second_order_marginalized/marginalized_sop_0/", glob = "*.parquet")
+files <- fs::dir_ls(here("2-hosp", "output", "primary-estimand", "marginalized_sop_0"), glob = "*.parquet")
 
-# Read in each parquet file as a data.frame and merge into a data.table
 soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
 
-# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+# Average SOPs over covariate settings for each state, day, and MCMC draw
 soc_df <- soc_df |> 
   group_by(state, time, draw, tx) |>
   summarise(sop = mean(probability), .groups = "drop") |> 
   mutate(stat = as.factor(state))
 
-files <- fs::dir_ls("./9-markov-tests/output/second_order_marginalized/marginalized_sop_1/", glob = "*.parquet")
+files <- fs::dir_ls(here("2-hosp", "output", "primary-estimand", "marginalized_sop_1"), glob = "*.parquet")
 sat_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
 sat_df <- sat_df |> 
   group_by(state, time, draw, tx) |>
@@ -665,18 +471,10 @@ plot_model <- marg_df |>
 
 
 ```{r}
-d_forward <- d |> 
-  # per patient max week is not 26, then fill down with last observation carried forward
-  group_by(pat_id) |>
-  arrange(week) |>
-  mutate(
-    max_week = max(week),
-    week = as.integer(week)
-  ) |>
-  complete(week = 1:26) |>
-  fill(yprev, ypprev, y, tx, .direction = "down")
+df_forward <- read_parquet(here("2-hosp", "sim-data", "ha_08_forward.parquet")) |> 
+  filter(pat_id %in% c(tx_id, soc_id))
 
-empirical_sop <- d_forward |>
+empirical_sop <- df_forward |>
   group_by(tx, week) |> 
   count(y) |> 
   mutate(
@@ -689,7 +487,7 @@ empirical_sop <- d_forward |>
 plot_empirical <- empirical_sop |> 
   ggplot() +
   aes(x = week, y = sop) +
-  geom_line(aes(color = state, linetype = tx), size = 1) +
+  geom_line(aes(color = state, linetype = tx), linewidth = 1) +
   scale_color_brewer(palette = "Dark2") +
   scale_x_continuous(breaks = seq(1, 26, by=4)) +
   scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
@@ -703,8 +501,29 @@ plot_empirical <- empirical_sop |>
 
 ```
 
-
+We can se that some empirical lines cross, but we KNOW that the treatment effect is constant and proportional, so this is just noise.
 ```{r}
-library(patchwork)
 plot_empirical + plot_model
+```
+
+## Primary Estimand
+
+Difference is in the mean time spent out of hospital and alive (y = 1). 
+```{r}
+estimand_df <- marg_df |> 
+  filter(state == "1") |> 
+  group_by(tx, draw) |> 
+  summarise(total_time = sum(sop), .groups = "drop") |> 
+  pivot_wider(names_from = tx, values_from = total_time, names_prefix = "tx_") |> 
+  mutate(diff = tx_1 - tx_0)
+
+# plot
+estimand_df |> 
+  ggplot() +
+  aes(x = diff) +
+  ggdist::stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - SoC)",
+       y = "Density",
+       subtitle = "Posterior distribution of the primary estimand")
 ```
