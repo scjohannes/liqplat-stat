@@ -168,6 +168,10 @@ rhat_ha_09 <- load_rhat_values(path = path)
 path <- "./2-hosp/output/sim-HA-08/"
 ha_08 <- load_draws(path)
 rhat_ha_08 <- load_rhat_values(path = path)
+
+path <- "./2-hosp/output/sim-HA-07/"
+ha_07 <- load_draws(path)
+rhat_ha_07 <- load_rhat_values(path = path)
 ```
 
 #### Convergence
@@ -184,6 +188,9 @@ rhat_08 <- rhat_ha_08 |>
     labs(
         subtitle = 'HA: OR = 0.8'
     )
+
+rhat_07 <- rhat_ha_07 |> 
+    plot_rhat(y = `beta.1.`)
 
 rhat_09 + rhat_08
 ```
