@@ -463,10 +463,10 @@ sops |>
 ### Export
 
 ```{r}
-write_parquet(ha_data_forward_07, "./2-hosp/sim-data/ha_07.parquet")
-write_parquet(ha_data_07, "./2-hosp/sim-data/ha_07_forward.parquet")
-write_parquet(ha_data_forward_08, "./2-hosp/sim-data/ha_08.parquet")
-write_parquet(ha_data_08, "./2-hosp/sim-data/ha_08_forward.parquet")
-write_parquet(ha_data_forward_09, "./2-hosp/sim-data/ha_09.parquet")
-write_parquet(ha_data_09, "./2-hosp/sim-data/ha_09_forward.parquet")
+write_parquet(ha_data_forward_07, "./2-hosp/sim-data/ha_07_forward.parquet")
+write_parquet(ha_data_07, "./2-hosp/sim-data/ha_07.parquet")
+write_parquet(ha_data_forward_08, "./2-hosp/sim-data/ha_08_forward.parquet")
+write_parquet(ha_data_08, "./2-hosp/sim-data/ha_08.parquet")
+write_parquet(ha_data_forward_09, "./2-hosp/sim-data/ha_09_forward.parquet")
+write_parquet(ha_data_09, "./2-hosp/sim-data/ha_09.parquet")
 ```
