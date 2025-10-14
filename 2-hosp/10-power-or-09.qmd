@@ -155,7 +155,7 @@ run_simulation_iteration <- function(iter_num, base_path, data_path) {
 N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-HA-09")
 DATA_FILE_PATH <- here::here("2-hosp", "sim-data", "ha_09.parquet")
-N_CORES <- 24
+N_CORES <- 30
 
 message("Checking for previously completed simulation runs...")
 
