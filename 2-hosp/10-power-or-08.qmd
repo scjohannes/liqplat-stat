@@ -32,7 +32,7 @@ run_simulation_iteration <- function(iter_num, base_path, data_path) {
     # This function runs one full simulation iteration.
     set.seed(123 + iter_num)
 
-    # --- 1. Setup for the current iteration ---
+    # --- Setup for the current iteration ---
     iter_path <- file.path(base_path, glue("run_{iter_num}"))
     if (!dir.exists(iter_path)) {
         dir.create(iter_path, recursive = TRUE)
@@ -44,20 +44,16 @@ run_simulation_iteration <- function(iter_num, base_path, data_path) {
         distinct() |>
         collect()
 
-    # Second, perform the sampling on this small, in-memory data frame.
     tx_ids <- sample(patient_info$pat_id[patient_info$tx == 1], size = 180, replace = FALSE)
     soc_ids <- sample(patient_info$pat_id[patient_info$tx == 0], size = 90, replace = FALSE)
     selected_pat_ids <- c(tx_ids, soc_ids)
 
-
-    # --- 2. Load ONLY the required subset of data ---
 
     # Now, filter the full on-disk dataset using the IDs we just sampled.
     # The `collect()` step executes the query and pulls ONLY the required rows into RAM.
     data_for_model <- arrow::open_dataset(data_path) |>
         filter(pat_id %in% selected_pat_ids) |>
         collect() |>
-        # Now, perform the rest of your mutations on the much smaller, in-memory data.
         relocate(pat_id, week, tx, y, yprev, ypprev) |>
         mutate(
             y = as.integer(y),
@@ -146,7 +142,7 @@ DATA_FILE_PATH <- here::here("2-hosp", "sim-data", "ha_08.parquet")
 
 N_SIMULATIONS <- 1000
 OUTPUT_PATH <- here("2-hosp", "output", "sim-HA-08")
-N_CORES <- 24
+N_CORES <- 30
 
 message("Checking for previously completed simulation runs...")
 

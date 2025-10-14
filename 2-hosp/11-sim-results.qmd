@@ -156,6 +156,60 @@ formatted_summary |> knitr::kable()
 saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
 ```
 
+### HA
+
+#### Load draws + diagnostics
+```{r}
+# H0 misspecified, no clustering
+path <- "./2-hosp/output/sim-HA-09/"
+ha_09 <- load_draws(path)
+rhat_ha_09 <- load_rhat_values(path = path)
+
+path <- "./2-hosp/output/sim-HA-08/"
+ha_08 <- load_draws(path)
+rhat_ha_08 <- load_rhat_values(path = path)
+```
+
+#### Convergence
+
+```{r}
+rhat_09 <- rhat_ha_09 |> 
+    plot_rhat(y = `beta.1.`)
+
+rhat_08 <- rhat_ha_08 |> 
+    plot_rhat(y = `beta.1.`)
+
+rhat_09 + rhat_08
+```
+
+#### Power
+
+```{r}
+summary_ha_09 <- ha_09 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+length(unique(ha_09$iter))
+summary_ha_09
+
+summary_ha_08 <- ha_08 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx`, 
+        true_param_value = log(1), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
+length(unique(ha_08$iter))
+summary_ha_08
+
+setdiff(1:1000, unique(ha_08$iter))
+```
+
 ## Count Regression
 
 ### Resampling H0
