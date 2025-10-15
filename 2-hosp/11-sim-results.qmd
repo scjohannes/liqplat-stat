@@ -237,6 +237,14 @@ summary_ha_08 <- ha_08 |>
         threshold = 0.95) |> 
     summarise_iterations()
 
+summary_ha_07 <- ha_07 |> 
+    group_by(iter) |> 
+    summarise_posterior(
+        param_name = `tx`, 
+        true_param_value = log(0.8), 
+        threshold = 0.95) |> 
+    summarise_iterations()
+
 # create dataframe for comparison
 all_summaries <- bind_rows(
     'or_09' = summary_ha_09,
