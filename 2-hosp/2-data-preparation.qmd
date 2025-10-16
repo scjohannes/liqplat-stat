@@ -100,7 +100,7 @@ df_daily <- df |>
     slice(-1) |> 
     ungroup() |> 
     filter(day > 0) |> 
-    relocate(pat_id, tx, y, yprev, ypprev)
+    relocate(pat_id, day, tx, y, yprev, ypprev)
 ```
 
 ## Export

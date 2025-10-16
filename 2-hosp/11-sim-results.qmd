@@ -190,9 +190,12 @@ rhat_08 <- rhat_ha_08 |>
     )
 
 rhat_07 <- rhat_ha_07 |> 
-    plot_rhat(y = `beta.1.`)
+    plot_rhat(y = `beta.1.`) +
+    labs(
+        subtitle = 'HA: OR = 0.7'
+    )
 
-rhat_09 + rhat_08
+rhat_09 + rhat_08 + rhat_07
 ```
 
 #### P (Benefit)
@@ -204,18 +207,10 @@ p1 <- ha_09 |>
 p2 <- ha_08 |> 
     plot_p_benefit(param = `tx`)
 
-p1 + p2
+p3 <- ha_07 |> 
+    plot_p_benefit(param = `tx`)
 
-ha_08 |> 
-    group_by(iter) |> 
-    summarise(
-        p_benefit = mean(tx < 0)
-    ) |> 
-    summarise(
-        mean_p_benefit = mean(p_benefit),
-        sd_p_benefit = sd(p_benefit),
-        n = n()
-    )
+p1 + p2 + p3
 ```
 
 #### Summary
@@ -241,7 +236,7 @@ summary_ha_07 <- ha_07 |>
     group_by(iter) |> 
     summarise_posterior(
         param_name = `tx`, 
-        true_param_value = log(0.8), 
+        true_param_value = log(0.7), 
         threshold = 0.95) |> 
     summarise_iterations()
 
@@ -249,6 +244,7 @@ summary_ha_07 <- ha_07 |>
 all_summaries <- bind_rows(
     'or_09' = summary_ha_09,
     'or_08' = summary_ha_08,
+    'or_07' = summary_ha_07,
     .id = 'model_type'
 )
 

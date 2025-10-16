@@ -22,7 +22,7 @@ We use simulated data with constant OR of 0.8.
 ```{r}
 set.seed(1234)
 df_full <- read_parquet(here("2-hosp", "sim-data", "ha_08.parquet")) |> 
-    select(id = pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis)
+    select(id = pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, albumin, c_reactive_protein)
 
 tx_id <- sample(unique(df_full$id[df_full$tx == 1]), 180, replace = FALSE)
 soc_id <- sample(unique(df_full$id[df_full$tx == 0]), 90, replace = FALSE)
@@ -37,20 +37,36 @@ df <- df |>
   mutate(id = as.integer(factor(id)))
 ```
 
+## Estimand
+
+We use the potential outcomes framework to formally define the estimand. Let $Y_{it}^a$ be the potential health state for individual $i$ at week $t$ under treatment assignment $a$, where $a=1$ is invitation to the single-arm trial (SAT) and $a=0$ is standard of care (SoC). The health state is an ordinal variable where the state "Alive and Out of Hospital" is denoted by $Y_{it}^a=1$. The analysis time horizon is $t_{max}=26$ weeks.
+
+We define an individual-level potential outcome, $W_i^a$, as the total number of weeks that individual $i$ would spend alive and out of the hospital over the 26-week period if they were assigned to treatment $a$. This is calculated by summing an indicator function over the time horizon:
+
+$$W_i^a = \sum_{t=1}^{26}\mathbb{I}(Y_{it}^a = 1)$$
+
+where $\mathbb{I}(\cdot)$ is the indicator function, which equals 1 if the patient is in state 1 at week $t$, and 0 otherwise.
+
+Our primary estimand is the Average Treatment Effect (ATE) on this outcome, denoted $\tau$. It is the difference in the expected total time spent alive and out of the hospital, if everyone had been invited to the SAT ($a = 1$) compared to nobody having been invited to the SAT ($a=0$).
+
+$$\tau = \mathbb{E}[W_i^1] - \mathbb{E}[W_i^0]$$
+
+The estimand, $\tau$, represents the population-average difference in weeks spent alive and out of the hospital over a 26-week period when comparing the SAT intervention to the SoC.
+
 ## Fit model
 
 ```{r}
-if(FALSE){
+if(TRUE){
   options(mc.cores = 6)
   model <-       
       blrm(
-              formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + cluster(id),
+              formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + albumin + c_reactive_protein + cluster(id),
               data = df,
               refresh = 5,
               iter = 2000,
               chains = 4,
               seed = 1234,
-              loo = FALSE,
+              loo = TRUE,
               method = "sampling",
               backend = "cmdstan"
           )
@@ -149,6 +165,38 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
 ```
 
 ### Calculate SOPs
+
+### State Occupancy Probabilities for a Second-Order Process
+
+The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order process, we define the SOP as $P(Y_j=m | X, y_0, y_{-1})$, which is the probability of being in state $k$ at time $j$, conditional on a set of baseline covariates $X$ and the two baseline states, $y_{-1}$ (state at time $j=-1$) and $y_0$ (state at time $j=0$).
+
+The procedure for calculating SOPs in a second-order model is more involved than the recursive matrix multiplication described for first-order models by Rohde et al. (2024) \[**fix REF**\], as the transition to the next state depends on the two immediately preceding states.
+
+In a first-order model, a single transition matrix is sufficient to describe the evolution of the system from time $j-1$ to $j$. In the second-order case, however, the probabilities of transitioning from state $k$ at time $j-1$ to state $l$ at time $j$ are themselves conditional on the state at time $j-2$. This dependency requires a set of transition matrices—one for each possible prior state ($Y_{j-2}=h$)—rather than a single matrix. This collection of matrices forms a rank-3 tensor, and consequently, the system's evolution can no longer be described by the simple matrix multiplication applicable to first-order processes.
+
+The core challenge is that the state of the system at any given time is not described by a single previous outcome, but by the joint probability distribution of the last two outcomes. Therefore, to compute the SOPs, we must recursively calculate the evolution of this joint probability distribution over time.
+
+Let the conditional transition probability at time $j$ be denoted as $T_j(l | h, k) = P(Y_j=l | Y_{j-1}=k, Y_{j-2}=h, X)$. These probabilities, which represent the chance of moving to state $l$ given the history of being in state $h$ then state $k$, are calculated directly from the fitted ordinal transition model for a specific covariate profile $X$.
+
+The unconditionalization process proceeds as follows:
+
+1.  **Initialization**: We begin with the known baseline states $y_{-1}$ and $y_0$. The joint probability of being in states $h$ and $k$ at times $j=-1$ and $j=0$ respectively, which we denote as $J_0(h, k) = P(Y_{-1}=h, Y_0=k)$, is initialized as a matrix of zeros with a 1 at the position $(h, k) = (y_{-1}, y_0)$. The initial SOP at time $j=0$ is therefore known with certainty: $S_0(k) = 1$ for the state $k=y_0$ and 0 otherwise.
+
+2.  **Recursive Calculation of Joint Probabilities**: For each subsequent time point $j=1, 2, \dots, d$, we calculate the new joint probability distribution $J_j(k, l) = P(Y_{j-1}=k, Y_j=l)$ by marginalizing over the state at time $j-2$, denoted by $h$. Using the law of total probability, the recursion is defined as:
+
+    $$
+    J_j(k, l) = \sum_{h=1}^{K} T_j(l | h, k) \times J_{j-1}(h, k)
+    $$
+
+    In this step, we use the joint probabilities from the previous time step, $J_{j-1}$, and the conditional transition probabilities for the current time step, $T_j$, to compute the joint probabilities for the current and previous time steps, $J_j$.
+
+3.  **Calculation of State Occupancy Probabilities**: Once the joint probability matrix $J_j$ for time $j$ is obtained, the SOP for being in state $l$ at time $j$, denoted $S_j(l)$, is calculated by marginalizing out the state at time $j-1$ (denoted by $k$):
+
+    $$
+    S_j(l) = P(Y_j=l) = \sum_{k=1}^{K} J_j(k, l)
+    $$
+
+This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history.
 
 ```{r}
 #' Calculate Second-Order State Occupation Probabilities
@@ -321,7 +369,8 @@ sop_markov_second_order <- function(model_fit,
       cond_probs_d <- cond_probs_4d_array[d, , , ]
       
       # Law of Total Probability: P(X_t=l|h,j) * P(h,j)
-      weighted_probs <- cond_probs_d * array(prev_P_joint_d, dim = dim(cond_probs_d))
+      # weighted_probs <- cond_probs_d * array(prev_P_joint_d, dim = dim(cond_probs_d))
+      weighted_probs <- sweep(cond_probs_d, c(1, 2), prev_P_joint_d, "*")
       # Marginalize over the t-2 state (h) to get P(X_{t-1}, X_t)
       # = Summation over h (the state at t-2), resulting in P(X_{t-1}=j, X_t=l)
       current_P_joint_d <- apply(weighted_probs, c(2, 3), sum)
@@ -469,7 +518,6 @@ plot_model <- marg_df |>
 
 ### Empirical SOPs
 
-
 ```{r}
 df_forward <- read_parquet(here("2-hosp", "sim-data", "ha_08_forward.parquet")) |> 
   filter(pat_id %in% c(tx_id, soc_id))
@@ -502,13 +550,15 @@ plot_empirical <- empirical_sop |>
 ```
 
 We can se that some empirical lines cross, but we KNOW that the treatment effect is constant and proportional, so this is just noise.
+
 ```{r}
 plot_empirical + plot_model
 ```
 
 ## Primary Estimand
 
-Difference is in the mean time spent out of hospital and alive (y = 1). 
+Difference is in the mean time spent out of hospital and alive (y = 1).
+
 ```{r}
 estimand_df <- marg_df |> 
   filter(state == "1") |> 
@@ -521,9 +571,210 @@ estimand_df <- marg_df |>
 estimand_df |> 
   ggplot() +
   aes(x = diff) +
+  ggdist::stat_dots(side = "bottom") +
   ggdist::stat_halfeye() +
   geom_vline(xintercept = 0, linetype = "dashed") +
   labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - SoC)",
-       y = "Density",
-       subtitle = "Posterior distribution of the primary estimand")
+       y = "Density")
 ```
+
+## Checks
+
+Comparing calculated SOPs to brute-force simulation. Note: the optimized simulation was coded by gemini, but matches a slow version I wrote before. Confidence: high.
+
+When we use compare the simulations agains the calculations the SOPs match exactly.
+
+```{r}
+t1 <- Sys.time()
+N <- 1e5
+set.seed(1234) # for reproducibility
+
+# --- 1. Pre-calculation of Transition Probabilities ---
+
+# Define simulation parameters
+n_states <- 5
+absorbing_states <- 5
+non_absorbing_states <- 1:(n_states - 1)
+times <- 1:16
+
+# Create a grid of every possible non-absorbing history and time point
+prediction_grid <- expand.grid(
+  ypprev = factor(non_absorbing_states),
+  yprev  = factor(non_absorbing_states),
+  week   = times
+)
+
+# Extract the static baseline covariates from your sample data frame
+static_cov_names <- setdiff(names(df), c("ypprev", "yprev", "week"))
+baseline_covariates <- df[1, static_cov_names, with = FALSE]
+
+# Create the full dataset for the one-time prediction
+full_prediction_data <- cbind(baseline_covariates, prediction_grid)
+
+# --- Make one single, large prediction call ---
+# This returns a 3D array: [draws, rows_in_grid, states]
+all_probs_raw <- predict_blrm_manual(
+  model,
+  full_prediction_data,
+  include_re = FALSE
+)
+
+num_draws <- dim(all_probs_raw)[1]
+
+# --- Reshape the raw predictions into a 5D lookup array for fast access ---
+# Dimensions: [ypprev, yprev, time, draw, state_outcome]
+lookup_table <- array(0,
+  dim = c(
+    length(non_absorbing_states),
+    length(non_absorbing_states),
+    length(times),
+    num_draws,
+    n_states
+  ),
+  dimnames = list(
+    ypprev = non_absorbing_states,
+    yprev = non_absorbing_states,
+    week = times,
+    draw = 1:num_draws,
+    state = 1:n_states
+  )
+)
+
+# Populate the lookup table by mapping the flat prediction output
+# back to its structured [h, j, t] coordinates.
+for (i in 1:nrow(prediction_grid)) {
+  h <- as.integer(as.character(prediction_grid$ypprev[i]))
+  j <- as.integer(as.character(prediction_grid$yprev[i]))
+  t <- prediction_grid$week[i]
+  
+  # Assign probabilities for all draws and all outcome states for this h,j,t
+  lookup_table[h, j, t, , ] <- all_probs_raw[, i, ]
+}
+
+# Clean up large intermediate objects to save memory
+rm(all_probs_raw, full_prediction_data, prediction_grid, baseline_covariates)
+gc() # Garbage collection
+
+
+# --- 2. Simulation Initialization ---
+
+# Initialize the main data object for N individuals
+data <- as.data.table(df[rep(1, N), ])
+
+# Pre-assign one fixed posterior draw to each individual for the whole simulation
+trajectory_draw_indices <- sample.int(num_draws, size = N, replace = TRUE)
+
+# This logical vector tracks who has reached an absorbing state
+has_reached_absorbing <- (data$yprev %in% absorbing_states)
+
+# Pre-allocate a list to store the results for each time step
+y <- vector("list", length(times))
+
+
+# --- 3. Main Simulation Loop (Optimized) ---
+
+for (i in times) {
+  
+  # Identify individuals who are still active (not in an absorbing state)
+  active_indices <- which(!has_reached_absorbing)
+  
+  # Early exit if everyone has finished
+  if (length(active_indices) == 0) {
+    last_y <- y[[i - 1]]
+    for (j in i:length(times)) { y[[j]] <- last_y }
+    break
+  }
+  
+  # Get the state history for only the active individuals
+  active_ypprev <- as.integer(as.character(data$ypprev[active_indices]))
+  active_yprev  <- as.integer(as.character(data$yprev[active_indices]))
+  
+  # Get the pre-assigned draw for each active individual
+  active_draw_indices <- trajectory_draw_indices[active_indices]
+  
+  # --- EFFICIENT PROBABILITY LOOKUP (replaces prediction call) ---
+  num_active <- length(active_indices)
+  selected_probs <- matrix(nrow = num_active, ncol = n_states)
+
+  # Create an index matrix to extract values from the 5D lookup_table
+  # Each row corresponds to an active person: [h, j, t, draw]
+  index_matrix <- cbind(
+    active_ypprev,
+    active_yprev,
+    i, # current week
+    active_draw_indices
+  )
+  
+  # Extract the probability for each outcome state using vectorized indexing
+  for (cat in 1:n_states) {
+    # For each category, append it to the index matrix and extract all values at once
+    selected_probs[, cat] <- lookup_table[cbind(index_matrix, cat)]
+  }
+  
+  # Sample new outcomes using the probabilities from the single, fixed draws
+  y_new_active <- apply(selected_probs, 1, function(p) {
+    # Handle potential floating point errors where sum(p) is not exactly 1
+    sample(1:n_states, size = 1, prob = p)
+  })
+  
+  # Initialize the result vector for this time step with the previous state
+  y_new <- as.integer(as.character(data$yprev)) 
+  # Update the states for the active individuals with their new sampled state
+  y_new[active_indices] <- y_new_active
+  
+  # Update the tracker for the NEXT loop iteration
+  has_reached_absorbing[active_indices[y_new_active %in% absorbing_states]] <- TRUE
+  
+  # Update the history variables in the main data object for the next iteration
+  data$ypprev <- data$yprev
+  data$yprev <- y_new
+  
+  # Store the full vector of results for this time step
+  y[[i]] <- y_new
+  message("Iteration ", i, " complete. Active individuals: ", num_active)
+}
+
+
+# --- 4. Post-Processing and Results ---
+
+# Function to calculate state proportions for a given time step
+calculate_proportions_matrix <- function(vec, all_levels) {
+  # Ensure all possible states are represented in the table, even if count is 0
+  counts <- table(factor(vec, levels = all_levels))
+  proportions <- prop.table(counts)
+  return(proportions)
+}
+
+# Apply the function to the list of results
+all_possible_states <- 1:n_states
+proportions_list <- lapply(y, calculate_proportions_matrix, all_levels = all_possible_states)
+
+# Bind the results into a final, easy-to-read matrix
+proportion_matrix <- do.call(rbind, proportions_list)
+rownames(proportion_matrix) <- paste0("Week_", times)
+t2 <- Sys.time()
+t2 - t1
+```
+
+```{r}
+t1 <- Sys.time()
+sops_2 <- sop_markov_second_order(
+  model_fit = model,
+  baseline_data = as.data.frame(df[1, ]),
+  col_yprev = "yprev",
+  col_ypprev = "ypprev",
+  col_time = "week",
+  times = 1:16,
+  n_states = 5,
+  absorbing_states = c(5),
+  include_re = FALSE
+)
+t2 <- Sys.time()
+t2 - t1
+
+round(t(apply(sops_2, c(2,3), mean))[-1,], digits = 3)
+round(proportion_matrix, digits = 3)
+```
+
+The simulation for 100k patients is took only three seconds longer. Fully simulation based approach might be preferable for more complex models where the SOP calculation is not feasible.
+

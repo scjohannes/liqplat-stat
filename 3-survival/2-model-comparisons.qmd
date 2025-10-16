@@ -115,20 +115,10 @@ We now refit the chosen model with the default priors hardcoded for improved rep
 We deem it unlikely that invitation to the single arm trial (SAT) could increase or decrease hazard ratio (HR) by more than a factor of 2, i.e., a HR of $0.5$ or $2.0$. To place ca. 80% of the prior probability mass within this range we use a normal prior on the log-hazard ratio scale with mean $0$ and standard deviation $0.55$.
 
 ```{r}
-tx_scale <- 0.55
-default_scale <- 2.5
-my_prior <- normal(
-  location = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-  scale = c(tx_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale)
-)
-
 mod2 <- stan_surv(
   formula = Surv(survival_time, event_death) ~ tx + ecog_fstcnt + diagnosis_cat + ns(albumin, df = 2) + ns(c_reactive_protein, df = 2),
   basehaz = "ms", 
   basehaz_ops = list(df = 5),
-  prior = my_prior,
-  prior_intercept = normal(0, 20),
-  prior_aux = dirichlet(1),
   data = data,
   chains = CHAINS,
   cores = CORES,

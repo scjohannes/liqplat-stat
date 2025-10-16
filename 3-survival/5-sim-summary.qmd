@@ -1,0 +1,75 @@
+---
+Title: Results of Simulations
+---
+
+## Setup
+
+### Load packages
+
+```{r}
+library(fs)
+library(tidyverse)
+library(arrow)
+library(survival)
+library(patchwork)
+library(data.table)
+library(glue)
+```
+
+### Set Threshold for P(Benefit)
+
+```{r}
+threshold <- 0.95
+```
+
+### Functions
+
+```{r}
+source("./functions/jackknife_mcse.R")
+source("./functions/summarise-posterior.R")
+source("./functions/summarise-iterations.R")
+source("./functions/plot-rhat.R")
+source("./functions/plot-p-benefit.R")
+source("./functions/plot-posterior-distribution.R")
+source("./functions/load-draws.R")
+source("./functions/load-rhat-values.R")
+```
+
+## Load data
+
+```{r}
+path <- "./3-survival/output/sim-HA-09/"
+param_draws <- load_draws(path)
+rhat <- load_rhat_values(path = path)
+
+rmst_files <- dir_ls(
+    path = path, 
+    glob = "*/rmst_results.rds", 
+    recurse = TRUE
+)
+
+rmst_draws <- rbindlist(lapply(rmst_files, function(file_path) {
+    dt <- readRDS(file_path)
+    iter_num <- as.integer(stringr::str_extract(file_path, "(?<=run_)\\d+"))
+    dt[, iter := iter_num]
+    dt
+}))
+```
+
+## Summarise RMST Results
+
+```{r}
+prob_benefit_per_sim <- rmst_draws[, .(prob_benefit = mean(rmst_diff > 0)), by = iter]
+
+power_estimates <- prob_benefit_per_sim$prob_benefit >= threshold
+power <- mean(power_estimates)
+power_mcse <- jackknife_mcse(power_estimates)
+power
+power_mcse
+
+median_rmst_diff_per_sim <- rmst_draws[, .(median_diff = median(rmst_diff)), by = iter]
+overall_mean_rmst_diff <- mean(median_rmst_diff_per_sim$median_diff)
+TRUE_RMST_DIFF <- 3
+bias <- round(overall_mean_rmst_diff - TRUE_RMST_DIFF, digit = 1)
+bias_mcse <- jackknife_mcse(median_rmst_diff_per_sim$median_diff)
+```

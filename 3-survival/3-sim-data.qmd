@@ -15,7 +15,7 @@ library(rms)
 ## Load data
 
 ```{r}
-df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
+df_ypprev <- read_parquet("./data/hosp_long_daily.parquet") |> 
     mutate(
         tx = factor(tx),
         ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
@@ -23,7 +23,7 @@ df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |>
         ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),
         y = ordered(y)
     ) |> 
-      select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+      select(pat_id, tx, y, yprev, ypprev, day, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
 
 d <- df_ypprev
 ```
@@ -35,7 +35,7 @@ We will use the same for model for HA, but simulate a treatment effect during th
 
 ```{r}
 fit_h0 <- orm(
-    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
+    y ~ rcs(day, 5) + yprev + ypprev + day %ia% yprev + day %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
     data = d 
   )
 
@@ -47,9 +47,9 @@ fit_h0
 ### Simulate baseline data
 
 ```{r}
-N <- 200000
+N <- 30000
 baseline_data <- d |> 
-  filter(week == 1) |> 
+  filter(day == 1) |> 
   select(yprev, ypprev, ecog_fstcnt, gender, diagnosis, age, albumin, c_reactive_protein) |> 
   slice_sample(n = N, replace = TRUE) |> 
   mutate(
@@ -127,10 +127,10 @@ generate_trajectories <- function(model, baseline_data, times, k,
 
   for (i in seq_along(times)) {
     t <- times[i]
-    if (verbose) msg("Week %s (%d/%d)", t, i, length(times))
+    if (verbose) msg("day %s (%d/%d)", t, i, length(times))
 
-    # Set the week column once for all rows this step
-    current$week <- t
+    # Set the day column once for all rows this step
+    current$day <- t
 
     # Absorption mask: absorbed if previous state equals absorbing_state
     if (!is.null(absorbing_state)) {
@@ -153,10 +153,10 @@ generate_trajectories <- function(model, baseline_data, times, k,
       y_new[absorbed] <- absorbing_state
     }
 
-    # Store results for this week (keep as integers; convert to factor later if needed)
+    # Store results for this day (keep as integers; convert to factor later if needed)
     out[[i]] <- data.frame(
       pat_id = current$pat_id,
-      week   = t,
+      day   = t,
       y      = y_new,
       stringsAsFactors = FALSE
     )
@@ -182,7 +182,7 @@ generate_trajectories <- function(model, baseline_data, times, k,
 patient_trajectories <- generate_trajectories(
   model = fit_h0,
   baseline_data = baseline_data,
-  times = 1:26,
+  times = 1:182,
   k = 4,
   absorbing_state = 5,
   tx_effect = log(1),
@@ -197,31 +197,31 @@ h0_data_forward <- baseline_data |>
     ypprev_base = ypprev,
     ) |> 
   left_join(patient_trajectories, by = "pat_id") |> 
-  arrange(pat_id, week) |> 
+  arrange(pat_id, day) |> 
   group_by(pat_id) |> 
   mutate(
     yprev  = lag(y, 1),
     ypprev = lag(y, 2),
-    # For the first one or two weeks, seed lags from baseline
+    # For the first one or two days, seed lags from baseline
     yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
     ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
   ) |> 
-  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week))) |> 
+  mutate(dday = ifelse(any(y == 5), min(day[y == 5]), max(day))) |> 
   ungroup()
 
 h0_data <- h0_data_forward |>
-  filter(week <= dweek) |> 
+  filter(day <= dday) |> 
   ungroup() |> 
   mutate(
     y          = as.numeric(y),
     yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
     ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
   ) |> 
-    select(-yprev_base, -ypprev_base, -dweek, -x)
+    select(-yprev_base, -ypprev_base, -dday, -x)
 
 
 fit_test <- orm(
-    y ~ rcs(week, 5) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
+    y ~ rcs(day, 5) + yprev + ypprev + day %ia% yprev + day %ia% ypprev + ecog_fstcnt + gender + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + rcs(age, 3),
     data = h0_data
   )
 
@@ -233,8 +233,8 @@ cbind(round(coef(fit_h0), 3), round(coef(fit_test), 3))
 ### export
 
 ```{r}
-write_parquet(h0_data, "./2-hosp/sim-data/h0.parquet")
-write_parquet(h0_data_forward, "./2-hosp/sim-data/h0_forward.parquet")
+write_parquet(h0_data, "./3-survival/sim-data/h0.parquet")
+write_parquet(h0_data_forward, "./3-survival/sim-data/h0_forward.parquet")
 ```
 
 ### Visualize simulated data
@@ -242,17 +242,17 @@ write_parquet(h0_data_forward, "./2-hosp/sim-data/h0_forward.parquet")
 ```{r}
 baseline_data |> 
   left_join(patient_trajectories, by = "pat_id") |> 
-  group_by(tx, week, y) |> 
+  group_by(tx, day, y) |> 
   summarise(n = n(), .groups = "drop") |> 
-  group_by(tx, week) |>
+  group_by(tx, day) |>
   mutate(prop = n / sum(n)) |> 
-  ggplot(aes(x = week, y = prop)) +
+  ggplot(aes(x = day, y = prop)) +
   # stacked bar char
   geom_bar(aes(fill = factor(y)), stat = "identity", position = "fill") +
   facet_wrap(~ tx) +
   labs(
     title = "Simulated patient trajectories",
-    x = "Week",
+    x = "day",
     y = "Proportion",
     fill = "State",
     color = "State"
@@ -260,31 +260,71 @@ baseline_data |>
 
 baseline_data |> 
   left_join(patient_trajectories, by = "pat_id") |> 
-  group_by(tx, week, y) |> 
+  group_by(tx, day, y) |> 
   summarise(n = n(), .groups = "drop") |> 
-  group_by(tx, week) |>
+  group_by(tx, day) |>
   mutate(prop = n / sum(n)) |> 
   mutate(tx = factor(tx)) |>
-  ggplot(aes(x = week, y = prop, color = factor(y), linetype = tx)) +
+  ggplot(aes(x = day, y = prop, color = factor(y), linetype = tx)) +
   geom_line(linewidth = 0.8) +
   labs(
     title = "Simulated patient trajectories",
-    x = "Week",
+    x = "day",
     y = "Proportion",
     fill = "State",
     color = "State"
   )
 ```
 
+### Calculating Surv, Cum Haz, Haz
+
+```{r}
+haz <- baseline_data |> 
+  left_join(patient_trajectories, by = "pat_id") |> 
+  group_by(day, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(day) |>
+  mutate(prop = n / sum(n)) |> 
+  filter(y == 5) |> 
+  ungroup() |> 
+  arrange(day) |>
+  mutate(
+    surv = 1 - prop,
+    cum_haz = -log(surv),
+    haz = cum_haz - lag(cum_haz, n = 1, order_by = day, default = 0))
+
+# plot the hazard
+haz |> 
+  ggplot(aes(x = day, y = haz)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Hazard of death",
+    x = "day",
+    y = "Hazard",
+    color = "Treatment"
+  )
+
+# plot the cumulative hazard
+haz |> 
+  ggplot(aes(x = day, y = cum_haz)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Cumulative hazard of death",
+    x = "day",
+    y = "Cumulative hazard",
+    color = "Treatment"
+  )
+```
+
 ## HA: Treatment effect
 
-## Or of 0.9 ~ 4 days more at home and alive
+## Or of 0.9 ~ Difference in RMST of 3 days
 
 ```{r}
 patient_trajectories_09 <- generate_trajectories(
   model = fit_h0,
   baseline_data = baseline_data,
-  times = 1:26,
+  times = 1:182,
   k = 4,
   absorbing_state = 5,
   tx_effect = log(0.9),
@@ -299,51 +339,71 @@ ha_data_forward_09 <- baseline_data |>
     ypprev_base = ypprev,
     ) |> 
   left_join(patient_trajectories_09, by = "pat_id") |> 
-  arrange(pat_id, week) |> 
+  arrange(pat_id, day) |> 
   group_by(pat_id) |> 
   mutate(
     yprev  = lag(y, 1),
     ypprev = lag(y, 2),
-    # For the first one or two weeks, seed lags from baseline
+    # For the first one or two days, seed lags from baseline
     yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
     ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
   ) |> 
-  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week)))
+  mutate(dday = ifelse(any(y == 5), min(day[y == 5]), max(day)))
 
 ha_data_09 <- ha_data_forward_09 |>
-  filter(week <= dweek) |> 
+  filter(day <= dday) |> 
   ungroup() |> 
   mutate(
     y          = as.numeric(y),
     yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
     ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
   ) |> 
-    select(-yprev_base, -ypprev_base, -dweek, -x)
+    select(-yprev_base, -ypprev_base, -dday, -x)
+
+baseline_data |> 
+  left_join(patient_trajectories_09, by = "pat_id") |> 
+  group_by(tx, day, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, day) |>
+  mutate(prop = n / sum(n)) |> 
+  ggplot(aes(x = day, y = prop)) +
+  # stacked bar char
+  geom_bar(aes(fill = factor(y)), stat = "identity", position = "fill") +
+  facet_wrap(~ tx) +
+  labs(
+    title = "Simulated patient trajectories",
+    x = "day",
+    y = "Proportion",
+    fill = "State",
+    color = "State"
+  )
 ```
 
 ```{r}
 sops <- baseline_data |> 
   left_join(patient_trajectories_09, by = "pat_id") |> 
-  group_by(tx, week, y) |> 
+  group_by(tx, day, y) |> 
   summarise(n = n(), .groups = "drop") |> 
-  group_by(tx, week) |>
+  group_by(tx, day) |>
   mutate(prop = n / sum(n)) |> 
   mutate(tx = factor(tx))
 
 # difference in time out of hospital
 sops |> 
   group_by(tx) |> 
-  filter(y == 1) |>
-  summarise(mean_time = sum(prop))
+  filter(y == 5) |>
+  summarise(rmst = 1 - sum(prop)) |> 
+  pull(rmst) |> 
+  diff()
 ```
 
-### OR of 0.8 ~ 1.2 more weeks at home and alive
+## OR of 0.8 ~ 6 days RMST difference
 
 ```{r}
 patient_trajectories_08 <- generate_trajectories(
   model = fit_h0,
   baseline_data = baseline_data,
-  times = 1:26,
+  times = 1:182,
   k = 4,
   absorbing_state = 5,
   tx_effect = log(0.8),
@@ -358,51 +418,53 @@ ha_data_forward_08 <- baseline_data |>
     ypprev_base = ypprev,
     ) |> 
   left_join(patient_trajectories_08, by = "pat_id") |> 
-  arrange(pat_id, week) |> 
+  arrange(pat_id, day) |> 
   group_by(pat_id) |> 
   mutate(
     yprev  = lag(y, 1),
     ypprev = lag(y, 2),
-    # For the first one or two weeks, seed lags from baseline
+    # For the first one or two days, seed lags from baseline
     yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
     ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
   ) |> 
-  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week)))
+  mutate(dday = ifelse(any(y == 5), min(day[y == 5]), max(day)))
 
 ha_data_08 <- ha_data_forward_08 |>
-  filter(week <= dweek) |> 
+  filter(day <= dday) |> 
   ungroup() |> 
   mutate(
     y          = as.numeric(y),
     yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
     ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
   ) |> 
-    select(-yprev_base, -ypprev_base, -dweek, -x)
+    select(-yprev_base, -ypprev_base, -dday, -x)
 ```
 
 ```{r}
 sops <- baseline_data |> 
   left_join(patient_trajectories_08, by = "pat_id") |> 
-  group_by(tx, week, y) |> 
+  group_by(tx, day, y) |> 
   summarise(n = n(), .groups = "drop") |> 
-  group_by(tx, week) |>
+  group_by(tx, day) |>
   mutate(prop = n / sum(n)) |> 
   mutate(tx = factor(tx))
 
 # difference in time out of hospital
 sops |> 
   group_by(tx) |> 
-  filter(y == 1) |>
-  summarise(mean_time = sum(prop))
+  filter(y == 5) |>
+  summarise(rmst = 1 - sum(prop)) |> 
+  pull(rmst) |> 
+  diff()
 ```
 
-### OR of 0.7 ~ 1.8 more weeks at home and alive
+## OR of 0.7 ~ 9 days of RMST difference 
 
 ```{r}
 patient_trajectories_07 <- generate_trajectories(
   model = fit_h0,
   baseline_data = baseline_data,
-  times = 1:26,
+  times = 1:182,
   k = 4,
   absorbing_state = 5,
   tx_effect = log(0.7),
@@ -417,51 +479,53 @@ ha_data_forward_07 <- baseline_data |>
     ypprev_base = ypprev,
     ) |> 
   left_join(patient_trajectories_07, by = "pat_id") |> 
-  arrange(pat_id, week) |> 
+  arrange(pat_id, day) |> 
   group_by(pat_id) |> 
   mutate(
     yprev  = lag(y, 1),
     ypprev = lag(y, 2),
-    # For the first one or two weeks, seed lags from baseline
+    # For the first one or two days, seed lags from baseline
     yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
     ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
   ) |> 
-  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week)))
+  mutate(dday = ifelse(any(y == 5), min(day[y == 5]), max(day)))
 
 ha_data_07 <- ha_data_forward_07 |>
-  filter(week <= dweek) |> 
+  filter(day <= dday) |> 
   ungroup() |> 
   mutate(
     y          = as.numeric(y),
     yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
     ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
   ) |> 
-    select(-yprev_base, -ypprev_base, -dweek, -x)
+    select(-yprev_base, -ypprev_base, -dday, -x)
 ```
 
 ```{r}
 sops <- baseline_data |> 
   left_join(patient_trajectories_07, by = "pat_id") |> 
-  group_by(tx, week, y) |> 
+  group_by(tx, day, y) |> 
   summarise(n = n(), .groups = "drop") |> 
-  group_by(tx, week) |>
+  group_by(tx, day) |>
   mutate(prop = n / sum(n)) |> 
   mutate(tx = factor(tx))
 
 # difference in time out of hospital
 sops |> 
   group_by(tx) |> 
-  filter(y == 1) |>
-  summarise(mean_time = sum(prop))
+  filter(y == 5) |>
+  summarise(rmst = 1- sum(prop)) |> 
+  pull(rmst) |> 
+  diff()
 ```
 
 ### Export
 
 ```{r}
-write_parquet(ha_data_forward_07, "./2-hosp/sim-data/ha_07_forward.parquet")
-write_parquet(ha_data_07, "./2-hosp/sim-data/ha_07.parquet")
-write_parquet(ha_data_forward_08, "./2-hosp/sim-data/ha_08_forward.parquet")
-write_parquet(ha_data_08, "./2-hosp/sim-data/ha_08.parquet")
-write_parquet(ha_data_forward_09, "./2-hosp/sim-data/ha_09_forward.parquet")
-write_parquet(ha_data_09, "./2-hosp/sim-data/ha_09.parquet")
+write_parquet(ha_data_forward_07, "./3-survival/sim-data/ha_07_forward.parquet")
+write_parquet(ha_data_07, "./3-survival/sim-data/ha_07.parquet")
+write_parquet(ha_data_forward_08, "./3-survival/sim-data/ha_08_forward.parquet")
+write_parquet(ha_data_08, "./3-survival/sim-data/ha_08.parquet")
+write_parquet(ha_data_forward_09, "./3-survival/sim-data/ha_09_forward.parquet")
+write_parquet(ha_data_09, "./3-survival/sim-data/ha_09.parquet")
 ```

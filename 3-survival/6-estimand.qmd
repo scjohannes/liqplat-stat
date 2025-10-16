@@ -1,0 +1,236 @@
+---
+Title : Estimand
+---
+
+## Setup
+
+```{r}
+library(here)
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rstanarm)
+library(glue)
+```
+
+## Load data
+
+```{r}
+set.seed(123)
+data_path <- here("3-survival", "sim-data", "ha_09.parquet")
+
+patient_info <- arrow::open_dataset(data_path) |>
+        select(pat_id, tx) |>
+        distinct() |>
+        collect()
+
+tx_ids <- sample(patient_info$pat_id[patient_info$tx == 1], size = 180, replace = FALSE)
+soc_ids <- sample(patient_info$pat_id[patient_info$tx == 0], size = 90, replace = FALSE)
+selected_pat_ids <- c(tx_ids, soc_ids)
+
+# --- 3. Load ONLY the required subset of data ---
+data <- arrow::open_dataset(data_path) |>
+    filter(pat_id %in% selected_pat_ids) |>
+    collect() |>
+    rename(id = pat_id) |>
+    filter(y == 5 | day == 182) |>
+    group_by(id) |>
+    arrange(desc(y)) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    mutate(death = ifelse(y == 5, 1, 0)) |>
+    select(id, tx, day, death, ecog_fstcnt, diagnosis)
+```
+
+## Estimand
+
+We use the potential outcomes framework to define the estimand. Let $T_i^a$ be the potential time-to-death for individual $i$ under treatment assignment $a$, where $a=1$ is invitation to the single-arm trial (SAT) and $a=0$ is the standard of care (SoC).
+
+The Restricted Mean Survival Time (RMST) under treatment $a$ up to a pre-specified time horizon of $t_{max}=182$ days is the area under the survival curve, $S^a(t) = P(T^a > t)$:
+
+$$
+\text{RMST}^a(t_{max}) = \int_0^{t_{max}} S^a(t) dt
+$$
+
+Our primary estimand is the Average Treatment Effect (ATE) on the RMST, denoted $\tau$.
+
+$$
+\tau = \text{RMST}^1(t_{max}) - \text{RMST}^0(t_{max})
+$$
+
+### Identification
+
+The estimand is identified by calculating the marginal survival curve under each treatment, averaged over the covariate distribution of sample for increased precision. Because the survival data are from a death registry, we do not expect informative censoring.
+
+## Mathematical Model Notation
+
+The model is defined by the hazard rate $h_i(t)$ for each individual $i$ at time $t$.
+
+$$
+\begin{aligned}
+    \text{day}_i, \text{death}_i &\sim \text{Survival}(h_i(t)) \\
+    h_i(t) &= h_0(t) \cdot \exp(\eta_i) \\
+    \eta_i &= \beta_0 + \beta_1 \cdot \text{tx}_i + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} \\
+    h_0(t) &= \sum_{k=1}^{5} \gamma_k \cdot M_k(t) \\
+\\
+    \beta_0 &\sim \text{Normal}(0, 20) \\
+    \beta_1 &\sim \text{Normal}(0, 0.55) \\
+    \beta_{\text{ecog},j \in 2,3} &\sim \text{Normal}(0, 2.5) \\
+    \beta_{\text{diag},k \in 2..5} &\sim \text{Normal}(0, 2.5) \\
+    \gamma &\sim \text{Dirichlet}(\mathbf{1}_5)
+\end{aligned}
+$$
+
+This is a **proportional hazards survival model**. We assume the observed data for individual $i$, which consists of a time-to-event indicator ($\text{day}$), and an event indicator ($\text{death}$) follows a survival process which is defined by the hazard function $h_i(t)$.
+
+The hazard rate $h_i(t)$ for an individual is the product of a flexible **baseline hazard**, $h_0(t)$, and the exponentiated effect of their covariates, $\exp(\eta_i)$.
+
+-   **Baseline Hazard**: $h_0(t)$ is modeled using **M-splines** with 5 degrees of freedom. $M_k(t)$ are non-negative M-spline basis functions.
+-   **Linear Predictor**: $\eta_i$ contains the intercept ($\beta_0$), the effect of treatment ($\beta_1 \cdot \text{tx}_i$), and the effects of the categorical predictions, which are represented by sums over their dummy variables.
+-   **Priors**: The model specifies Normal priors for the regression coefficients ($\beta_1, \beta_{ecog, j}, \beta_{diag, k}$). A Dirichlet prior is used for the M-spline coefficients, $\gamma$. The Dirichlet prior is used because the spline coefficients are constrained by `rstanarm` to be positive and sum to 1 for identification.
+
+## Fit the model
+
+Prior: We deem it unlikely that invitation to the single arm trial (SAT) could increase or decrease hazard ratio (HR) by more than a factor of 2, i.e., a HR of $0.5$ or $2.0$. To place ca. 80% of the prior probability mass within this range we use a normal prior on the log-hazard ratio scale with mean $0$ and standard deviation $0.55$.
+
+```{r}
+# all priors except for the tx prior are default rstanarm priors
+tx_scale <- 0.55
+default_scale <- 2.5
+my_prior <- normal(
+  location = c(0, 0, 0, 0, 0, 0, 0),
+  scale = c(tx_scale, default_scale, default_scale, default_scale, default_scale, default_scale, default_scale)
+)
+
+model <- stan_surv(
+            formula = Surv(day, death) ~ tx + ecog_fstcnt + diagnosis,
+            data = data,
+            basehaz = "ms",
+            basehaz_ops = list(df = 5),
+            prior = my_prior,
+            prior_intercept = normal(0, 20),
+            prior_aux = dirichlet(1),
+            chains = 4,
+            cores = 1,
+            seed = 1234,
+            iter = 2000
+        )
+```
+
+## Inspect Baseline Hazard
+
+```{r}
+plotfun <- function(model, title) {
+  plot(model, plotfun = "basehaz") + # plot baseline hazard
+    coord_cartesian(ylim = c(0, 0.007)) + # adjust y-axis limits
+    labs(title = title) + # add plot title
+    theme(plot.title = element_text(hjust = 0.5)) # centre plot title
+}
+
+plotfun(model, "Baseline Hazard Function")
+```
+
+## Calculate RMST
+
+```{r}
+# --- 6b. Calculate and Save RMST ---
+# Get posterior survival curves for tx=0
+ps_0_list <- posterior_survfit(
+    model,
+    newdata = data_for_model |> mutate(tx = 0),
+    times = 0,
+    extrapolate = TRUE,
+    standardise = TRUE,
+    control = list(edist = 182, epoints = 200),
+    return_matrix = TRUE,
+    draws = 4000
+)
+
+std_surv_matrix_0 <- do.call(cbind, ps_0_list)
+time_points <- sapply(ps_0_list, attr, "times")
+
+# Get posterior survival curves for tx=1
+ps_1_list <- posterior_survfit(
+    model,
+    newdata = data_for_model |> mutate(tx = 1),
+    times = 0,
+    extrapolate = TRUE,
+    standardise = TRUE,
+    control = list(edist = 182, epoints = 200),
+    return_matrix = TRUE,
+    draws = 4000
+)
+std_surv_matrix_1 <- do.call(cbind, ps_1_list)
+
+# Calculate RMST for tx=0 using trapezoidal rule
+delta_t <- diff(time_points)
+s_t1_0 <- std_surv_matrix_0[, -ncol(std_surv_matrix_0)]
+s_t2_0 <- std_surv_matrix_0[, -1]
+trapezoid_areas_0 <- 0.5 * (s_t1_0 + s_t2_0) * matrix(delta_t, nrow = nrow(s_t1_0), ncol = length(delta_t), byrow = TRUE)
+rmst_0 <- rowSums(trapezoid_areas_0)
+
+# Calculate RMST for tx=1
+s_t1_1 <- std_surv_matrix_1[, -ncol(std_surv_matrix_1)]
+s_t2_1 <- std_surv_matrix_1[, -1]
+trapezoid_areas_1 <- 0.5 * (s_t1_1 + s_t2_1) * matrix(delta_t, nrow = nrow(s_t1_1), ncol = length(delta_t), byrow = TRUE)
+rmst_1 <- rowSums(trapezoid_areas_1)
+
+# Calculate the difference
+rmst_diff <- rmst_1 - rmst_0
+
+# Combine and save results
+rmst_results <- data.frame(rmst_0, rmst_1, rmst_diff)
+
+ggplot(rmst_results, (aes(x = rmst_diff))) +
+    ggdist::stat_dots(side = "bottom") +
+    ggdist::stat_halfeye() +
+    labs(
+        title = "Posterior Distribution of RMST Difference (SAT - SoC)",
+        x = "RMST Difference (Days)",
+        y = "Density"
+    )
+```
+
+## Survival Curves
+
+```{r}
+long_data_0 <- std_surv_matrix_0 |>
+  as_tibble(.name_repair = ~ as.character(time_points)) |>
+  mutate(.draw = 1:n()) |>
+  pivot_longer(
+    cols = !.draw,
+    names_to = "time",
+    values_to = "survival",
+    names_transform = as.numeric
+  ) |>
+  mutate(treatment = "SoC")
+
+long_data_1 <- std_surv_matrix_1 |>
+  as_tibble(.name_repair = ~ as.character(time_points)) |>
+  mutate(.draw = 1:n()) |>
+  pivot_longer(
+    cols = !.draw,
+    names_to = "time",
+    values_to = "survival",
+    names_transform = as.numeric
+  ) |>
+  mutate(treatment = "SAT")
+
+# plot
+bind_rows(long_data_0, long_data_1) |> 
+  ggplot(aes(x = time, y = survival, fill = treatment, color = treatment)) +
+  ggdist::stat_lineribbon(.width = 0.95, alpha = 0.5, linewidth = 0.8) +
+  coord_cartesian(ylim = c(0, 1), xlim = c(0, 182), expand = FALSE) +
+  labs(
+    title = "Standardised Survival Curves by Treatment Group",
+    x = "Time in Days",
+    y = "Survival Probability",
+    color = "Treatment Group",
+    fill = "Treatment Group"
+  ) +
+  theme(
+      legend.position = "bottom"
+    #   plot.title = element_text(face = "bold"),
+    #   panel.grid.minor = element_blank()
+      )
+```
