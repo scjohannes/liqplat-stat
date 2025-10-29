@@ -1,10 +1,21 @@
 ---
-Title: Long Ordinal - Data imputation
+title: Long Ordinal - Data imputation
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
 
 ```{r}
+#| output: false
+library(here)
 library(tidyverse)
 library(mice)
 library(miceadds)
@@ -18,7 +29,7 @@ These are historic data from patients of the Division of Medical Oncology at USB
 
 ```{r}
 set.seed(1234)
-df_raw <- read_parquet("data/long_data.parquet")
+df_raw <- read_parquet(here("data", "long_data.parquet"))
 ```
 
 ### Simplify some baseline varaibles
@@ -28,7 +39,7 @@ df_raw <- read_parquet("data/long_data.parquet")
 # lump factor variables according to frequency to have a maximum of 5 levels
 
 df <- df_raw |> 
-  select(-c(randomselect_liqplat, offerpart_liqplat, icf_reg, q29, q30, QL2_trans, PF2_trans, PF2_trans_imput, n_blood_products, diagnosis_details, y)) |> 
+  select(-c(randomselect_liqplat, offerpart_liqplat, icf_reg, q29, q30, QL2_trans, PF2_trans, PF2_trans_imput,diagnosis_details, y, leukocytes, lymphocytes_relative)) |> 
   mutate(
     diagnosis = fct_lump_n(diagnosis, n = 4),
     diagnosis = factor(as.integer(diagnosis)),    
@@ -46,10 +57,13 @@ df <- df_raw |>
   filter(day < 183) |>
   group_by(pat_id) |>
   mutate(
+    n_blood_products_all = sum(as.numeric(n_blood_products), na.rm = T),
     survival_time = max(day),
     died = if_else(any(death == 1), 1, 0)
   ) |> 
-  arrange(pat_id, day)
+  arrange(pat_id, day) |> 
+  ungroup() |> 
+  select(-n_blood_products)
 ```
 
 ### Add Nelson-Aalen-estimates, "Randomize"
@@ -57,7 +71,6 @@ df <- df_raw |>
 Nelson-Aalen yields slightly better predictions than raw survival time, see: https://stefvanbuuren.name/fimd/sec-toomany.html
 
 ```{r}
-
 na_df <- df |> 
     select(pat_id, survival_time, died) |> 
     unique()
@@ -77,11 +90,64 @@ df <- df |>
   mutate(tx = if_else(pat_id %in% tx, "1", "0"))
 ```
 
+## Variables for final analysis
+
+When analyzing the trial data, we will use the following predictors for imputation and modeling:
+
+**Demographics and baseline clinical:**
+
+-   `age` - age at enrollment
+
+-   `gender` - patient sex
+
+-   `ecog_fstcnt` - ECOG performance status (ordered factor: 0-4)
+
+-   `diagnosis` - primary cancer diagnosis (lumped to 5 most frequent categories)
+
+**Laboratory values:**
+
+-   `albumin` - serum albumin (g/L)
+
+-   `c_reactive_protein` - CRP (mg/L)
+
+-   `bilirubin` - serum bilirubin (µmol/L)
+
+-   `lactate_dehydrogenase` - LDH (U/L)
+
+**Healthcare utilization:**
+
+-   `n_blood_products_all` - number of blood product units received over 182 days
+
+**Clinical events:**
+
+-   `event_next_treatment` - indicator for starting next line of treatment
+
+-   `event_progression` - indicator for disease progression
+
+**Outcome tracking:**
+
+-   `died` - death indicator whether patient died within 182 days
+
+-   `na_est` - Nelson-Aalen cumulative hazard estimate
+
+-   `tx` - treatment group allocation
+
+**Longitudinal outcome:**
+
+-   `day` - day after random selection
+
+-   `in_hospital` - indicator for being in hospital on that day
+
+-   `er_visit` - indicator for emergency room visit on that day
+
+Some variables are currently not available in the dummy dataset, so the code an this list might not match.
+
 ## Multiple imputation
 
 Baseline values will be imputed at the patient (cluster level).
 
 ```{r}
+#| output: false
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -97,73 +163,27 @@ pred_matrix[, "pat_id"] <- -2
 
 # use mean matching at the cluster level for baseline observations
 # this ensures only one ecog per patient per imputation
+meth["age"] <- "2lonly.pmm"
 meth["diagnosis"] <- "2lonly.pmm"
+meth["gender"] <- "2lonly.pmm"
 meth["ecog_fstcnt"] <- "2lonly.pmm"
 meth["albumin"] <- "2lonly.pmm"
-meth["bilirubin"] <- "2lonly.pmm"
+meth["bilirubin"] <- "2lonly.pmm" 
 meth["c_reactive_protein"] <- "2lonly.pmm"
 meth["lactate_dehydrogenase"] <- "2lonly.pmm"
-meth["leukocytes"] <- "2lonly.pmm"
-meth["lymphocytes_relative"] <- "2lonly.pmm"
+meth["n_blood_products_all"] <- "2lonly.pmm"
+meth["died"] <- "2lonly.pmm"
+meth["na_est"] <- "2lonly.pmm"
+
+# These are not missing in our dummy data but mnight have some missingness in the trial data
+meth["in_hospital"] <- "2l.pmm"
+meth["unplanned_stay"] <- "2l.pmm"
+meth["er_visit"] <- "2l.pmm"
+
 
 imputed_data <- mice(df,
-                     m = 5,
-                     maxit = 50,
-                     predictorMatrix = pred_matrix,
-                     method = meth,
-                     seed = 1234)
-```
-
-## Multiple Imputation (Wide Format)
-
-Because we're only imputing baseline variables, we can also collapse the longitudinal data (e.g., into total days spend in hospital) and use multiple imputation on that data.
-
-```{r}
-
-df_wide <- df |> 
-    group_by(
-        pat_id, 
-        gender,
-        ecog_fstcnt,
-        diagnosis, 
-        age,
-        albumin,
-        bilirubin,
-        c_reactive_protein,
-        lactate_dehydrogenase, 
-        leukocytes,
-        lymphocytes_relative,
-        survival_time, 
-        died,
-        na_est,
-        tx
-    ) |> 
-        summarise(
-            days_in_hospital = sum(in_hospital),
-            days_er_visit    = sum(er_visit),
-            days_unplanned_stay = sum(unplanned_stay),
-            .groups = "drop"
-        ) |> 
-    mutate(
-        died = factor(died),
-        tx = factor(tx),
-    )
-
-md.pattern(df_wide)
-
-init <- mice(df_wide, maxit = 0)
-pred_matrix <- init$predictorMatrix
-meth <- init$method
-
-# don't want to use survival time because we use na_est. also don't use patient ID for imputation
-pred_matrix[, "survival_time"] <- 0
-pred_matrix["survival_time", ] <- 0 
-pred_matrix[, "pat_id"] <- 0
-pred_matrix["pat_id", ] <- 0 
-
-imputed_data_wide <- mice(df_wide,
-                     m = 5,
-                     maxit = 50,
+                     m = 5, # will set to 50
+                     maxit = 20, #will set to 50
                      predictorMatrix = pred_matrix,
                      method = meth,
                      seed = 1234)
@@ -171,18 +191,13 @@ imputed_data_wide <- mice(df_wide,
 
 ## Diagnostics
 
-The diagnostics look fine to me. 
+The diagnostics look fine to me.
 
 ```{r}
 plot(imputed_data)
 densityplot(imputed_data)
+densityplot(imputed_data, ~ ecog_fstcnt)
 ```
-```{r}
-plot(imputed_data_wide)
-densityplot(imputed_data_wide)
-```
-
-I currently prefer the cluster level imputation.
 
 ## Select one imputation
 
@@ -195,5 +210,5 @@ complete_data <- complete(imputed_data, 4)
 ## Export
 
 ```{r}
-write_parquet(complete_data, sink = "./data/hosp_long_complete.parquet")
+write_parquet(complete_data, sink = here("data", "hosp_long_complete.parquet"))
 ```
