@@ -1,11 +1,23 @@
 ---
-Title: QoL - Data imputation
+title: QoL - Data imputation
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
 
 ```{r}
+#| output: false
+library(here)
 library(tidyverse)
+library(patchwork)
 library(mice)
 library(miceadds)
 library(arrow)
@@ -17,7 +29,7 @@ These are historic data from patients of the Division of Medical Oncology at USB
 
 ```{r}
 set.seed(1234)
-df <- read_parquet("data/alt_qol.parquet")
+df <- read_parquet(here("data", "alt_qol.parquet"))
 ```
 
 ### Simplify some baseline varaibles
@@ -44,11 +56,59 @@ df <- df |>
   arrange(pat_id, quest_day)
 ```
 
+## Variables for final analysis
+
+When analyzing the trial data, we will use the following predictors for imputation and modeling:
+
+**Demographics and baseline clinical:**
+
+-   `tx` - treatment group allocation
+
+-   `pat_age` - age at enrollment
+
+-   `gender` - patient sex
+
+-   `ecog_fstcnt` - ECOG performance status (ordered factor: 0-4)
+
+-   `diagnosis` - primary cancer diagnosis (lumped to 5 most frequent categories)
+
+**Laboratory values:**
+
+-   `albumin` - serum albumin (g/L)
+
+-   `c_reactive_protein` - CRP (mg/L)
+
+**Healthcare utilization:**
+
+-   `n_stay_plus_ER` - total days in hospital or emergency room
+
+-   `n_blood_products_all` - number of blood product units received
+
+**Clinical events:**
+
+-   `event_next_treatment` - indicator for starting next line of treatment
+
+-   `event_progression` - indicator for disease progression
+
+**Outcome:**
+
+-   `status` - death indicator
+
+-   `na_est` - Nelson-Aalen cumulative hazard estimate
+
+**Longitudinal outcome:**
+
+-   `quest_day` - day of questionnaire completion
+
+-   `q30` - EORTC QLQ-C30 overall quality of life (ordered factor: 1-7)
+
+The laboratory values and healthcare utilization variables are currently unavailable in the dummy dataset.
+
 ### Add Nelson-Aalen-estimates, Randomize, and add missing on day 0
 
-We need to consider the day of randomization as day 0, otherwise we immortalize patients. This creates an new problem: people who die before the day of their first contact, even though they were randomly selected, would be deleted from the analysis dataset because of a missing yprev before their death observation. Because we need to get an accurate cumulative incidence for death, we need to impute a plausible QoL value for these patients before their death, e.g., at the day of random selection. We also need a value for day 0 for the marginalization. MI is probably better than carrying the first observed value backwards. 
+We need to consider the day of random selection as day 0, otherwise we immortalize patients. This creates an new problem: people who die before the day of their first contact, even though they were randomly selected, would be deleted from the analysis dataset because of a missing yprev before their death observation. Because we need to get an accurate cumulative incidence for death, we need to impute a plausible QoL value for these patients before their death, e.g., at the day of random selection. We also need a value for day 0 for the marginalization. MI is probably better than carrying the first observed value backwards.
 
-I expect that 50% of patients are randomized on their date of first contact, and 50% before, but that death before the first contact will be exceedingly rare. 
+I expect that 50% of patients are randomized on their date of first contact, and 50% before, but that death before the first contact will be exceedingly rare.
 
 ```{r}
 # nelason alen estimator
@@ -82,9 +142,10 @@ empty_obs <- df |>
 
 ## Multiple imputation
 
-Baseline values will be imputed at the patient (cluster level). This ensures that only one value per multiple rows of missing data for a single patient is imputed. We akso impute missing responses to q30. 
+Baseline values will be imputed at the patient (cluster level). This ensures that only one value per multiple rows of missing data for a single patient is imputed. We akso impute missing responses to q30.
 
 ```{r}
+#| output: false
 md.pattern(empty_obs)
 
 init <- mice(empty_obs, maxit = 0)
@@ -111,29 +172,71 @@ meth["diagnosis"] <- "2lonly.pmm"
 
 
 imputed_data <- mice(empty_obs,
-                     m = 10,
+                     m = 20, # 50 in final analysis
                      maxit = 50,
                      predictorMatrix = pred_matrix,
                      method = meth,
-                     seed = 1234)
+                     seed = 78109823)
 ```
 
 ## Diagnostics
 
-The diagnostics look fine to me. 
+The diagnostics look fine to me.
 
 ```{r}
 plot(imputed_data)
-densityplot(imputed_data, ~q30)
-densityplot(imputed_data, ~ecog_fstcnt)
-densityplot(imputed_data, ~diagnosis)
+densityplot(imputed_data, ~q30 + ecog_fstcnt + diagnosis + plan_fstcnt_coded)
+```
 
-stripplot(imputed_data, q30 ~ .imp, pch = 20, cex = 1.2)
+```{r}
+#| echo: false
+plot_proportions <- function(mids_obj, var) {
+  # Get original data with missingness indicator
+  orig <- mids_obj$data |> 
+    mutate(imputed = is.na(!!sym(var)))
+  
+  # Get completed data for ALL imputations
+  comp <- complete(mids_obj, "long", include = FALSE)
+  
+  # Calculate proportions for observed data
+  orig_props <- orig |> 
+    filter(!imputed) |> 
+    count(!!sym(var)) |> 
+    mutate(prop = n/sum(n))
+  
+  # Calculate proportions for imputed values in each imputation
+  imp_props <- comp |> 
+    semi_join(orig |> filter(imputed), by = "pat_id") |> 
+    group_by(.imp) |> 
+    count(!!sym(var)) |> 
+    mutate(prop = n/sum(n)) |> 
+    ungroup()
+  
+  # Plot
+  ggplot() +
+    geom_col(data = orig_props, 
+             aes(x = !!sym(var), y = prop), 
+             fill = "gray70", alpha = 0.7, width = 0.7) +
+    geom_point(data = imp_props, 
+               aes(x = !!sym(var), y = prop),
+               color = "steelblue",
+               position = position_jitter(width = 0.1, height = 0), 
+               size = 2, alpha = 0.6) +
+    labs(title = paste("Distribution of", var),) +
+    theme_minimal()
+}
+
+p1 <- plot_proportions(imputed_data, "ecog_fstcnt")
+p2 <- plot_proportions(imputed_data, "diagnosis")
+p3 <- plot_proportions(imputed_data, "plan_fstcnt_coded")
+p4 <- plot_proportions(imputed_data, "q30")
+
+p1 + p2 + p3 + p4 + plot_layout(ncol = 2)
 ```
 
 ## Select one imputation
 
-For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. 
+For the analysis of the trial data we will use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup.
 
 We can see that we have data for most days of follow-up, with a bit of scarcity from day 125 to day 150.
 
@@ -149,5 +252,5 @@ complete_data |>
 ## Export
 
 ```{r}
-write_parquet(complete_data, sink = "./data/qol_complete.parquet")
+write_parquet(complete_data, sink = here("data", "qol_complete.parquet"))
 ```
