@@ -1,9 +1,20 @@
---- 
-Title: "Model (Baseline Hazard) Comparisons"
+---
+title: "Model (Baseline Hazard) Comparisons"
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
+
 ```{r}
+#| output: false
 library(tidyverse)
 library(arrow)
 library(here)
@@ -27,12 +38,12 @@ tinytheme("bw")
 ```{r}
 CHAINS <- 4
 CORES <- 4
-SEED <- 123
+SEED <- 809812
 ITER <- 2000
 
 
 mod1 <- stan_surv(
-  formula = Surv(survival_time, event_death) ~ tx + ecog_fstcnt + diagnosis_cat + ns(albumin, df = 2) + ns(c_reactive_protein, df = 2),
+  formula = Surv(survival_time, event_death) ~ tx + ecog_fstcnt + diagnosis + ns(albumin, df = 2) + ns(c_reactive_protein, df = 2),
   basehaz = "ms", basehaz_ops = list(df = 5),
   data = data,
   chains = CHAINS,
@@ -41,13 +52,25 @@ mod1 <- stan_surv(
   iter = ITER
 )
 
+mod_log <- stan_surv(
+  formula = Surv(survival_time, event_death) ~ tx + ecog_fstcnt + diagnosis + log(albumin) + log(c_reactive_protein),
+  basehaz = "ms", basehaz_ops = list(df = 5),
+  data = data,
+  chains = CHAINS,
+  cores = CORES,
+  seed = SEED,
+  iter = ITER
+)
+
+
 print(mod1, digits = 3)
 ```
 
 ```{r}
+#| output: false
 mod1_exp <- update(mod1, basehaz = "exp", basehaz_ops = NULL)
 mod1_weibull <- update(mod1, basehaz = "weibull", basehaz_ops = NULL)
-mod1_gompertz <- update(mod1, basehaz = "gompertz", basehaz_ops = NULL)
+# mod1_gompertz <- update(mod1, basehaz = "gompertz", basehaz_ops = NULL)
 mod1_bspline <- update(mod1, basehaz = "bs", basehaz_ops = NULL)
 mod1_mspline2 <- update(mod1, basehaz = "ms", basehaz_ops = list(df = 10))
 ```
@@ -55,6 +78,8 @@ mod1_mspline2 <- update(mod1, basehaz = "ms", basehaz_ops = list(df = 10))
 ## Plot baseline hazards
 
 ```{r}
+#| fig-width: 8
+#| fig-height: 6
 plotfun <- function(model, title) {
   plot(model, plotfun = "basehaz") + # plot baseline hazard
     coord_cartesian(ylim = c(0, 0.007)) + # adjust y-axis limits
@@ -65,10 +90,11 @@ plotfun <- function(model, title) {
 
 p_exp <- plotfun(mod1_exp, title = "Exponential")
 p_weibull <- plotfun(mod1_weibull, title = "Weibull")
-p_gompertz <- plotfun(mod1_gompertz, title = "Gompertz")
+# p_gompertz <- plotfun(mod1_gompertz, title = "Gompertz")
 p_bspline <- plotfun(mod1_bspline, title = "B-splines with df = 5")
 p_mspline1 <- plotfun(mod1, title = "M-splines with df = 5")
 p_mspline2 <- plotfun(mod1_mspline2, title = "M-splines with df = 10")
+p_log <- plotfun(mod_log, title = "M-splines with df = 5 and log covariates")
 
 
 bayesplot::bayesplot_grid(
@@ -77,6 +103,7 @@ bayesplot::bayesplot_grid(
   # p_gompertz, # model didn't converge
   p_bspline,
   p_mspline1,
+  p_log,
   p_mspline2,
   grid_args = list(ncol = 3)
 )
@@ -86,39 +113,50 @@ Here's a simple explanation on the difference between flexible modelling of haza
 
 https://discourse.mc-stan.org/t/differences-between-splines-in-stan-surv-flexsurvspline/20787
 
-    Regarding your first question. The RP models use cubic splines on the log cumulative hazard. The M-spline model in stan_surv uses cubic splines on the hazard . The B-spline model in stan_surv uses cubic splines on the log hazard . They all use slightly different splines, but that isn’t the major difference, the major difference is what scale they model things on (i.e. hazard vs log hazard vs log cumulative hazard). Since they are all trying to do something “flexibile and wiggly” on the scale they choose, they are all trying to effectively achieve the same goal. And since the hazard, log hazard, and cumulative log hazard are all transformations of one another then doing something “flexibile and wiggly” on one effectively translates to doing something “flexibile and wiggly” on the other.
+```         
+Regarding your first question. The RP models use cubic splines on the log cumulative hazard. The M-spline model in stan_surv uses cubic splines on the hazard . The B-spline model in stan_surv uses cubic splines on the log hazard . They all use slightly different splines, but that isn’t the major difference, the major difference is what scale they model things on (i.e. hazard vs log hazard vs log cumulative hazard). Since they are all trying to do something “flexibile and wiggly” on the scale they choose, they are all trying to effectively achieve the same goal. And since the hazard, log hazard, and cumulative log hazard are all transformations of one another then doing something “flexibile and wiggly” on one effectively translates to doing something “flexibile and wiggly” on the other.
 
-    RP choose the log cumulative hazard because being of the cumulative hazard already means they don’t need to integrate the hazard to get the cumulative hazard (which is required for evaluating the likelihood) – meaning the RP approach is fast. But the log cumulative hazard has to increase – it is cumulative so it can’t go down! – but the splines RP use don’t enforce that, instead they let the data enforce it. This is ok for MLE, but for Bayesian sampling it is a problem, during MCMC the sampler might choose to make the log cumulative hazard go down, which is equivalent to a negative hazard and then the log hazard isn’t defined and the whole thing becomes a numerical disaster – the MCMC sampler will crash.
+RP choose the log cumulative hazard because being of the cumulative hazard already means they don’t need to integrate the hazard to get the cumulative hazard (which is required for evaluating the likelihood) – meaning the RP approach is fast. But the log cumulative hazard has to increase – it is cumulative so it can’t go down! – but the splines RP use don’t enforce that, instead they let the data enforce it. This is ok for MLE, but for Bayesian sampling it is a problem, during MCMC the sampler might choose to make the log cumulative hazard go down, which is equivalent to a negative hazard and then the log hazard isn’t defined and the whole thing becomes a numerical disaster – the MCMC sampler will crash.
 
-    So we use M-splines on the hazard (M-splines are positive and always increase [i don't think M-splines always increase, just non-negative and integrates to 1]) or B-splines on the log hazard (can be negative, positive, go up or down). M-splines are easy to integrate to get the cumulative hazard, so they are faster. Whereas B-splines don’t integrate easily (we have to use numerical quadrature) so they are slower to fit the model. They are both “flexibile and wiggly”, so in most situations (except for some edge cases) the M-splines will be flexible enough and therefore preferable to the faster model fitting.
+So we use M-splines on the hazard (M-splines are positive and always increase [i don't think M-splines always increase, just non-negative and integrates to 1]) or B-splines on the log hazard (can be negative, positive, go up or down). M-splines are easy to integrate to get the cumulative hazard, so they are faster. Whereas B-splines don’t integrate easily (we have to use numerical quadrature) so they are slower to fit the model. They are both “flexibile and wiggly”, so in most situations (except for some edge cases) the M-splines will be flexible enough and therefore preferable to the faster model fitting.
 
-    So in short, the M-spline/B-spline choice is for numerical reasons, since RP models are problematic with MCMC. All are trying to do something “flexibile and wiggly”, just on slightly different scales. So they should provide similar flexibility and results assuming you use a similar number of knots. There might be slight differences in the fit, and in some edge cases (e.g. a sharp change in the hazard early on or something) you might see one works better or worse, but with enough knots they should all do ok.
-
+So in short, the M-spline/B-spline choice is for numerical reasons, since RP models are problematic with MCMC. All are trying to do something “flexibile and wiggly”, just on slightly different scales. So they should provide similar flexibility and results assuming you use a similar number of knots. There might be slight differences in the fit, and in some edge cases (e.g. a sharp change in the hazard early on or something) you might see one works better or worse, but with enough knots they should all do ok.
+```
 
 ## Compare models with LOO (Leave-One-Out Cross-Validation)
 
 Not looking an gompertz as model didn't converge
 
 ```{r}
+#| output: false
 loo_exp <- loo(mod1_exp, k_threshold = 0.7)
 loo_weibull <- loo(mod1_weibull, k_threshold = 0.7)
 loo_bspline <- loo(mod1_bspline, k_threshold = 0.7)
 loo_mspline1 <- loo(mod1, k_threshold = 0.7)
 loo_mspline2 <- loo(mod1_mspline2, k_threshold = 0.7)
+```
 
+```{r}
 loo_compare(loo_exp, loo_weibull, loo_bspline, loo_mspline1, loo_mspline2)
 ```
 
 `elpd_diff` is not larger 4 and larger than 2x se_diff for any model, so no model is clearly better than the others based on LOO. Will therefore use M-splines with df = 5 as it is more flexible than exponential and weibull (i.e., will likely fit new data better) and more parsimonious than M-splines with `df = 10`.
 
-We now refit the chosen model with the default priors hardcoded for improved reproducibility. We will also use a more conservative prior for the treatment effect (tx).
-We deem it unlikely that invitation to the single arm trial (SAT) could increase or decrease hazard ratio (HR) by more than a factor of 2, i.e., a HR of $0.5$ or $2.0$. To place ca. 80% of the prior probability mass within this range we use a normal prior on the log-hazard ratio scale with mean $0$ and standard deviation $0.55$.
+We now refit the chosen model with the default priors hardcoded for improved reproducibility. We will also use a more conservative prior for the treatment effect (tx). We deem it unlikely that invitation to the single arm trial (SAT) could increase or decrease hazard ratio (HR) by more than a factor of 2, i.e., a HR of $0.5$ or $2.0$. To place ca. 80% of the prior probability mass within this range we use a normal prior on the log-hazard ratio scale with mean $0$ and standard deviation $0.55$.
 
 ```{r}
+tx_scale <- 0.55
+default_scale <- 2.5
+my_prior <- normal(
+  location = c(rep(0, 12)),
+  scale = c(tx_scale, rep(default_scale, 11))
+)
+
 mod2 <- stan_surv(
-  formula = Surv(survival_time, event_death) ~ tx + ecog_fstcnt + diagnosis_cat + ns(albumin, df = 2) + ns(c_reactive_protein, df = 2),
+  formula = Surv(survival_time, event_death) ~ tx + ecog_fstcnt + diagnosis + ns(albumin, df = 2) + ns(c_reactive_protein, df = 2),
   basehaz = "ms", 
   basehaz_ops = list(df = 5),
+  prior = my_prior,
   data = data,
   chains = CHAINS,
   cores = CORES,
@@ -141,7 +179,7 @@ mod2 <- stan_surv(
 
 nd_0 <- data |>
   mutate(tx = 0) |> 
-  select(tx, ecog_fstcnt, diagnosis_cat, albumin, c_reactive_protein)
+  select(tx, ecog_fstcnt, diagnosis, albumin, c_reactive_protein)
   
 
 ps_0 <- posterior_survfit(
@@ -155,7 +193,7 @@ ps_0 <- posterior_survfit(
 )
 
 nd_1 <- data |>
-  select(ecog_fstcnt, diagnosis_cat, albumin, c_reactive_protein) |>
+  select(ecog_fstcnt, diagnosis, albumin, c_reactive_protein) |>
   mutate(tx = 1)
 
 ps_1 <- posterior_survfit(
@@ -177,7 +215,10 @@ marginal_data$group <- factor(
   levels = c("Untreated", "Treated")
 )
 ```
+
 ```{r}
+#| fig-width: 8
+#| fig-height: 6
 # --- Compare to Kaplan-Meier estimates ---
 km_fit <- survfit(Surv(survival_time, event_death) ~ tx, data = data)
 km_data <- tidy(km_fit) |>
@@ -207,76 +248,4 @@ ggplot(marginal_data, aes(x = time, y = median, group = group, color = group)) +
   theme(legend.position = "bottom")
 ```
 
-The model based adjusted survival curves are very similar to the Kaplan-Meier estimates. Note that the KM-curves cross, but this is due to chance only, because we now that any difference in the data to plan our analyses is random. 
-
-### RMST
-
-```{r}
-#| label: rmst
-########################
-# --- Calculate RMST ---
-ps_0_list <- posterior_survfit(
-  mod2,
-  newdata = nd_0,
-  times = 0,
-  extrapolate = TRUE,
-  standardise = TRUE,
-  control = list(edist = 7000, epoints = 200),
-  return_matrix = TRUE,
-  draws = 4000
-)
-
-# turn list into matrix draws x time points
-std_surv_matrix_0 <- do.call(cbind, ps_0_list)
-time_points <- sapply(ps_0_list, attr, "times")
-colnames(std_surv_matrix_0) <- round(time_points, 1)
-dim(std_surv_matrix_0)
-
-
-ps_1_list <- posterior_survfit(
-  mod2,
-  newdata = nd_1,
-  times = 0,
-  extrapolate = TRUE,
-  standardise = TRUE,
-  control = list(edist = 7000, epoints = 200),
-  return_matrix = TRUE,
-  draws = 4000
-)
-
-std_surv_matrix_1 <- do.call(cbind, ps_1_list)
-colnames(std_surv_matrix_1) <- round(time_points, 1)
-
-# --- Calculate RMST for the hormon = 0 group ---
-delta_t <- diff(time_points)
-s_t1 <- std_surv_matrix_0[, -ncol(std_surv_matrix_0)] # Probabilities at the start of intervals (remove last column)
-s_t2 <- std_surv_matrix_0[, -1] # Probabilities at the end of intervals (remove first column)
-
-trapezoid_areas_0 <- 0.5 * (s_t1 + s_t2) * delta_t #A = 0.5 * (a + c) * h
-# should delta_t not be constant, then could use the code below
-# matrix(delta_t, nrow = nrow(s_t1), ncol = length(delta_t), byrow = TRUE)
-
-rmst_0 <- rowSums(trapezoid_areas_0)
-
-# --- Repeat for the hormon = 1 group ---
-s_t1_1 <- std_surv_matrix_1[, -ncol(std_surv_matrix_1)]
-s_t2_1 <- std_surv_matrix_1[, -1]
-trapezoid_areas_1 <- (s_t1_1 + s_t2_1) /
-  2 *
-  matrix(delta_t, nrow = nrow(s_t1_1), ncol = length(delta_t), byrow = TRUE)
-rmst_1 <- rowSums(trapezoid_areas_1)
-
-# Calculate the posterior distribution of the difference
-# This is the treatment effect measured in "days of mean survival"
-rmst_diff <- rmst_1 - rmst_0
-
-# --- Summarize the results ---
-# Get the median and 95% credible interval for the difference
-summary_diff <- quantile(rmst_diff, probs = c(0.025, 0.5, 0.975))
-summary_diff
-
-tibble(rmst_diff = rmst_diff) |>
-  ggplot(aes(x = rmst_diff)) +
-  ggdist::stat_dist_halfeye(fill = "orange", alpha = 0.5) +
-  theme_light()
-```
+The model based adjusted survival curves are very similar to the Kaplan-Meier estimates. Note that the KM-curves cross, but this is due to chance only, because we now that any difference in the data to plan our analyses is random.
