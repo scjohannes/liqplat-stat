@@ -1,12 +1,23 @@
 ---
-Title : Model for Simulation
+title: Model Fit on Historical Data
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
-Examining first vs. second order markov modoel and interactnig yprev with time or not.
+Examining first vs. second order markov model and interactnig yprev with time or not.
 
 ## Setup
 
 ```{r}
+#| output: false
+library(here)
 library(tidyverse)
 library(data.table)
 library(arrow)
@@ -22,14 +33,14 @@ library(marginaleffects)
 ## Load data
 
 ```{r}
-df <- read_parquet("./data/hosp_long_weeks.parquet") |> 
+df <- read_parquet(here("data", "hosp_long_weeks.parquet")) |> 
     mutate(
         tx = factor(tx),
         ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
     ) |> 
       select(pat_id, tx, y, yprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
 
-df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
+df_ypprev <- read_parquet(here("data", "hosp_long_weeks_two_lags.parquet")) |> 
     mutate(
         tx = factor(tx),
         ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
@@ -37,7 +48,7 @@ df_ypprev <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |>
     ) |> 
       select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
 
-df_daily <- read_parquet("./data/hosp_long_daily.parquet") |> 
+df_daily <- read_parquet(here("data", "hosp_long_daily.parquet")) |> 
   mutate(
         tx = factor(tx),
         ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),

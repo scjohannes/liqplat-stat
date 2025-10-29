@@ -1,9 +1,20 @@
 ---
-Title: Empirical Plots
+title: Empirical Plots
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
 ```{r}
+#| output: false
+library(here)
 library(arrow)
 library(tidyverse)
 library(data.table)
@@ -12,8 +23,8 @@ library(Hmisc)
 
 ```{r}
 set.seed(1234)
-df_weekly <- read_parquet("./data/hosp_long_weeks.parquet")
-df_daily <- read_parquet("./data/hosp_long_daily.parquet")
+df_weekly <- read_parquet(here("data", "hosp_long_weeks.parquet"))
+df_daily <- read_parquet(here("data", "hosp_long_daily.parquet"))
 ```
 
 ## Create death carried forward dataset
@@ -97,7 +108,7 @@ df_weekly |>
        y = "Participant ID",
        fill = "State")
 
-ggsave(filename = "./img/fig-tile-hosp-weekly.svg", height = 10, width = 10)
+ggsave(filename = here("img", "fig-tile-hosp-weekly.svg"), height = 10, width = 10)
 ```
 
 ### Empirical SOPs
@@ -122,7 +133,7 @@ df_forward_weekly |>
            y = "Cumulative Proportion",
            fill = "State")
 
-ggsave(filename = "./img/fig-emp-sop-hosp-weekly.svg", height = 10, width = 12)           
+ggsave(filename = here("img", "fig-emp-sop-hosp-weekly.svg"), height = 10, width = 12)           
 ```
 
 ### SOP lines plot
@@ -149,7 +160,7 @@ df_forward_weekly |>
        #title = "(B)")
   )
 
-ggsave(filename = "./img/fig-emp-sop-line-hosp-weekly.svg", height = 10, width = 12)
+ggsave(filename = here("img", "fig-emp-sop-line-hosp-weekly.svg"), height = 10, width = 12)
 ```
 
 ### Transitions
@@ -205,7 +216,7 @@ df_transitions |>
          y = "Current State",
          size = "Proportion")
 
-ggsave(filename = "./img/fig-emp-transition-hosp-weekly.svg", height = 10, width = 12)
+ggsave(filename = here("img", "fig-emp-transition-hosp-weekly.svg"), height = 10, width = 12)
 ```
 
 ### Correlation Plot
@@ -251,7 +262,7 @@ corr |>
          y="Study week",
          fill="")
 
-ggsave(filename = "./img/fig-emp-cor-heat-hosp-weekly.svg", height = 10, width = 11)
+ggsave(filename = here("img", "fig-emp-cor-heat-hosp-weekly.svg"), height = 10, width = 11)
 ```
 
 ### Variogram
@@ -259,7 +270,7 @@ ggsave(filename = "./img/fig-emp-cor-heat-hosp-weekly.svg", height = 10, width =
 ```{r}
 plotCorrM(corr)[[2]]
 
-ggsave(filename = "./img/fig-emp-variogram-hosp-weekly.svg", height = 10, width = 10)
+ggsave(filename = here("img", "fig-emp-variogram-hosp-weekly.svg"), height = 10, width = 10)
 ```
 
 ### Transition probabilities
@@ -292,7 +303,7 @@ df_transitions |>
          y = "Current week",
          size = "Proportion")
 
-ggsave(filename = "./img/fig-trans-prob-hosp-weekly.svg", height = 10, width = 10)
+ggsave(filename = here("img", "fig-trans-prob-hosp-weekly.svg"), height = 10, width = 10)
 ```
 
 ## Daily plots
@@ -339,7 +350,7 @@ df_forward_daily |>
            y = "Cumulative Proportion",
            fill = "State")
 
-ggsave(filename = "./img/fig-emp-sop-hosp-daily.svg", height = 10, width = 12) 
+ggsave(filename = here("img", "fig-emp-sop-hosp-daily.svg"), height = 10, width = 12) 
 ```
 
 ### SOP lines plot
@@ -364,7 +375,7 @@ df_forward_daily |>
        linetype = "Treatment"
   )
 
-ggsave(filename = "./img/fig-emp-sop-line-hosp-daily.svg", height = 10, width = 12)
+ggsave(filename = here("img", "fig-emp-sop-line-hosp-daily.svg"), height = 10, width = 12)
 ```
 
 ### Transitions
@@ -418,7 +429,7 @@ df_transitions |>
          y = "Current State",
          size = "Proportion")
 
-ggsave(filename = "./img/fig-emp-transition-hosp-daily.svg", height = 12, width = 12)
+ggsave(filename = here("img", "fig-emp-transition-hosp-daily.svg"), height = 12, width = 12)
 ```
 
 ### Correlation Plot
@@ -475,7 +486,7 @@ corr |>
          y="Study day",
          fill="")
 
-ggsave(filename = "./img/fig-emp-cor-heat-hosp-daily.svg", height = 10, width = 11)
+ggsave(filename = here("img", "fig-emp-cor-heat-hosp-daily.svg"), height = 10, width = 11)
 ```
 
 ### Variogram
@@ -483,7 +494,7 @@ ggsave(filename = "./img/fig-emp-cor-heat-hosp-daily.svg", height = 10, width = 
 ```{r}
 plotCorrM(corr_reduced)[[2]]
 
-ggsave(filename = "./img/fig-emp-variogram-hosp-daily.svg", height = 10, width = 10)
+ggsave(filename = here("img", "fig-emp-variogram-hosp-daily.svg"), height = 10, width = 10)
 ```
 
 ### Transition probabilities
@@ -515,5 +526,5 @@ df_transitions |>
         y = "Current day",
         size = "Proportion")
 
-ggsave(filename = "./img/fig-trans-prob-hosp-daily.svg", height = 8, width = 10)
+ggsave(filename = here("img", "fig-trans-prob-hosp-daily.svg"), height = 8, width = 10)
 ```

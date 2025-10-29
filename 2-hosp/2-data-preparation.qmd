@@ -1,17 +1,28 @@
 ---
-Title : Hospital Multistate Data Preparation
+title : Hospital Multistate Data Preparation
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
 
 ```{r}
+#| output: false
+library(here)
 library(tidyverse)
 library(data.table)
 library(arrow)
 ```
 
 ```{r}
-df <- read_parquet("./data/hosp_long_complete.parquet")
+df <- read_parquet(here("data", "hosp_long_complete.parquet"))
 ```
 
 ## Code Y 
@@ -106,7 +117,7 @@ df_daily <- df |>
 ## Export
 
 ```{r}
-write_parquet(df_weeks, sink = "./data/hosp_long_weeks.parquet")
-write_parquet(df_ypprev, sink = "./data/hosp_long_weeks_two_lags.parquet")
-write_parquet(df_daily, sink = "./data/hosp_long_daily.parquet")
+write_parquet(df_weeks, sink = here("data", "hosp_long_weeks.parquet"))
+write_parquet(df_ypprev, sink = here("data", "hosp_long_weeks_two_lags.parquet"))
+write_parquet(df_daily, sink = here("data", "hosp_long_daily.parquet"))
 ```
