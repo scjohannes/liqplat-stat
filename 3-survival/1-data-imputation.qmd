@@ -1,10 +1,20 @@
 ---
-Title: Overall Survival - Data imputation
+title: Overall Survival - Data imputation
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
 
 ```{r}
+#| output: false
 library(tidyverse)
 library(here)
 library(mice)
@@ -24,11 +34,12 @@ Everybody had at least 182 days of follow-up.
 ```{r}
 data <- data_raw |> 
   mutate(
-    diagnosis_cat = fct_lump_n(diagnosis, n = 4),
-    diagnosis_cat = factor(as.integer(diagnosis_cat)),
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),
     event_death   = if_else(survival_time <= 182, 1, 0),
     survival_time = pmin(survival_time, 182),
-    tx            = if_else(randomselect_liqplat == "1", 1, 0)) |> 
+    tx            = if_else(randomselect_liqplat == "1", 1, 0),
+    ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)) |> 
   select(
     pat_id,
     gender,
@@ -38,28 +49,70 @@ data <- data_raw |>
     albumin,
     bilirubin,
     c_reactive_protein,
+    lactate_dehydrogenase,
     event_death,
     event_next_treatment,
     event_progression,
-    lactate_dehydrogenase,
-    leukocytes,
-    lymphocytes_relative,
     n_biopsies,
     n_blood_products_all,
-    n_doses_treatment,
     n_imaging_all,
     n_stay_plus_ER,
     survival_time,
-    diagnosis_cat
+    diagnosis
   ) |> 
   relocate(pat_id, event_death, survival_time)
 
 data$na_est <- nelsonaalen(data, timevar = survival_time, statusvar = event_death)
 ```
 
+## Variables for final analysis
+
+When analyzing the trial data, we will use the following predictors for imputation and modeling:
+
+**Demographics and baseline clinical:**
+
+-   `age` - age at enrollment
+
+-   `gender` - patient sex
+
+-   `ecog_fstcnt` - ECOG performance status (ordered factor: 0-4)
+
+-   `diagnosis` - primary cancer diagnosis (lumped to 5 most frequent categories)
+
+**Laboratory values:**
+
+-   `albumin` - serum albumin (g/L)
+
+-   `c_reactive_protein` - CRP (mg/L)
+
+-   `bilirubin` - serum bilirubin (µmol/L)
+
+-   `lactate_dehydrogenase` - LDH (U/L)
+
+**Healthcare utilization:**
+
+-   `n_stay_plus_ER` - total days in hospital or emergency room
+
+-   `n_blood_products_all` - number of blood product units received
+
+**Clinical events:**
+
+-   `event_next_treatment` - indicator for starting next line of treatment
+
+-   `event_progression` - indicator for disease progression
+
+**Outcome tracking:**
+
+-   `event_death` - death indicator
+
+-   `na_est` - Nelson-Aalen cumulative hazard estimate
+
+-   `tx` - treatment group allocation
+
 ## Multiple imputation
 
 ```{r}
+#| output: false
 #check if imputation methods correct
 init <- mice(data, maxit = 0)
 meth <- init$method
@@ -74,7 +127,7 @@ meth["pat_id"] <- ""
 meth["survival_time"] <- ""
 
 imputed_data <- mice(data,
-                     m = 5,
+                     m = 20, # final analysis uses 50
                      maxit = 50,
                      predictorMatrix = pred_matrix,
                      method = meth,
@@ -84,16 +137,20 @@ imputed_data <- mice(data,
 ## Diagnostics
 
 ```{r}
+#| fig-width: 8
+#| fig-height: 6
 plot(imputed_data)
 ```
 
-Plot for diagnosis categories don't look 
-
 ```{r}
+#| fig-width: 8
+#| fig-height: 6
 densityplot(imputed_data)
+densityplot(imputed_data, ~ecog_fstcnt)
+stripplot(imputed_data)
 ```
 
-In this data diagnosis_cat was only missing in 1 patient and ecog_fstcnt had no missing values at all. The plots for all the other data look fine. 
+In this data diagnosis_cat was only missing in 1 patient.
 
 ## Select one imputation
 
