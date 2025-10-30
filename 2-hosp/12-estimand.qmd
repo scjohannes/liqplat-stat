@@ -595,7 +595,7 @@ set.seed(1234) # for reproducibility
 n_states <- 5
 absorbing_states <- 5
 non_absorbing_states <- 1:(n_states - 1)
-times <- 1:16
+times <- 1:26
 
 # Create a grid of every possible non-absorbing history and time point
 prediction_grid <- expand.grid(
@@ -764,7 +764,7 @@ sops_2 <- sop_markov_second_order(
   col_yprev = "yprev",
   col_ypprev = "ypprev",
   col_time = "week",
-  times = 1:16,
+  times = 1:26,
   n_states = 5,
   absorbing_states = c(5),
   include_re = FALSE
@@ -772,9 +772,6 @@ sops_2 <- sop_markov_second_order(
 t2 <- Sys.time()
 t2 - t1
 
-round(t(apply(sops_2, c(2,3), mean))[-1,], digits = 3)
-round(proportion_matrix, digits = 3)
+round(t(apply(sops_2, c(2,3), mean))[-1,], digits = 4)
+round(proportion_matrix, digits = 4)
 ```
-
-The simulation for 100k patients is took only three seconds longer. Fully simulation based approach might be preferable for more complex models where the SOP calculation is not feasible.
-
