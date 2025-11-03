@@ -276,23 +276,23 @@ Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesi
 
 ### Estimand Definition
 
-+-------------------------+------------------------------------------------------------------------------+
-| Attribute               | Definition                                                                   |
-+:========================+:=============================================================================+
-| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer eligible for LIQPLAT. |
-+-------------------------+------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                  |
-|                         |                                                                              |
-|                         | (A=0): No selection for invitation (External Control Group / SoC).           |
-+-------------------------+------------------------------------------------------------------------------+
-| **Variable**            | Time-to-event: Time (in days) from random selection to death from any cause. |
-+-------------------------+------------------------------------------------------------------------------+
-| **Time Horizon**        | $t_{max} = 182$ days (6 months).                                             |
-+-------------------------+------------------------------------------------------------------------------+
-| **Summary Measure**     | Difference in Restricted Mean Survival Time (RMST) at $t_{max}=182$ days.    |
-+-------------------------+------------------------------------------------------------------------------+
-| **Intercurrent Events** | See @sec-os-intercurrent-events.                                             |
-+-------------------------+------------------------------------------------------------------------------+
++-------------------------+------------------------------------------------------------------------------------------------------+
+| Attribute               | Definition                                                                                           |
++:========================+:=====================================================================================================+
+| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first line therapy. |
++-------------------------+------------------------------------------------------------------------------------------------------+
+| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                          |
+|                         |                                                                                                      |
+|                         | (A=0): No selection for invitation (External Control Group / SoC).                                   |
++-------------------------+------------------------------------------------------------------------------------------------------+
+| **Variable**            | Time-to-event: Time (in days) from random selection to death from any cause.                         |
++-------------------------+------------------------------------------------------------------------------------------------------+
+| **Time Horizon**        | $t_{max} = 182$ days (6 months).                                                                     |
++-------------------------+------------------------------------------------------------------------------------------------------+
+| **Summary Measure**     | Difference in Restricted Mean Survival Time (RMST) at $t_{max}=182$ days.                            |
++-------------------------+------------------------------------------------------------------------------------------------------+
+| **Intercurrent Events** | See @sec-os-intercurrent-events.                                                                     |
++-------------------------+------------------------------------------------------------------------------------------------------+
 
 #### Formal Definition
 
@@ -352,12 +352,12 @@ $$
 f_1 &= \sum_{m=1}^2 \beta_{crp, m} \cdot \text{B}_{m, crp}(\text{crp}_i) \\
 f_2 &= \sum_{n=1}^2 \beta_{alb, n} \cdot \text{B}_{n, alb}(\text{albumin}_i) \\
 \\
-\beta_0 &\sim \text{Normal}(0, 20) \\     
-\beta_{tx} &\sim \text{Normal}(0, 0.55) \\     
-\beta_{\text{ecog},j \in 2,3} &\sim \text{Normal}(0, 2.5) \\
-\beta_{\text{diag},k \in 2..5} &\sim \text{Normal}(0, 2.5) \\ 
-\beta_{crp, m \in 1,2} &\sim \text{Normal}(0, 2.5) \\
-\beta_{alb, n \in 1,2} &\sim \text{Normal}(0, 2.5) \\    
+\beta_0 &\sim \mathcal{N}(0, 20) \\     
+\beta_{tx} &\sim \mathcal{N}(0, 0.55) \\     
+\beta_{\text{ecog},j \in 2,3} &\sim \mathcal{N}(0, 2.5) \\
+\beta_{\text{diag},k \in 2..5} &\sim \mathcal{N}(0, 2.5) \\ 
+\beta_{crp, m \in 1,2} &\sim \mathcal{N}(0, 2.5) \\
+\beta_{alb, n \in 1,2} &\sim \mathcal{N}(0, 2.5) \\    
 \gamma &\sim \text{Dirichlet}(\mathbf{1}_5) 
 \end{aligned}
 $$
@@ -534,23 +534,23 @@ We propose to make use of the irregular, near-random follow-up of usual care and
 ### Estimand Definition (QoL)
 
 ::: {tbl-colwidths="[25, 75]"}
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Attribute               | Definition                                                                                                                                                                                                                                         |
-+:========================+:===================================================================================================================================================================================================================================================+
-| **Target Population**   | The Principal Stratum of adult (≥ 18 years) patients with advanced solid cancer eligible for LIQPLAT, defined as those patients who would survive the 26-week follow-up period *irrespective* of their selection status for invitation to the SAT. |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                                                                                                                        |
-|                         |                                                                                                                                                                                                                                                    |
-|                         | (A=0): No selection for invitation (External Control Group / SoC).                                                                                                                                                                                 |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Variable**            | Ordinal QoL state (7 levels, derived from EORTC QLQ-C30 Q30) measured longitudinally at irregular intervals. We use an inverted scale where 1='Excellent', ..., 7='Very Poor'.                                                                     |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Time Horizon**        | $t_{max} = 26$ weeks (6 months).                                                                                                                                                                                                                   |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Summary Measure**     | Difference in mean number of weeks spent with "Good" QoL (defined as states 1, 2, or 3) during the 26-week period, within the Principal Stratum.                                                                                                   |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Intercurrent Events** | See @sec-qol-intercurrent-events.                                                                                                                                                                                                                  |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Attribute               | Definition                                                                                                                                                                                                           |
++:========================+:=====================================================================================================================================================================================================================+
+| **Target Population**   | The Principal Stratum of adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first-line therapy, defined as patients who would survive at least 26 weeks after their first appointment. |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                                                                                          |
+|                         |                                                                                                                                                                                                                      |
+|                         | (A=0): No selection for invitation (External Control Group / SoC).                                                                                                                                                   |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Variable**            | Ordinal QoL state (7 levels, derived from EORTC QLQ-C30 Q30) measured longitudinally at irregular intervals. We use an inverted scale where 1='Excellent', ..., 7='Very Poor'.                                       |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Time Horizon**        | $t_{max} = 26$ weeks (6 months).                                                                                                                                                                                     |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Summary Measure**     | Difference in mean number of weeks spent with "Good" QoL (defined as states 1, 2, or 3) during the 26-week period, within the Principal Stratum.                                                                     |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Intercurrent Events** | See @sec-qol-intercurrent-events.                                                                                                                                                                                    |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 :::
 
 #### Formal Definition (QoL)
@@ -615,7 +615,8 @@ $$
 \begin{align*}
 \operatorname{logit}\left( P(y_{it} \ge j | y_{it'}) \right) & = \alpha_j + \eta_{it} + \gamma_{it,j} && \text{for }j = 2, \dots, 7\\
 \eta_{it} & = \beta_{\text{tx}} \cdot \text{tx}_i + f(t) + \sum_{k=2}^{7} \beta_{\text{yprev}=k} \cdot \mathbb{I}(y_{it'} = k) \\
-& \qquad + \beta_{\text{gap}} \cdot \Delta t + \sum_{k=2}^{7} \beta_{\text{yprev}=k \times \text{gap}} \cdot \mathbb{I}(y_{it'} = k) \cdot \Delta t + \mathbf{X}_i \beta_{\text{covars}} \\
+& \qquad + \beta_{\text{gap}} \cdot \Delta t + \sum_{k=2}^{7} \beta_{\text{yprev}=k \times \text{gap}} \cdot \mathbb{I}(y_{it'} = k) \cdot \Delta t \\
+& \qquad + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} \\
 \gamma_{it,j} & = (\tau \cdot t) \cdot j \\
 \end{align*}
 $$
@@ -626,9 +627,14 @@ $$
 f(t) & = \sum_{p=1}^3 \beta_{t, p} \cdot B_p(t) \\
 \\
 \pi_1, \dots, \pi_K & \sim \text{Dirichlet}(0.308)\text{, which induces priors on } \alpha_j \\
-\beta_{t, p \in 1, 2, 3} & \sim \operatorname{Normal}(0, 100) \\
-\beta_k, & \sim \operatorname{Normal}(0, 100) \\
-\tau & \sim \operatorname{Normal}(0, 100)\\
+\beta_{tx} & \sim \mathcal{N}(0, 0.940) \\
+\beta_{t, p \in 1, 2, 3} & \sim \mathcal{N}(0, 100) \\
+\beta_{gap} & \sim \mathcal{N}(0, 100) \\
+\beta_{\text{yprev}=k \in 2..7} & \sim \mathcal{N}(0, 100) \\
+\beta_{\text{yprev}=k \times \text{gap} \in 2..7} & \sim \mathcal{N}(0, 100) \\
+\beta_{ecog, j \in 2,3} & \sim \mathcal{N}(0, 100) \\
+\beta_{diag, k \in 2..5} & \sim \mathcal{N}(0, 100) \\
+\tau & \sim \mathcal{N}(0, 100)\\
 \end{align*}
 $$
 
@@ -641,8 +647,8 @@ Where:
     -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^11]
     -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^12]
     -   $\beta_{\text{yprev}=k \times \text{gap}}$: Interaction between previous state and time gap.
-    -   $\mathbf{X}_i \beta_{\text{covars}}$: Effects of baseline covariates (ECOG status, diagnosis category).[^13]
--   $\gamma_{it,j}$: Models deviation from PO for the effect of time. We allow the effect of time to be non-proportional, constrained to be linear in the outcome category $j$. $\tau_{\text{week}}$ is the non-proportional odds parameter for time.
+    -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^13]
+-   $\gamma_{it,j}$: Models deviation from PO for the effect of time. We allow the effect of time to be non-proportional, constrained to be linear in the outcome category $j$. $\tau$ is the non-proportional odds parameter for time.
 
 [^8]: A treatment effect, if present, is unlikely to be constant over time. CtDNA sampling can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
 
@@ -660,7 +666,8 @@ Where:
 #### Prior Specifications
 
 -   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^14] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.
--   **Coefficients (**$\beta_k, \tau_{\text{week}}$): $\text{Normal}(0, 100)$ (Default priors in `rmsb`)
+-   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.940)$ on $\beta_{tx}$ produces a prior a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has $80\%$ of its prior mass between $[-6.0, +3.0]$.
+-   **Other Coefficients**: $\mathcal{N}(0, 100)$ (Default priors in `rmsb`)
 
 [^14]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
 
@@ -692,7 +699,7 @@ model_qol <- blrm(
     \mathbb{E}[W^a]_{\text{draw}} = \sum_{t=1}^{26}\sum_{j=1}^{3} \text{SOP}(Y_{it}^a = j)_{\text{draw}}
     $$
 4.  **Calculate Difference per Draw:** For each posterior draw, compute the difference $\tau_{W, \text{draw}}^{\text{psATE}} = \mathbb{E}[W^1]_{\text{draw}} - \mathbb{E}[W^0]_{\text{draw}}$.
-5.  **Summarize Posterior:** The collection of $\tau_{W, \text{draw}}^{\text{psATE}}$ values forms the posterior distribution of the primary estimand for QoL. Summarize using posterior median and 95% credible interval.
+5.  **Summarize Posterior:** The collection of $\tau_{W, \text{draw}}^{\text{psATE}}$ values forms the posterior distribution of the primary estimand for QoL.
 
 #### Assumptions
 
@@ -805,21 +812,23 @@ f(t) &= \sum_{p=1}^{3} \beta_{time, p} \cdot B_p(t) \\
 f_1(\text{albumin}_i) &= \sum_{m=1}^{2} \beta_{alb, m} \cdot B_{m, \text{alb}}(\text{albumin}_i) \\
 f_2(\text{crp}_i) &= \sum_{n=1}^{2} \beta_{crp, n} \cdot B_{n, \text{crp}}(\text{crp}_i) \\
 \end{aligned}
-$$ $$
+$$
+
+$$
 \begin{aligned}
 \pi_1, \dots, \pi_K & \sim \text{Dirichlet}(0.392) \text{, which induces priors on } \alpha_j \\
-\beta_{\text{tx}} &\sim \text{Normal}(0, 100) \\
-\beta_{time, p \in 1,2,3} & \sim \text{Normal}(0, 100) \\
-\beta_{\text{yprev1}, k \in 2..4} & \sim \text{Normal}(0, 100) \\
-\beta_{\text{yprev2}, l \in 2..4} & \sim \text{Normal}(0, 100) \\
-\beta_{t \times yprev1, k \in 2..4} & \sim \text{Normal}(0, 100) \\
-\beta_{t \times yprev2, l \in 2..4} & \sim \text{Normal}(0, 100) \\
-\beta_{\text{ecog}, j \in 2,3} & \sim \text{Normal}(0, 100) \\
-\beta_{\text{diag}, k \in 2..5} & \sim \text{Normal}(0, 100) \\
-\beta_{alb, m \in 1,2} & \sim \text{Normal}(0, 100) \\
-\beta_{crp, n \in 1,2} & \sim \text{Normal}(0, 100) \\
-\gamma_{0i} & \sim \text{Normal}(0, \sigma^2_{\gamma}) \\
-\sigma_{\gamma} & \sim \text{Half-Normal}(0, 1)
+\beta_{\text{tx}} &\sim \mathcal{N}(0, 0.541) \\
+\beta_{time, p \in 1,2,3} & \sim \mathcal{N}(0, 100) \\
+\beta_{\text{yprev1}, k \in 2..4} & \sim \mathcal{N}(0, 100) \\
+\beta_{\text{yprev2}, l \in 2..4} & \sim \mathcal{N}(0, 100) \\
+\beta_{t \times yprev1, k \in 2..4} & \sim \mathcal{N}(0, 100) \\
+\beta_{t \times yprev2, l \in 2..4} & \sim \mathcal{N}(0, 100) \\
+\beta_{\text{ecog}, j \in 2,3} & \sim \mathcal{N}(0, 100) \\
+\beta_{\text{diag}, k \in 2..5} & \sim \mathcal{N}(0, 100) \\
+\beta_{alb, m \in 1,2} & \sim \mathcal{N}(0, 100) \\
+\beta_{crp, n \in 1,2} & \sim \mathcal{N}(0, 100) \\
+\gamma_{0i} & \sim \mathcal{N}(0, \sigma_{\gamma}) \\
+\sigma_{\gamma} & \sim \text{Half-t}(df = 4, \mu = 0, \sigma = 1)
 \end{aligned}
 $$
 
@@ -837,6 +846,7 @@ Where:
 #### Prior Specifications
 
 -   **Intercepts** ($\alpha_j$): Priors are induced by a Dirichlet(0.392) distribution on the baseline cell probabilities, as recommended by the `rmsb` package for 5 outcome levels.
+-   Treatment Parameter ($\\beta_{tx}$): We used prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that a prior of $\mathcal{N}(0, 0.541)$ for $\beta_{tx}$ produces a prior distribution for $\tau_{TAOOH}$ with a median at 0 weeks (no difference). This prior places 80% of its mass on $\beta_{tx}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which our simulations mapped to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately $[-6.0, +3.0]$.
 -   **Fixed Effects Coefficients** ($\beta$​): All fixed-effect regression coefficients are assigned a weakly informative Normal(0, 100) prior (default in `rmsb`).
 -   **Random Effect Standard Deviation** ($\sigma_{\gamma}$​): The standard deviation of the random intercepts is given a Half-Normal(0, 1) prior (default in `rmsb`).
 
@@ -869,7 +879,7 @@ model_taooh <- blrm(
 #### Obtaining Estimand (TAOOH)
 
 1.  **Fit Model:** Fit the `model_taooh` to each multiply imputed dataset (using the full ITT population).
-2.  **Calculate Weekly SOPs:** For each posterior draw, calculate the SOPs, $P(Y_{it}^a = j)$, for each week $t=1, \dots, 26$, state $j=1, \dots, 5$, and treatment arm $a \in \{0, 1\}$. This requires a recursive calculation accounting for the second-order dependency and marginalizing over baseline covariates, baseline state pairs ($y_{-1}, y_0$), and random effects. (See Appendix D of `12-estimand.qmd` for the calculation logic).
+2.  **Calculate Weekly SOPs:** For each posterior draw, calculate the SOPs, $P(Y_{it}^a = j)$, for each week $t=1, \dots, 26$, state $j=1, \dots, 5$, and treatment arm $a \in \{0, 1\}$. This requires a recursive calculation accounting for the second-order dependency and marginalizing over baseline covariates, baseline state pairs ($y_{-1}, y_0$), and random effects. Deatils can be found in .
 3.  **Calculate Expected Weeks Alive/Out-of-Hospital per Draw:** For each posterior draw, calculate the expected number of weeks in State 1 for each treatment arm by summing the SOPs for State 1 over the 26 weeks: $$
     \mathbb{E}[W^a]_{\text{draw}} = \sum_{t=1}^{26} \text{SOP}(Y_{it}^a = 1)_{\text{draw}}
     $$
@@ -934,6 +944,34 @@ The interval censoring approach led to a substantial overestimation of the cumul
 ### Conclusion
 
 Due to this potential for significant bias with sparse intermediate data, the interval censoring approach was deemed unsuitable for the primary QoL analysis, leading to the adoption of the Principal Stratum approach with its specific assumptions.
+
+## Appendix B: TAAOH State Occupancy Probabilities {#sec-appendix-taaoh .appendix}
+
+The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order process, we define the SOP as $P(Y_j=k | X, y_{-1}, y_0)$, which is the probability of being in state $k$ at time $j$, conditional on a set of baseline covariates $X$ and the two baseline states, $y_{-1}$ (state at time $j=-1$) and $y_0$ (state at time $j=0$).
+
+In a first-order model, a single transition matrix is sufficient to describe the evolution of the system from time $j-1$ to $j$ (@rohde2024). In the second-order case, however, the probabilities of transitioning from state $k$ at time $j-1$ to state $l$ at time $j$ are themselves conditional on the state at time $j-2$. This dependency requires a set of transition matrices, one for each possible prior state ($Y_{j-2}=h$), rather than a single matrix. The core challenge is that the state of the system at any given time is not described by a single previous outcome, but by the joint probability distribution of the last two outcomes. Therefore, to compute the SOPs, we must recursively calculate the evolution of this joint probability distribution over time.
+
+Let the conditional transition probability at time $j$ be denoted as $T_j(l | h, k) = P(Y_j=l | Y_{j-2}=h, Y_{j-1}=k, X)$. These probabilities, which represent the chance of moving to state $l$ given the history of being in state $h$ then state $k$, are calculated directly from the fitted ordinal transition model for a specific covariate profile $X$.
+
+The unconditionalization process proceeds as follows:
+
+1.  **Initialization**: We begin with the known baseline states $y_{-1}$ and $y_0$. The joint probability of being in states $h$ and $k$ at times $j=-1$ and $j=0$ respectively, which we denote as $J_0(h, k) = P(Y_{-1}=h, Y_0=k)$, is initialized as a matrix of zeros with a 1 at the position $(h, k) = (y_{-1}, y_0)$. The initial SOP at time $j=0$ is therefore known with certainty: $S_0(k) = 1$ for the state $k=y_0$ and 0 otherwise.
+
+2.  **Recursive Calculation of Joint Probabilities**: For each subsequent time point $j=1, 2, \dots, d$, we calculate the new joint probability distribution $J_j(k, l) = P(Y_{j-1}=k, Y_j=l)$ by marginalizing over the state at time $j-2$, denoted by $h$. Using the law of total probability, the recursion is defined as:
+
+    $$
+    J_j(k, l) = \sum_{h=1}^{K} T_j(l | h, k) \times J_{j-1}(h, k)
+    $$
+
+    In this step, we use the joint probabilities for times $j-2$ and $j-1$ , $J_{j-1}$, and the conditional transition probabilities for the current time step, $T_j$, to compute the joint probabilities for the current and previous time steps, $J_j$.
+
+3.  **Calculation of State Occupancy Probabilities**: Once the joint probability matrix $J_j$ for time $j$ is obtained, the SOP for being in state $l$ at time $j$, denoted $S_j(l)$, is calculated by marginalizing out the state at time $j-1$ (denoted by $k$):
+
+    $$
+    S_j(l) = P(Y_j=l) = \sum_{k=1}^{K} J_j(k, l)
+    $$
+
+This $S_j(l)$ is the marginal probability at time $j$ and is the state occupancy probability $P(Y_j = l | X, y_{-1}, y_0)$ for the given baseline conditions. This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history. The code that implements these calculations can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/12-estimand.pdf).
 
 ## Appendix C: Model Diagnostics
 

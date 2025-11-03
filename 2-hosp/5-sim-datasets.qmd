@@ -187,7 +187,7 @@ generate_trajectories <- function(model, baseline_data, times, k,
 }
 ```
 
-## h0: No treatment effect
+## H0: No treatment effect
 
 ```{r}
 patient_trajectories <- generate_trajectories(
@@ -289,7 +289,7 @@ baseline_data |>
 
 ## HA: Treatment effect
 
-## Or of 0.9 ~ 4 days more at home and alive
+### OR of 0.9 ~ 4 days more at home and alive
 
 ```{r}
 patient_trajectories_09 <- generate_trajectories(
@@ -510,6 +510,240 @@ baseline_data |>
 ```{r}
 sops <- baseline_data |> 
   left_join(patient_trajectories_07, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  mutate(tx = factor(tx))
+
+# difference in time out of hospital
+sops |> 
+  group_by(tx) |> 
+  filter(y == 1) |>
+  summarise(mean_time = sum(prop))
+```
+
+### OR of 0.5 ~ 3 more weeks at home and alive
+
+```{r}
+patient_trajectories_05 <- generate_trajectories(
+  model = fit_h0,
+  baseline_data = baseline_data,
+  times = 1:26,
+  k = 4,
+  absorbing_state = 5,
+  tx_effect = log(0.5),
+  x_effect = log(1),
+  seed = 6789543,
+  verbose = FALSE
+)
+
+ha_data_forward_05 <- baseline_data |> 
+  rename(
+    yprev_base = yprev, 
+    ypprev_base = ypprev,
+    ) |> 
+  left_join(patient_trajectories_05, by = "pat_id") |> 
+  arrange(pat_id, week) |> 
+  group_by(pat_id) |> 
+  mutate(
+    yprev  = lag(y, 1),
+    ypprev = lag(y, 2),
+    # For the first one or two weeks, seed lags from baseline
+    yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
+    ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
+  ) |> 
+  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week)))
+
+ha_data_05 <- ha_data_forward_05 |>
+  filter(week <= dweek) |> 
+  ungroup() |> 
+  mutate(
+    y          = as.numeric(y),
+    yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
+    ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
+  ) |> 
+    select(-yprev_base, -ypprev_base, -dweek, -x)
+```
+
+```{r}
+baseline_data |> 
+  left_join(patient_trajectories_05, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  mutate(tx = factor(tx)) |>
+  ggplot(aes(x = week, y = prop, color = factor(y), linetype = tx)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Simulated patient trajectories",
+    x = "Week",
+    y = "Proportion",
+    fill = "State",
+    color = "State"
+  )
+```
+
+```{r}
+sops <- baseline_data |> 
+  left_join(patient_trajectories_05, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  mutate(tx = factor(tx))
+
+# difference in time out of hospital
+sops |> 
+  group_by(tx) |> 
+  filter(y == 1) |>
+  summarise(mean_time = sum(prop))
+```
+
+### OR of 1.5 ~ 3 weeks less at home and alive
+
+```{r}
+patient_trajectories_15 <- generate_trajectories(
+  model = fit_h0,
+  baseline_data = baseline_data,
+  times = 1:26,
+  k = 4,
+  absorbing_state = 5,
+  tx_effect = log(1.5),
+  x_effect = log(1),
+  seed = 6789543,
+  verbose = FALSE
+)
+
+ha_data_forward_15 <- baseline_data |> 
+  rename(
+    yprev_base = yprev, 
+    ypprev_base = ypprev,
+    ) |> 
+  left_join(patient_trajectories_15, by = "pat_id") |> 
+  arrange(pat_id, week) |> 
+  group_by(pat_id) |> 
+  mutate(
+    yprev  = lag(y, 1),
+    ypprev = lag(y, 2),
+    # For the first one or two weeks, seed lags from baseline
+    yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
+    ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
+  ) |> 
+  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week)))
+
+ha_data_15 <- ha_data_forward_15 |>
+  filter(week <= dweek) |> 
+  ungroup() |> 
+  mutate(
+    y          = as.numeric(y),
+    yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
+    ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
+  ) |> 
+    select(-yprev_base, -ypprev_base, -dweek, -x)
+```
+
+```{r}
+baseline_data |> 
+  left_join(patient_trajectories_15, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  mutate(tx = factor(tx)) |>
+  ggplot(aes(x = week, y = prop, color = factor(y), linetype = tx)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Simulated patient trajectories",
+    x = "Week",
+    y = "Proportion",
+    fill = "State",
+    color = "State"
+  )
+```
+
+```{r}
+sops <- baseline_data |> 
+  left_join(patient_trajectories_15, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  mutate(tx = factor(tx))
+
+# difference in time out of hospital
+sops |> 
+  group_by(tx) |> 
+  filter(y == 1) |>
+  summarise(mean_time = sum(prop))
+```
+
+### OR of 2.0 ~ 6 weeks less at home and alive
+
+```{r}
+patient_trajectories_20 <- generate_trajectories(
+  model = fit_h0,
+  baseline_data = baseline_data,
+  times = 1:26,
+  k = 4,
+  absorbing_state = 5,
+  tx_effect = log(2),
+  x_effect = log(1),
+  seed = 6789543,
+  verbose = FALSE
+)
+
+ha_data_forward_20 <- baseline_data |> 
+  rename(
+    yprev_base = yprev, 
+    ypprev_base = ypprev,
+    ) |> 
+  left_join(patient_trajectories_20, by = "pat_id") |> 
+  arrange(pat_id, week) |> 
+  group_by(pat_id) |> 
+  mutate(
+    yprev  = lag(y, 1),
+    ypprev = lag(y, 2),
+    # For the first one or two weeks, seed lags from baseline
+    yprev  = ifelse(is.na(yprev),  as.integer(as.character(yprev_base)),  as.integer(as.character(yprev))),
+    ypprev = ifelse(is.na(ypprev), as.integer(as.character(ypprev_base)), as.integer(as.character(ypprev)))
+  ) |> 
+  mutate(dweek = ifelse(any(y == 5), min(week[y == 5]), max(week)))
+
+ha_data_20 <- ha_data_forward_20 |>
+  filter(week <= dweek) |> 
+  ungroup() |> 
+  mutate(
+    y          = as.numeric(y),
+    yprev  = factor(yprev,  levels = 1:4, ordered = FALSE),
+    ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)
+  ) |> 
+    select(-yprev_base, -ypprev_base, -dweek, -x)
+```
+
+```{r}
+baseline_data |> 
+  left_join(patient_trajectories_20, by = "pat_id") |> 
+  group_by(tx, week, y) |> 
+  summarise(n = n(), .groups = "drop") |> 
+  group_by(tx, week) |>
+  mutate(prop = n / sum(n)) |> 
+  mutate(tx = factor(tx)) |>
+  ggplot(aes(x = week, y = prop, color = factor(y), linetype = tx)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Simulated patient trajectories",
+    x = "Week",
+    y = "Proportion",
+    fill = "State",
+    color = "State"
+  )
+```
+
+```{r}
+sops <- baseline_data |> 
+  left_join(patient_trajectories_20, by = "pat_id") |> 
   group_by(tx, week, y) |> 
   summarise(n = n(), .groups = "drop") |> 
   group_by(tx, week) |>

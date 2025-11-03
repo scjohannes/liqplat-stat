@@ -1,16 +1,23 @@
 ---
-Title: Simulation of different scenarios
+title: Simulation of different scenarios
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
-## Overview
-
-
-## TODO
 
 
 ## Setup
 
 ```{r}
+#| output: false
+library(here)
 library(tidyverse)
 library(data.table)
 library(tidybayes)
@@ -27,13 +34,13 @@ set.seed(1234)
 ## Load model and dataset
 
 ```{r}
-df <- read_parquet("./data/censored_qol.parquet") |> 
+df <- read_parquet(here("data", "censored_qol.parquet")) |> 
   mutate(
     ecog_fstcnt = if_else(ecog_fstcnt == "4" | ecog_fstcnt == "3", "3plus", ecog_fstcnt), 
     ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
   )
 
-model <- readRDS("./1-qol/models/qol_long_ord_pol.rds")
+model <- readRDS(here("1-qol", "models", "qol_long_ord_pol.rds"))
 model
 ```
 
@@ -72,7 +79,9 @@ tx <- sample(0:1, N, replace = TRUE) # Sample treatment assignment
 X <- cbind(X_baseline, tx) 
 ```
 
-## Simulation Model
+## Simulation Functions
+
+### Function A
 
 - Proportional Part: Effects that are constant across all k-1 logits (e.g., yprev, gap, baseline covariates, pol(week,2)).
 - Non-Proportional Part: The week x f(y) term, which varies with the outcome level k. For our model cppo = function(y) y, this term is k * week * \gamma_{week}.
@@ -155,7 +164,7 @@ g <- function(yprev, t, gap, X, parameter = 0, extra) {
 formals(g)$extra <- extra
 ```
 
-## Other function where tx has no impact on mortality
+### Function B (no impact on survival)
 
 - This is a somewhat implausible scenario
 - For LIQPLAT we hypothesize that ctDNA might lead to earlier deescalation, less toxicity and in turn better QoL
@@ -225,13 +234,14 @@ g2 <- function(yprev, t, gap, X, parameter = 0, extra) {
 formals(g2)$extra <- extra
 ```
 
-## Simulate dataset with PO for treatment
+## Simulations
+### PO - OR 0.8
 
 - Odds of 0.8 of moving to a higher (worse state)
 
 ```{r}
 # Run the simulation
-carried_forward <- simMarkovOrd(n = N, 
+carried_forward_08 <- simMarkovOrd(n = N, 
                   y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)),                # 8 levels of the outcome
                   times = 1:26,
                   initial = init, 
@@ -242,7 +252,7 @@ carried_forward <- simMarkovOrd(n = N,
                   parameter = log(0.8),
                   carry = TRUE)
 
-not_carried_forward <- simMarkovOrd(n = N, 
+not_carried_forward_08 <- simMarkovOrd(n = N, 
                   y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)),                # 8 levels of the outcome
                   times = 1:26,
                   initial = init, 
@@ -254,7 +264,7 @@ not_carried_forward <- simMarkovOrd(n = N,
                   carry = FALSE)
 ```
 
-### Visualize empirical SOPs
+#### Visualize empirical SOPs
 
 ```{r}
 carried_forward |>               
@@ -265,21 +275,21 @@ carried_forward |>
   labs(x = "week", y = "proportion", fill = "Y")
 ```
 
-### Check if OR of 0.8 is recovered
+#### Check if OR of 0.8 is recovered
 
 ```{r}
-sample <- not_carried_forward |> 
+sample_08 <- not_carried_forward |> 
     select(id, time, y, yprev, tx) |> 
     left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
 
 h <- vglm(ordered(y) ~ yprev + poly(time, 2) + ecog_fstcnt + diagnosis + tx,
                 cumulative(reverse=TRUE, parallel=FALSE ~ pol(time, 2)),
-                data=sample)
+                data=sample |> filter(id < 10000))
 
 h
 ```
 
-### Calculate the SOPs
+#### Calculate the SOPs
 ```{r}
 sops <- carried_forward |> 
   group_by(time, tx) |> 
@@ -289,7 +299,7 @@ sops <- carried_forward |>
     sop = n / sum(n))
 ```
 
-### Calculate the difference in weeks with >= Good QoL
+#### Calculate the difference in weeks with >= Good QoL
 ```{r}
 # Difference in mean days with excellent, very good or good quality of life
 weeks_good_qol <- sops |> 
@@ -307,17 +317,16 @@ weeks_bad_qol <- sops |>
 weeks_bad_qol
 ```
 
-In this population an OR of 0.8 for a proportional treatment effect leads to a 1.1 week increase in the expected time spent with a quality of life in the highest three categories.
-The difference in weeks spent with bad quality of life or death is -0.9. 
+In this population an OR of 0.8 for a proportional treatment effect leads to a 1.1 week increase in the expected time spent with a quality of life in the highest three categories. The difference in weeks spent with bad quality of life or death is -0.9. 
 
 
-## Simulate dataset with nonPO for treatment
+### nonPO - OR 0.8
 
-- Odds of 0.8 of moving to a higher (worse state), except for the absorbing state death
+- Odds of 0.8 of moving to a higher (worse state), except for the absorbing state death, which has OR of 1.
 
 ```{r}
 # Run the simulation
-carried_forward_nonPO <- simMarkovOrd(n = N, 
+carried_forward_nonPO_08 <- simMarkovOrd(n = N, 
                   y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)), # 8 levels of the outcome
                   times = 1:26,
                   initial = init, 
@@ -328,7 +337,7 @@ carried_forward_nonPO <- simMarkovOrd(n = N,
                   parameter = log(0.8),
                   carry = TRUE)
 
-not_carried_forward_nonPO <- simMarkovOrd(n = N, 
+not_carried_forward_nonPO_08 <- simMarkovOrd(n = N, 
                   y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)),
                   times = 1:26,
                   initial = init, 
@@ -340,7 +349,7 @@ not_carried_forward_nonPO <- simMarkovOrd(n = N,
                   carry = FALSE)
 ```
 
-### Visualize empirical SOPs
+#### Visualize empirical SOPs
 
 ```{r}
 carried_forward_nonPO |>              
@@ -351,10 +360,10 @@ carried_forward_nonPO |>
   labs(x = "week", y = "proportion", fill = "Y")
 ```
 
-### Examine OR
+#### Examine OR
 
 ```{r}
-sample_nonPO <- not_carried_forward_nonPO |> 
+sample_nonPO_08 <- not_carried_forward_nonPO |> 
     select(id, time, y, yprev, tx) |> 
     left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
 
@@ -367,7 +376,7 @@ h_nonPO
 
 VGAM estimated separate effects for each cumulative threshold. Correctly estimated 0.8 for all but threshold 7, which is estimated as 1.
 
-### Calculate the SOPs
+#### Calculate the SOPs
 ```{r}
 sops_nonPO <- carried_forward_nonPO |> 
   group_by(time, tx) |> 
@@ -377,7 +386,7 @@ sops_nonPO <- carried_forward_nonPO |>
     sop = n / sum(n))
 ```
 
-### Calculate the difference in weeks with >= Good QoL
+#### Calculate the difference in weeks with >= Good QoL
 ```{r}
 # Difference in mean days with excellent, very good or good quality of life
 weeks_good_qol_nonPO <- sops_nonPO |> 
@@ -397,19 +406,201 @@ weeks_bad_qol_nonPO
 
 If the treatment has no effect on mortality, the effect is reduced from a gain of 1.1 weeks week >= Good QoL to a gain of 0.9 weeks. 
 
-## Create and export images
+### nonPO - OR 0.3
+
+- Odds Ratio of 0.3 of moving to a higher (worse state), except for the absorbing state death
+
+```{r}
+# Run the simulation
+carried_forward_nonPO <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)), # 8 levels of the outcome
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 8,
+                  intercepts = ints, 
+                  g = g2, 
+                  parameter = log(0.3),
+                  carry = TRUE)
+
+not_carried_forward_nonPO <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = '8',
+                  intercepts = ints, 
+                  g = g2, 
+                  parameter = log(0.3),
+                  carry = FALSE)
+```
+
+#### Visualize empirical SOPs
+
+```{r}
+carried_forward_nonPO |>              
+  ggplot(aes(x = time, fill = factor(y))) +
+  geom_bar(position = "fill") +
+  scale_fill_brewer(palette = "Dark2") +
+  facet_wrap(~ tx) +
+  labs(x = "week", y = "proportion", fill = "Y")
+```
+
+#### Examine OR
+
+```{r}
+sample_nonPO <- not_carried_forward_nonPO |> 
+    select(id, time, y, yprev, tx) |> 
+    left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
+
+h_nonPO <- vglm(ordered(y) ~ yprev + poly(time, 2) + ecog_fstcnt + diagnosis + tx,
+                cumulative(reverse=TRUE, parallel=FALSE ~ pol(time, 2)+tx),
+                data=sample_nonPO |> filter(id < 10000))
+
+h_nonPO
+```
+
+VGAM estimated separate effects for each cumulative threshold. Correctly estimated 0.3 for all but threshold 7, which is estimated as 1.
+
+#### Calculate the SOPs
+
+In those that survive > 26 weeks (primary estimand).
+```{r}
+sops_nonPO <- carried_forward_nonPO |> 
+  group_by(id) |> 
+  filter(all(y != 8)) |> 
+  ungroup() |>
+  group_by(time, tx) |> 
+  count(y) |> 
+  reframe(
+    y = y,
+    sop = n / sum(n))
+```
+
+#### Calculate the difference in weeks with >= Good QoL
+```{r}
+# Difference in mean days with excellent, very good or good quality of life
+weeks_good_qol_nonPO <- sops_nonPO |> 
+  filter(y == 1 | y == 2 | y == 3) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_good_qol_nonPO
+
+weeks_bad_qol_nonPO <- sops_nonPO |> 
+  filter(y == 7 | y == 6 | y == 5) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_bad_qol_nonPO
+```
+
+If the treatment has no effect on mortality, the effect of an OR of 0.3 is a gain of 3 weeks with good QoL.
+
+### nonOR - OR 3.33
+
+- Odds Ratio of 3.33 of moving to a higher (worse state), except for the absorbing state death
+
+```{r}
+# Run the simulation
+carried_forward_nonPO <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)), # 8 levels of the outcome
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = 8,
+                  intercepts = ints, 
+                  g = g2, 
+                  parameter = log(3.33),
+                  carry = TRUE)
+
+not_carried_forward_nonPO <- simMarkovOrd(n = N, 
+                  y = levels(factor(na.omit(df)$y, levels = 1:8, ordered = TRUE)),
+                  times = 1:26,
+                  initial = init, 
+                  X = X, 
+                  absorb = '8',
+                  intercepts = ints, 
+                  g = g2, 
+                  parameter = log(3.33),
+                  carry = FALSE)
+```
+
+#### Visualize empirical SOPs
+
+```{r}
+carried_forward_nonPO |>              
+  ggplot(aes(x = time, fill = factor(y))) +
+  geom_bar(position = "fill") +
+  scale_fill_brewer(palette = "Dark2") +
+  facet_wrap(~ tx) +
+  labs(x = "week", y = "proportion", fill = "Y")
+```
+
+#### Examine OR
+
+```{r}
+sample_nonPO <- not_carried_forward_nonPO |> 
+    select(id, time, y, yprev, tx) |> 
+    left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
+
+h_nonPO <- vglm(ordered(y) ~ yprev + poly(time, 2) + ecog_fstcnt + diagnosis + tx,
+                cumulative(reverse=TRUE, parallel=FALSE ~ pol(time, 2)+tx),
+                data=sample_nonPO |> filter(id < 10000))
+
+h_nonPO
+```
+
+VGAM estimated separate effects for each cumulative threshold. Correctly estimated 3.33 for all but threshold 7, which is estimated as 1.
+
+#### Calculate the SOPs
+
+In those that survive > 26 weeks (primary estimand).
+```{r}
+sops_nonPO <- carried_forward_nonPO |> 
+  group_by(id) |> 
+  filter(all(y != 8)) |> 
+  ungroup() |>
+  group_by(time, tx) |> 
+  count(y) |> 
+  reframe(
+    y = y,
+    sop = n / sum(n))
+```
+
+#### Calculate the difference in weeks with >= Good QoL
+```{r}
+# Difference in mean days with excellent, very good or good quality of life
+weeks_good_qol_nonPO <- sops_nonPO |> 
+  filter(y == 1 | y == 2 | y == 3) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_good_qol_nonPO
+
+weeks_bad_qol_nonPO <- sops_nonPO |> 
+  filter(y == 7 | y == 6 | y == 5) |> 
+  group_by(tx) |> 
+  summarise(mean_weeks = sum(sop))
+
+weeks_bad_qol_nonPO
+```
+
+If the treatment has no effect on mortality, the effect of an OR of 3.3 is a loss of 6 weeks with good QoL.
+
+### Create and export images for OR = 0.8
 
 ### State Occupancy Probabilities
 ```{r}
-source("./functions/carry-death-forward.R")
+source(here("functions", "carry-death-forward.R"))
 
-sample_cf <- sample |> 
+sample_cf_08 <- sample_08 |> 
   carry_death_forward() |> 
   mutate(
     tx = factor(tx, levels = c(0, 1), labels = c("Control", "Treatment"))
   )
 
-sops_line <- sample_cf |> 
+sops_line_08 <- sample_cf_08 |> 
   group_by(time, tx) |> 
   count(y) |> 
   mutate(
@@ -425,38 +616,38 @@ sops_line <- sample_cf |>
   coord_cartesian(ylim = c(0, 0.4)) +
   labs(x = "Study Week",
    y = "SOP",
-   subtitle = "Empirical state occupancy probabilities",
+   subtitle = "Empirical state occupancy probabilities (OR = 0.8)",
    linetype = "Treatment",
    color = "State")
 
-sops_stacked <- sample_cf |>  
+sops_stacked_08 <- sample_cf_08 |>  
   ggplot(aes(x = time, fill = y)) +
   geom_bar(position = "fill")  +
   scale_fill_brewer(palette = "Dark2") +
   scale_x_continuous(breaks = seq(1, 26, by=4)) +
   scale_y_continuous(breaks = seq(0, 1, by=0.2)) +
   facet_wrap(~tx) +
-  # coord_cartesian(ylim = c(0, 0.4)) +
   labs(x = "Study Week",
    y = "Cumulative Proportion",
-   subtitle = "Distribution of ordinal states over time",
+   subtitle = "Distribution of ordinal states over time (OR = 0.8)",
    color = "State")
 
-sops_line / sops_stacked +
-  plot_annotation(tag_level = 'A')
+sops_line_08 / sops_stacked_08 +
+  plot_annotation(tag_level = 'A', 
+                  title = "PO Model - OR = 0.8")
 
-ggsave(filename = "./img/fig-sim-data-sop.svg", width = 12, height = 10)
-
+ggsave(filename = here("img", "fig-sim-data-sop.svg"), width = 12, height = 10)
 ```
 
 ```{r}
-sample_nonPO_cf <- sample_nonPO |> 
+# State Occupancy Probabilities - nonPO model
+sample_nonPO_cf_08 <- sample_nonPO_08 |> 
   carry_death_forward() |> 
   mutate(
     tx = factor(tx, levels = c(0, 1), labels = c("Control", "Treatment"))
   )
 
-sops_line <- sample_nonPO_cf |> 
+sops_line_nonPO_08 <- sample_nonPO_cf_08 |> 
   group_by(time, tx) |> 
   count(y) |> 
   mutate(
@@ -472,50 +663,54 @@ sops_line <- sample_nonPO_cf |>
   coord_cartesian(ylim = c(0, 0.4)) +
   labs(x = "Study Week",
    y = "SOP",
-   subtitle = "Empirical state occupancy probabilities",
+   subtitle = "Empirical state occupancy probabilities (OR = 0.8, nonPO)",
    linetype = "Treatment",
    color = "State")
 
-sops_stacked <- sample_nonPO_cf |>  
+sops_stacked_nonPO_08 <- sample_nonPO_cf_08 |>  
   ggplot(aes(x = time, fill = y)) +
   geom_bar(position = "fill")  +
   scale_fill_brewer(palette = "Dark2") +
   scale_x_continuous(breaks = seq(1, 26, by=4)) +
   scale_y_continuous(breaks = seq(0, 1, by=0.2)) +
   facet_wrap(~tx) +
-  # coord_cartesian(ylim = c(0, 0.4)) +
   labs(x = "Study Week",
    y = "Cumulative Proportion",
-   subtitle = "Distribution of ordinal states over time",
+   subtitle = "Distribution of ordinal states over time (OR = 0.8, nonPO)",
    color = "State")
 
-sops_line / sops_stacked +
-  plot_annotation(tag_level = 'A')
+sops_line_nonPO_08 / sops_stacked_nonPO_08 +
+  plot_annotation(tag_level = 'A',
+                  title = "NonPO Model - OR = 0.8")
 
-ggsave(filename = "./img/fig-sim-data-sop-nonPO.svg", width = 12, height = 10)
+ggsave(filename = here("img", "fig-sim-data-sop-nonPO.svg"), width = 12, height = 10)
 ```
 
 ### Individual trajectories
 
 ```{r}
 set.seed(4)
-ids <- sample$id |> unique() |> sample(20) 
+ids_08 <- sample_08$id |> unique() |> sample(20) 
 
-fig_tile_random <- sample |> 
-  filter(id %in% ids) |> 
+fig_tile_random_08 <- sample_08 |> 
+  filter(id %in% ids_08) |> 
   mutate(id = as.factor(as.numeric(as.factor((id))))) |> 
   ggplot(aes(y = id, x = time)) +
   geom_tile(mapping = aes(fill = y), width = 0.95, height = 0.4) +
   scale_fill_brewer(palette = "Dark2") +
-  scale_x_continuous(breaks = 1:26)
+  scale_x_continuous(breaks = 1:26) +
+  labs(title = "Individual Trajectories - OR = 0.8",
+       y = "Patient ID",
+       x = "Study Week",
+       fill = "State")
 
-ggsave(filename = "./img/fig-sim-tile.svg", width = 12, height = 6)
+ggsave(filename = here("img", "fig-sim-tile.svg"), width = 12, height = 6)
 ```
 
 ## Export simulataed datasets
 
 ```{r}
-write_parquet(sample, "./1-qol/sim-data/sim_data_po.parquet")
-write_parquet(carried_forward, "./1-qol/sim-data/sim_data_po_forward.parquet")
-write_parquet(sample_nonPO, "./1-qol/sim-data/sim_data_nonpo.parquet")
+write_parquet(sample_08, here("1-qol", "sim-data", "sim_data_po.parquet"))
+write_parquet(carried_forward_08, here("1-qol", "sim-data", "sim_data_po_forward.parquet"))
+write_parquet(sample_nonPO_08, here("1-qol", "sim-data", "sim_data_nonpo.parquet"))
 ```

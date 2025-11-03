@@ -1,10 +1,20 @@
 ---
-Title: Primary Estimand
+title: TAAOH - Primary Estimand
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 ## Setup
 
 ```{r}
+#| output: false
 library(furrr)
 library(tidyverse)
 library(data.table)
@@ -15,14 +25,14 @@ library(Hmisc)
 library(patchwork)
 ```
 
-## Load model
+## Load Data
 
-We use simulated data with constant OR of 0.8.
+We use simulated data with constant OR of 0.8. The OR of 0.8 results in about 1.2 more weeks alive and out of hospital over 26 weeks.
 
 ```{r}
 set.seed(1234)
 df_full <- read_parquet(here("2-hosp", "sim-data", "ha_08.parquet")) |> 
-    select(id = pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, albumin, c_reactive_protein)
+    select(id = pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, albumin, c_reactive_protein, gender, age)
 
 tx_id <- sample(unique(df_full$id[df_full$tx == 1]), 180, replace = FALSE)
 soc_id <- sample(unique(df_full$id[df_full$tx == 0]), 90, replace = FALSE)
@@ -53,22 +63,35 @@ $$\tau = \mathbb{E}[W_i^1] - \mathbb{E}[W_i^0]$$
 
 The estimand, $\tau$, represents the population-average difference in weeks spent alive and out of the hospital over a 26-week period when comparing the SAT intervention to the SoC.
 
-## Fit model
+## Fit Model
 
 ```{r}
+#| output: false
+dd <- datadist(df)
+options(datadist = "dd")
+pcontrast_arg <- list(
+  c1 = list(tx = 1),    # <-- Numeric 1 for the treatment group
+  c2 = list(tx = 0),    # <-- Numeric 0 for the reference group
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.541
+)
+
 if(TRUE){
   options(mc.cores = 6)
   model <-       
       blrm(
               formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + albumin + c_reactive_protein + cluster(id),
               data = df,
+              pcontrast = pcontrast_arg,
               refresh = 5,
               iter = 2000,
               chains = 4,
               seed = 1234,
-              loo = TRUE,
+              loo = FALSE,
               method = "sampling",
-              backend = "cmdstan"
+              backend = "cmdstan",
+              sampling.args = list(adapt_delta = 0.95)
           )
 }
 ```
@@ -168,35 +191,31 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
 
 ### State Occupancy Probabilities for a Second-Order Process
 
-The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order process, we define the SOP as $P(Y_j=m | X, y_0, y_{-1})$, which is the probability of being in state $k$ at time $j$, conditional on a set of baseline covariates $X$ and the two baseline states, $y_{-1}$ (state at time $j=-1$) and $y_0$ (state at time $j=0$).
+The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order process, we define the SOP as $P(Y_j=k | X, y_{-1}, y_0)$, which is the probability of being in state $k$ at time $j$, conditional on a set of baseline covariates $X$ and the two baseline states, $y_{-1}$ (state at time $j=-1$) and $y_0$ (state at time $j=0$).
 
-The procedure for calculating SOPs in a second-order model is more involved than the recursive matrix multiplication described for first-order models by Rohde et al. (2024) \[**fix REF**\], as the transition to the next state depends on the two immediately preceding states.
+In a first-order model, a single transition matrix is sufficient to describe the evolution of the system from time $j-1$ to $j$. In the second-order case, however, the probabilities of transitioning from state $k$ at time $j-1$ to state $l$ at time $j$ are themselves conditional on the state at time $j-2$. This dependency requires a set of transition matrices, one for each possible prior state ($Y_{j-2}=h$), rather than a single matrix. The core challenge is that the state of the system at any given time is not described by a single previous outcome, but by the joint probability distribution of the last two outcomes. Therefore, to compute the SOPs, we must recursively calculate the evolution of this joint probability distribution over time.
 
-In a first-order model, a single transition matrix is sufficient to describe the evolution of the system from time $j-1$ to $j$. In the second-order case, however, the probabilities of transitioning from state $k$ at time $j-1$ to state $l$ at time $j$ are themselves conditional on the state at time $j-2$. This dependency requires a set of transition matrices—one for each possible prior state ($Y_{j-2}=h$)—rather than a single matrix. This collection of matrices forms a rank-3 tensor, and consequently, the system's evolution can no longer be described by the simple matrix multiplication applicable to first-order processes.
-
-The core challenge is that the state of the system at any given time is not described by a single previous outcome, but by the joint probability distribution of the last two outcomes. Therefore, to compute the SOPs, we must recursively calculate the evolution of this joint probability distribution over time.
-
-Let the conditional transition probability at time $j$ be denoted as $T_j(l | h, k) = P(Y_j=l | Y_{j-1}=k, Y_{j-2}=h, X)$. These probabilities, which represent the chance of moving to state $l$ given the history of being in state $h$ then state $k$, are calculated directly from the fitted ordinal transition model for a specific covariate profile $X$.
+Let the conditional transition probability at time $j$ be denoted as $T_j(l | h, k) = P(Y_j=l | Y_{j-2}=h, Y_{j-1}=k, X)$. These probabilities, which represent the chance of moving to state $l$ given the history of being in state $h$ then state $k$, are calculated directly from the fitted ordinal transition model for a specific covariate profile $X$.
 
 The unconditionalization process proceeds as follows:
 
-1.  **Initialization**: We begin with the known baseline states $y_{-1}$ and $y_0$. The joint probability of being in states $h$ and $k$ at times $j=-1$ and $j=0$ respectively, which we denote as $J_0(h, k) = P(Y_{-1}=h, Y_0=k)$, is initialized as a matrix of zeros with a 1 at the position $(h, k) = (y_{-1}, y_0)$. The initial SOP at time $j=0$ is therefore known with certainty: $S_0(k) = 1$ for the state $k=y_0$ and 0 otherwise.
+Initialization: We begin with the known baseline states $y_{-1}$ and $y_0$. The joint probability of being in states $h$ and $k$ at times $j=-1$ and $j=0$ respectively, which we denote as $J_0(h, k) = P(Y_{-1}=h, Y_0=k)$, is initialized as a matrix of zeros with a 1 at the position $(h, k) = (y_{-1}, y_0)$. The initial SOP at time $j=0$ is therefore known with certainty: $S_0(k) = 1$ for the state $k=y_0$ and 0 otherwise.
 
-2.  **Recursive Calculation of Joint Probabilities**: For each subsequent time point $j=1, 2, \dots, d$, we calculate the new joint probability distribution $J_j(k, l) = P(Y_{j-1}=k, Y_j=l)$ by marginalizing over the state at time $j-2$, denoted by $h$. Using the law of total probability, the recursion is defined as:
+Recursive Calculation of Joint Probabilities: For each subsequent time point $j=1, 2, \dots, d$, we calculate the new joint probability distribution $J_j(k, l) = P(Y_{j-1}=k, Y_j=l)$ by marginalizing over the state at time $j-2$, denoted by $h$. Using the law of total probability, the recursion is defined as:
 
-    $$
-    J_j(k, l) = \sum_{h=1}^{K} T_j(l | h, k) \times J_{j-1}(h, k)
-    $$
+$$
+J_j(k, l) = \sum_{h=1}^{K} T_j(l | h, k) \times J_{j-1}(h, k)
+$$
 
-    In this step, we use the joint probabilities from the previous time step, $J_{j-1}$, and the conditional transition probabilities for the current time step, $T_j$, to compute the joint probabilities for the current and previous time steps, $J_j$.
+In this step, we use the joint probabilities for times $j-2$ and $j-1$ , $J_{j-1}$, and the conditional transition probabilities for the current time step, $T_j$, to compute the joint probabilities for the current and previous time steps, $J_j$.
 
-3.  **Calculation of State Occupancy Probabilities**: Once the joint probability matrix $J_j$ for time $j$ is obtained, the SOP for being in state $l$ at time $j$, denoted $S_j(l)$, is calculated by marginalizing out the state at time $j-1$ (denoted by $k$):
+Calculation of State Occupancy Probabilities: Once the joint probability matrix $J_j$ for time $j$ is obtained, the SOP for being in state $l$ at time $j$, denoted $S_j(l)$, is calculated by marginalizing out the state at time $j-1$ (denoted by $k$):
 
-    $$
-    S_j(l) = P(Y_j=l) = \sum_{k=1}^{K} J_j(k, l)
-    $$
+$$
+S_j(l) = P(Y_j=l) = \sum_{k=1}^{K} J_j(k, l)
+$$
 
-This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history.
+This $S_j(l)$ is the marginal probability at time $j$ and is the state occupancy probability $P(Y_j = l | X, y_{-1}, y_0)$ for the given baseline conditions. This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history. The code that implements these calculations can be found here.
 
 ```{r}
 #' Calculate Second-Order State Occupation Probabilities
@@ -401,7 +420,7 @@ write_SOP <- function(i, tx, baseline_df, path, model){
   sops <-
   sop_markov_second_order(
     model_fit = model,
-    baseline_data = data.frame(id = row$id, tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, yprev = row$yprev, ypprev = row$ypprev),
+    baseline_data = data.frame(id = row$id, tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, albumin = row$albumin,  c_reactive_protein = row$c_reactive_protein, yprev = row$yprev, ypprev = row$ypprev),
     col_yprev = "yprev",
     col_ypprev = "ypprev",
     col_time = "week",
@@ -452,7 +471,7 @@ future::plan(future::multisession, workers=6)
 
 baseline_df <- df |> 
     filter(week == 1) |> 
-    select(id, week, ecog_fstcnt, diagnosis, yprev, ypprev) |> 
+    select(id, week, ecog_fstcnt, diagnosis, albumin, c_reactive_protein, yprev, ypprev) |> 
     distinct() |> 
     arrange(id)
 
@@ -473,6 +492,7 @@ if (generate_SOPS) {
 ### Read marginalized SOPs
 
 ```{r}
+#| output: false
 files <- fs::dir_ls(here("2-hosp", "output", "primary-estimand", "marginalized_sop_0"), glob = "*.parquet")
 
 soc_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
@@ -546,12 +566,14 @@ plot_empirical <- empirical_sop |>
        color = "State",
        linetype = "Treatment") +
   theme(legend.position = "")
-
 ```
 
 We can se that some empirical lines cross, but we KNOW that the treatment effect is constant and proportional, so this is just noise.
 
 ```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 5
 plot_empirical + plot_model
 ```
 
@@ -560,6 +582,8 @@ plot_empirical + plot_model
 Difference is in the mean time spent out of hospital and alive (y = 1).
 
 ```{r}
+#| fig-width: 8
+#| fig-height: 5
 estimand_df <- marg_df |> 
   filter(state == "1") |> 
   group_by(tx, draw) |> 
@@ -576,17 +600,20 @@ estimand_df |>
   geom_vline(xintercept = 0, linetype = "dashed") +
   labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - SoC)",
        y = "Density")
+
+ggsave(filename = here("img", "taooh_primary_estimand_conservative-prior.png"), width = 8, height = 5)
 ```
 
 ## Checks
 
-Comparing calculated SOPs to brute-force simulation. Note: the optimized simulation was coded by gemini, but matches a slow version I wrote before. Confidence: high.
+Comparing calculated SOPs to brute-force simulation. Note: the optimized simulation was coded by Gemini, but matches a slow version I wrote before. Confidence: high.
 
-When we use compare the simulations agains the calculations the SOPs match exactly.
+When we compare the simulations against the calculations the SOPs match exactly.
 
 ```{r}
+#| output: false
 t1 <- Sys.time()
-N <- 1e5
+N <- 4e5
 set.seed(1234) # for reproducibility
 
 # --- 1. Pre-calculation of Transition Probabilities ---
@@ -772,6 +799,9 @@ sops_2 <- sop_markov_second_order(
 t2 <- Sys.time()
 t2 - t1
 
-round(t(apply(sops_2, c(2,3), mean))[-1,], digits = 4)
-round(proportion_matrix, digits = 4)
+# Differences in Calculated and Simulated SOPs
+format(
+  round(t(apply(sops_2, c(2,3), mean))[-1,], digits = 4) - round(proportion_matrix, digits = 4),
+  scientific = FALSE
+)
 ```
