@@ -266,9 +266,19 @@ Each model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed dataset
 
 Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesian models will be fitted using Stan via the `rstanarm` [@RStanARM] and `rmsb` [@rmsb] packages. Multiple imputation will use the `mice` [@mice_2011] and `miceadds` [@miceadds_3.17-44] packages. For data wrangling and plotting we use the `tidyverse` [@tidyverse].
 
-## Study Hypotheses and Multiplicity
+# Sample Size
 
-\[Section TBD - Needs refinement based on the Bayesian approach.\]
+The trial aims to enroll $150$ participants who accept the invitation to the single-arm trial (SAT). This target sample size is driven by feasibility, including logistical constraints (such as a maximum of three invitations per week) and the capacity of the Department of Pathology. Based on estimates of patient acceptance, we anticipate needing to invite approximately $180$ eligible patients to achieve this target (an acceptance rate of $\approx 83%$).
+
+The random invitation process, as described in @sec-eligibility, uses a $2:1$ allocation ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected external control group (not selected for invitation) of approximately $90$ patients.
+
+Therefore, the total Intention-to-Treat (ITT) population for the randomized comparison is expected to be $N = 270$ ($180$ patients in the intervention group \[selected for invitation\] and $90$ patients in the external control group). All simulation studies for power and operating characteristics are based on this total sample size of $N = 270$.
+
+This trial is not formally powered for a single primary endpoint using a frequentist framework, as the sample size is fixed by feasibility. Instead, the Bayesian analyses will provide posterior distributions and probabilities of benefit for the three primary endpoints. The operating characteristics presented in the analysis sections provide an indication of the study's ability to detect various plausible effect sizes given this fixed sample size.
+
+It is crucial to note that the primary estimand for all outcomes is the effect of the treatment policy, which compares the group selected for invitation ($A=1$) to the group not selected for invitation ($A=0$). This treatment policy estimand is inherently diluted by non-adherence (i.e., the $\approx 30$ patients in the $A=1$ group who are expected to decline participation).
+
+The simulation studies (e.g., for TAOOH, @tbl-oper-char-toh-ha) did not explicitly model this non-uptake mechanism. Instead, the true effect sizes used in the simulations (e.g., a true OR of $0.7$) are assumed to represent this already-diluted ITT effect. In other words, a simulated OR of 0.7 reflects the average effect of the invitation strategy across all 180 invited patients (including non-acceptors), compared to the $90$ non-invited patients.
 
 # Analysis
 
@@ -665,11 +675,13 @@ Where:
 
 #### Prior Specifications
 
--   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^14] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.
--   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.940)$ on $\beta_{tx}$ produces a prior a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has $80\%$ of its prior mass between $[-6.0, +3.0]$.
--   **Other Coefficients**: $\mathcal{N}(0, 100)$ (Default priors in `rmsb`)
+-   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^14] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^15]
+-   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.940)$ on $\beta_{tx}$ produces a prior a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has $80\%$ of its prior mass between $[-6.0, +4.0]$.
+-   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (Default priors in `rmsb`).
 
 [^14]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
+
+[^15]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
 
 #### Implementation
 
@@ -745,7 +757,7 @@ sim_summary |>
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
 | Attribute               | Definition                                                                                                                                   |
 +:========================+:=============================================================================================================================================+
-| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer eligible for LIQPLAT (ITT Population).                                                |
+| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started anti-cancer therapy.                                        |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
 | **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                  |
 |                         |                                                                                                                                              |
@@ -789,9 +801,9 @@ Death is explicitly modeled as the absorbing state (State 5) within the transiti
 
 ### Rationale for Ordinal Longitudinal Modeling (TAOOH)
 
-We define a patient's state weekly based on their location and vital status: 1=Alive and Out of Hospital, 2=Alive and In Hospital (Planned Admission), 3=Alive and In Hospital (ER), 4=Alive and In Hospice (Unplanned Admission), 5=Dead. This creates a longitudinal ordinal outcome (with state 5 being absorbing). \[**More rationale.**\]
+We define a patient's state weekly based on their location and vital status: 1=Alive and Out of Hospital, 2=Alive and In Hospital (Planned Admission), 3=Alive and In Hospital (ER), 4=Alive and In Hospice (Unplanned Admission), 5=Dead. This creates a longitudinal ordinal outcome (with state 5 being absorbing).
 
-#### Statistical Model: Bayesian Second-Order Markov Ordinal Transition Model with Random Effects
+### Statistical Model: Bayesian Second-Order Markov Ordinal Transition Model with Random Effects
 
 Let $y_{it}$ be the ordinal health state (1-5) for patient $i$ at week $t$. Let $y_{i, t-1}$ and $y_{i, t-2}$ be the states at the previous two weeks. The model is a cumulative logit model:
 
@@ -852,9 +864,13 @@ Where:
 
 #### Rationale for selecting the second‑order model and interactions
 
-Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^15]
+Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^16]
 
-[^15]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+[^16]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+
+#### Rationale for Random Intercepts
+
+Longitudinal data, such as the weekly states, are characterized by within-patient correlation. The second-order Markov model accounts for a portion of this correlation by conditioning on the previous two states. However, residual correlation may remain due to unobserved patient-level heterogeneity or the misspecification of covariate effects (e.g., omission of a predictive covariate or modeling a non-linear effect as linear). Our own (unpublished) simulation studies indicate that such unmodelled correlation can inflate the frequentist Type I error rate, even when using Bayesian methods with common decision thresholds (e.g., P(benefit)\>0.95). While frequentist analyses might address this with cluster-robust standard errors, the analogous approach in our Bayesian framework is to include a patient-specific random intercept. Therefore, the TAOOH model includes a random intercept (γ0i​) to capture this residual patient-level correlation, aiming to maintain correct Type I error control and provide more robust inference.
 
 #### Implementation
 
@@ -884,15 +900,39 @@ model_taooh <- blrm(
     \mathbb{E}[W^a]_{\text{draw}} = \sum_{t=1}^{26} \text{SOP}(Y_{it}^a = 1)_{\text{draw}}
     $$
 4.  **Calculate Difference per Draw:** For each posterior draw, compute the difference $\tau_{TAOOH, \text{draw}} = \mathbb{E}[W^1]_{\text{draw}} - \mathbb{E}[W^0]_{\text{draw}}$.
-5.  **Summarize Posterior:** The collection of $\tau_{TAOOH, \text{draw}}$ values forms the posterior distribution of the primary estimand for TAOOH. Summarize using posterior median and 95% credible interval.
+5.  **Summarize Posterior:** The collection of $\tau_{TAOOH, \text{draw}}$ values forms the posterior distribution of the primary estimand for TAOOH.
 
-#### Simulation Study Summary (TAOOH)
+#### Frequentist Operating Characteristics (TAOOH)
 
-**REF**.
+```{r}
+#| echo: false
+#| output: false
+summary_h0 <- readRDS("./2-hosp/output/sim-summary_h0.rds")
+summary_ha <- readRDS("./2-hosp/output/sim-summary_ha.rds")
+```
 
--   **Data Generation:** **REF**
--   **Analysis:** The planned Bayesian second-order Markov model with random effects was to be fitted to simulated trial datasets (N=270, 2:1 allocation).
--   **Results:** **\[Specific results for bias, coverage, Type I error, and power under different effect sizes to be filled in based on simulation outputs.\]**
+Using models fit on historical data, we generated datasets with known treatment effects, $OR \in \{0.0, 0.7, 0.8, 0.9\}$. In our historical data, this approximately equaled the following differences in the weeks spent at home and alive over 26 weeks $\tau_{TAOOH} \in \{0, 0.6, 1.2, 1.8\}$. More information on the data generation can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/5-sim-datasets.pdf).
+
+```{r}
+#| echo: false
+#| label: tbl-oper-char-toh-ha
+#| tbl-cap: Bayesian Power when $P(\text{benefit}) > 0.95$ is chosen as a cut-off for benefit under different true odds ratios (Monte Carlo SE in parenthesis).
+summary_ha |> 
+  mutate(OR = case_when(
+    `True OR` == "or_07" ~ 0.7,
+    `True OR` == "or_08" ~ 0.8,
+    `True OR` == "or_09" ~ 0.9,
+    TRUE ~ NA_real_
+  )) |> 
+  rename(
+    `True $\\tau$` = `Clinical Effect`,
+    Power = `Rejection Rate`
+  ) |> 
+  select(2, 9, 4) |> 
+  knitr::kable()
+```
+
+We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for the purpose of evaluating operating characteristics. It will not be used as a formal, dichotomous decision rule in the final analysis. Instead, the primary reporting will focus on presenting and interpreting the full posterior distribution for the estimand, $\tau_{TAOOH}$​. The power figures in @tbl-oper-char-toh-ha are intended to provide a conventional benchmark to illustrate which effect sizes the study can reasonably detect given our sample size and modeling approach.
 
 # Limitations
 
