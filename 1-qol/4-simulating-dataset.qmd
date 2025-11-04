@@ -267,7 +267,7 @@ not_carried_forward_08 <- simMarkovOrd(n = N,
 #### Visualize empirical SOPs
 
 ```{r}
-carried_forward |>               
+carried_forward_08 |>               
   ggplot(aes(x = time, fill = factor(y))) +
   geom_bar(position = "fill") +
   scale_fill_brewer(palette = "Dark2") +
@@ -278,20 +278,20 @@ carried_forward |>
 #### Check if OR of 0.8 is recovered
 
 ```{r}
-sample_08 <- not_carried_forward |> 
+sample_08 <- not_carried_forward_08 |> 
     select(id, time, y, yprev, tx) |> 
     left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
 
 h <- vglm(ordered(y) ~ yprev + poly(time, 2) + ecog_fstcnt + diagnosis + tx,
                 cumulative(reverse=TRUE, parallel=FALSE ~ pol(time, 2)),
-                data=sample |> filter(id < 10000))
+                data = sample_08 |> filter(id < 10000))
 
 h
 ```
 
 #### Calculate the SOPs
 ```{r}
-sops <- carried_forward |> 
+sops <- carried_forward_08 |> 
   group_by(time, tx) |> 
   count(y) |> 
   reframe(
@@ -352,7 +352,7 @@ not_carried_forward_nonPO_08 <- simMarkovOrd(n = N,
 #### Visualize empirical SOPs
 
 ```{r}
-carried_forward_nonPO |>              
+carried_forward_nonPO_08 |>              
   ggplot(aes(x = time, fill = factor(y))) +
   geom_bar(position = "fill") +
   scale_fill_brewer(palette = "Dark2") +
@@ -363,13 +363,13 @@ carried_forward_nonPO |>
 #### Examine OR
 
 ```{r}
-sample_nonPO_08 <- not_carried_forward_nonPO |> 
+sample_nonPO_08 <- not_carried_forward_nonPO_08 |> 
     select(id, time, y, yprev, tx) |> 
     left_join(sim_baseline_data |> select(-yprev), by = c("id" = "pat_id"))
 
 h_nonPO <- vglm(ordered(y) ~ yprev + poly(time, 2) + ecog_fstcnt + diagnosis + tx,
                 cumulative(reverse=TRUE, parallel=FALSE ~ pol(time, 2)+tx),
-                data=sample_nonPO)
+                data=sample_nonPO_08 |> filter(id < 10000))
 
 h_nonPO
 ```
@@ -378,7 +378,7 @@ VGAM estimated separate effects for each cumulative threshold. Correctly estimat
 
 #### Calculate the SOPs
 ```{r}
-sops_nonPO <- carried_forward_nonPO |> 
+sops_nonPO <- carried_forward_nonPO_08 |> 
   group_by(time, tx) |> 
   count(y) |> 
   reframe(
@@ -485,6 +485,8 @@ weeks_good_qol_nonPO <- sops_nonPO |>
   group_by(tx) |> 
   summarise(mean_weeks = sum(sop))
 
+weeks_good_qol_nonPO$mean_weeks[2] - weeks_good_qol_nonPO$mean_weeks[1]
+
 weeks_good_qol_nonPO
 
 weeks_bad_qol_nonPO <- sops_nonPO |> 
@@ -495,7 +497,7 @@ weeks_bad_qol_nonPO <- sops_nonPO |>
 weeks_bad_qol_nonPO
 ```
 
-If the treatment has no effect on mortality, the effect of an OR of 0.3 is a gain of 3 weeks with good QoL.
+If the treatment has no effect on mortality, the effect of an OR of 0.3 is a gain of 4 weeks with good QoL.
 
 ### nonOR - OR 3.33
 
@@ -577,6 +579,8 @@ weeks_good_qol_nonPO <- sops_nonPO |>
   summarise(mean_weeks = sum(sop))
 
 weeks_good_qol_nonPO
+
+weeks_good_qol_nonPO$mean_weeks[2] - weeks_good_qol_nonPO$mean_weeks[1]
 
 weeks_bad_qol_nonPO <- sops_nonPO |> 
   filter(y == 7 | y == 6 | y == 5) |> 
