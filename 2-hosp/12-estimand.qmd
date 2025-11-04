@@ -575,6 +575,7 @@ We can se that some empirical lines cross, but we KNOW that the treatment effect
 #| fig-width: 10
 #| fig-height: 5
 plot_empirical + plot_model
+ggsave(filename = here("img", "taooh_sop_comp.png"), width = 10, height = 5)
 ```
 
 ## Primary Estimand
