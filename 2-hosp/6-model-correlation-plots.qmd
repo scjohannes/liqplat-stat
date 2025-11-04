@@ -1,26 +1,35 @@
 ---
-Title: Examining correlation of sim data
+title: Examining correlation of sim data
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
-
-Have to replace this simdata with the sim data from our analysis model.
-Because right now it's actually from the data generating model, which contains far more variables.
 
 ## Setup
 
 ```{r}
+#| output: false
+library(here)
 library(arrow)
 library(Hmisc)
 library(tidyverse)
 library(data.table)
+library(patchwork)
 ```
 
 ## Load data
 ```{r}
-sim_data <- read_parquet("./2-hosp/sim-data/h0_forward.parquet") |> 
+sim_data <- read_parquet(here("2-hosp", "sim-data", "h0_forward.parquet")) |> 
     rename(
         id = pat_id, 
         time = week)
-real_data <- read_parquet("./data/hosp_long_weeks_two_lags.parquet") |> 
+real_data <- read_parquet(here("data", "hosp_long_weeks_two_lags.parquet")) |> 
     filter(week > 0) |> 
     rename(
         id = pat_id, 
@@ -69,7 +78,7 @@ corr_actual <-
     select(-id) |>
     cor(method="spearman", use="pairwise.complete.obs")
 
-corr_actual |>
+p_corr_actual <- corr_actual |>
   as.data.frame() |>
   rownames_to_column() |>
   pivot_longer(-rowname) |>
@@ -81,7 +90,7 @@ corr_actual |>
     geom_tile() +
     geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
               color="black",
-              size = 3) +
+              size = 2.5) +
     scale_fill_viridis_c(limits=c(-0.01,1), n.breaks = 10) +
     expand_limits(value = c(0, 1)) +
     # cowplot::theme_half_open(font_size=FONT_SIZE,
@@ -97,7 +106,7 @@ corr_actual |>
          fill="",
          subtitle = "Actual Data")
 
-ggsave(filename = "./img/fig-emp-cor-heat-hosp-weekly.svg", height = 10, width = 11)
+ggsave(p_corr_actual, filename = here("img", "fig-emp-cor-heat-hosp-weekly.svg"), height = 10, width = 11)
 ```
 
 ### Simulated Data based on model
@@ -113,7 +122,7 @@ corr_sim <-
     select(-id) |>
     cor(method="spearman", use="pairwise.complete.obs")
 
-corr_sim |>
+p_corr_sim <- corr_sim |>
   as.data.frame() |>
   rownames_to_column() |>
   pivot_longer(-rowname) |>
@@ -125,7 +134,7 @@ corr_sim |>
     geom_tile() +
     geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
               color="black",
-              size = 3) +
+              size = 2.5) +
     scale_fill_viridis_c(limits=c(-0.01,1), n.breaks = 10) +
     expand_limits(value = c(0, 1)) +
     # cowplot::theme_half_open(font_size=FONT_SIZE,
@@ -139,10 +148,20 @@ corr_sim |>
     labs(x="Study week",
          y="Study week",
          fill="",
-         subtitle = "Simulated Data (no interaction)")
+         subtitle = "Simulated Data from Model Fit")
 
-ggsave(filename = "./img/fig-sim-cor-heat.svg", height = 10, width = 11)
+ggsave(p_corr_sim, filename = here("img", "fig-sim-cor-heat.svg"), height = 10, width = 11)
 ```
+
+```{r}
+#| fig-height: 8
+#| fig-width: 16
+p_corr_actual + p_corr_sim + plot_layout(guides = "collect") +
+    plot_annotation(tag_levels = 'A')
+
+ggsave(filename = here("img", "fig-sim-cor-heat-comparison.svg"), height = 8, width = 16)
+```
+
 ### Absolute differences between correlation matrices
 
 Means of absolute differences, stratified by the day involved.
@@ -155,6 +174,7 @@ m |>
   rownames_to_column("rownames") |>
   pivot_longer(names_to = "model", values_to = "value", -rownames) |>
   pivot_wider(names_from = rownames, values_from = value) |> 
+  select(-model) |> 
   knitr::kable()
 
 
@@ -165,25 +185,28 @@ m |> summarise_all(mean)
 ### Variograms
 
 ```{r}
-Hmisc::plotCorrM(corr_actual)[[2]] +
-    scale_y_continuous(limits = c(-.1, 1))
+#| output: false
+var1 <- Hmisc::plotCorrM(corr_actual)[[2]] +
+    scale_y_continuous(limits = c(-.01, 1)) +
+    labs(subtitle = "Actual Data")
 
-ggsave(filename = "./img/fig-hosp-weekly-variogram-emp.svg", height = 10, width = 11)
+ggsave(filename = here("img", "fig-hosp-weekly-variogram-emp.svg"), height = 10, width = 11)
 
-Hmisc::plotCorrM(corr_no)[[2]] + 
-    scale_y_continuous(limits = c(-.1, 1))
+var2 <- Hmisc::plotCorrM(corr_sim)[[2]] + 
+    scale_y_continuous(limits = c(-.01, 1)) +
+    labs(subtitle = "Simulated Data from Model Fit")
 
-ggsave(filename = "./img/fig-hosp-weekly-variogram-no-int.svg", height = 10, width = 11)
+ggsave(filename = here("img", "fig-hosp-weekly-variogram-no-int.svg"), height = 10, width = 11)
+```
 
-Hmisc::plotCorrM(corr_lin)[[2]] + 
-    scale_y_continuous(limits = c(-.1, 1))
+```{r}
+#| message: false
+#| warning: false
+#| fig-height: 8
+#| fig-width: 16
+var1 + var2 + plot_annotation(tag_levels = 'A')
 
-ggsave(filename = "./img/fig-hosp-weekly-variogram-lin-int.svg", height = 10, width = 11)
-
-Hmisc::plotCorrM(corr_full)[[2]] + 
-    scale_y_continuous(limits = c(-.1, 1))
-
-ggsave(filename = "./img/fig-hosp-weekly-variogram-full-int.svg", height = 10, width = 11)
+ggsave(filename = here("img", "fig-hosp-weekly-variogram-comparison.svg"), height = 8, width = 16)
 ```
 
 

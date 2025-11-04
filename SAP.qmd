@@ -264,7 +264,7 @@ Each model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed dataset
 
 ## Software
 
-Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesian models will be fitted using Stan via the `rstanarm` [@RStanARM] and `rmsb` [@rmsb] packages. Multiple imputation will use the `mice` [@mice_2011] and `miceadds` [@miceadds_3.17-44] packages. For data wrangling and plotting we use the `tidyverse` [@tidyverse].
+Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesian models will be fitted using Stan via the `rstanarm` [@RStanARM] and `rmsb` [@rmsb] packages. Multiple imputation will use the `mice` [@mice_2011] and `miceadds` [@miceadds_3.17-44] packages. For data wrangling and plotting we use the `tidyverse` [@tidyverse]. To assess the convergence of the Markov Chain Monte Carlo (MCMC), we will check $\hat{R}$ for all parameters, with a target value \< 1.01, and inspect trace plots to confirm adequate mixing of the chains.
 
 # Sample Size
 
@@ -902,6 +902,14 @@ model_taooh <- blrm(
 4.  **Calculate Difference per Draw:** For each posterior draw, compute the difference $\tau_{TAOOH, \text{draw}} = \mathbb{E}[W^1]_{\text{draw}} - \mathbb{E}[W^0]_{\text{draw}}$.
 5.  **Summarize Posterior:** The collection of $\tau_{TAOOH, \text{draw}}$ values forms the posterior distribution of the primary estimand for TAOOH.
 
+#### Model Diagnostics: Assessment of Correlation Structure
+
+To validate that our model adequately captures the complex longitudinal dependency in the TAOOH data, we will perform graphical checks. We will compare the empirical correlation structure of the observed weekly states against the correlation structure of data simulated from the fitted model. This comparison will be visualized using Spearman correlation heatmaps (@fig-corr-heat-comp) and variograms (@fig-var-heat-comp). This diagnostic check is possible for the TAOOH outcome because it is measured as a complete weekly series; a similar check is not feasible for the QoL endpoint due to its sparse and irregular data collection. The code used for the diagnostics can be found here.
+
+![The left plot (A) shows the Spearman correlation between outcomes on each par of study weeks using historical data. The correlation is high for nearby weeks, but quickly decays during the first 9 weeks. The right plot (B) uses simulated data from the fitted model, resampling baseline covariates. We observe a decent match, indicating that our model is able to capture the correlation structure.](img/fig-sim-cor-heat-comparison.svg){#fig-corr-heat-comp}
+
+![Comparison of variograms, which plot the mean Spearman correlation (y-axis) against the time lag in weeks between measurements (x-axis). Panel (A), using historical data, shows the empirical correlation decaying as the time lag increases. Panel (B) shows the same plot for data simulated from the fitted model. The close alignment between the two plots suggests that the model effectively captures the decay in correlation over time.](img/fig-hosp-weekly-variogram-comparison.svg){#fig-var-heat-comp}
+
 #### Frequentist Operating Characteristics (TAOOH)
 
 ```{r}
@@ -1012,11 +1020,3 @@ The unconditionalization process proceeds as follows:
     $$
 
 This $S_j(l)$ is the marginal probability at time $j$ and is the state occupancy probability $P(Y_j = l | X, y_{-1}, y_0)$ for the given baseline conditions. This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history. The code that implements these calculations can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/12-estimand.pdf).
-
-## Appendix C: Model Diagnostics
-
-**\[Placeholder\]**
-
-## Appendix D: Simulation Details
-
-**\[Placeholder\]**
