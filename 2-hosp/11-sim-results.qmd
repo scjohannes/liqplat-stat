@@ -1,5 +1,14 @@
 ---
-Title: Results of Simulations
+title: Results of Simulations
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
 ---
 
 In this document we summarise and visualize the results of the simulations from step 6.
@@ -9,6 +18,8 @@ In this document we summarise and visualize the results of the simulations from 
 ### Load packages
 
 ```{r}
+#| output: false
+library(here)
 library(fs)
 library(tidyverse)
 library(arrow)
@@ -25,14 +36,14 @@ threshold <- 0.95
 ### Functions
 
 ```{r}
-source("./functions/jackknife_mcse.R")
-source("./functions/summarise-posterior.R")
-source("./functions/summarise-iterations.R")
-source("./functions/plot-rhat.R")
-source("./functions/plot-p-benefit.R")
-source("./functions/plot-posterior-distribution.R")
-source("./functions/load-draws.R")
-source("./functions/load-rhat-values.R")
+source(here("functions", "jackknife_mcse.R"))
+source(here("functions", "summarise-posterior.R"))
+source(here("functions", "summarise-iterations.R"))
+source(here("functions", "plot-rhat.R"))
+source(here("functions", "plot-p-benefit.R"))
+source(here("functions", "plot-posterior-distribution.R"))
+source(here("functions", "load-draws.R"))
+source(here("functions", "load-rhat-values.R"))
 ```
 
 ## Markov Models
@@ -42,21 +53,23 @@ source("./functions/load-rhat-values.R")
 #### Load draws + diagnostics
 ```{r}
 # H0 misspecified, no clustering
-path <- "./2-hosp/output/sim-H0-misspec/"
+path <- here("2-hosp", "output", "sim-H0-misspec")
 misspec_h0 <- load_draws(path)
 rhat_misspec_h0 <- load_rhat_values(path = path)
 
-path <- "./2-hosp/output/sim-H0-correct-spec/"
+path <- here("2-hosp", "output", "sim-H0-correct-spec")
 true_h0 <- load_draws(path)
 rhat_true_h0 <- load_rhat_values(path = path)
 
-path <- "./2-hosp/output/sim-H0-cluster-misspec/"
+path <- here("2-hosp", "output", "sim-H0-cluster-misspec")
 misspec_cluster_h0 <- load_draws(path)
 rhat_misspec_clsuter_h0 <- load_rhat_values(path = path)
 ```
 
 #### Convergence diagnostics
 ```{r}
+#| fig-height: 6
+#| fig-width: 10
 rhat_plot_misspec_h0 <- rhat_misspec_h0 |> 
     plot_rhat(y = `beta.1.`)
 
@@ -67,13 +80,13 @@ rhat_plot_misspec_cluster_h0 <- rhat_misspec_clsuter_h0 |>
     plot_rhat(y = `beta.1.`)
 
 rhat_plot_misspec_h0 + rhat_plot_true_h0 + rhat_plot_misspec_cluster_h0
-
-# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
 ```
 
 #### Plot probability of benefit
 
 ```{r}
+#| fig-height: 6
+#| fig-width: 10
 p1 <- misspec_h0 |> 
     plot_p_benefit(param = `tx=1`)
 
@@ -84,11 +97,11 @@ p3 <- misspec_cluster_h0 |>
     plot_p_benefit(param = `tx=1`)
 
 p1 + p2 + p3
-
-# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
+#| fig-height: 6
+#| fig-width: 10
 #plotting stacked posteriors
 p1 <- misspec_h0 |> 
   plot_posterior_distribution(x_variable = `tx=1`) +
@@ -99,8 +112,6 @@ p2 <- true_h0 |>
   labs(title = "Analysis model = data generating model")
 
 p1 + p2
-
-# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
 ```
 
 ```{r}
@@ -153,7 +164,7 @@ formatted_summary <- all_summaries |>
 
 formatted_summary |> knitr::kable()
 
-saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
+saveRDS(all_summaries, file = here("2-hosp", "output", "sim-summary_h0.rds"))
 ```
 
 ### HA
@@ -161,15 +172,15 @@ saveRDS(all_summaries, file = "./2-hosp/output/sim-summary.rds")
 #### Load draws + diagnostics
 ```{r}
 # H0 misspecified, no clustering
-path <- "./2-hosp/output/sim-HA-09/"
+path <- here("2-hosp", "output", "sim-HA-09")
 ha_09 <- load_draws(path)
 rhat_ha_09 <- load_rhat_values(path = path)
 
-path <- "./2-hosp/output/sim-HA-08/"
+path <- here("2-hosp", "output", "sim-HA-08")
 ha_08 <- load_draws(path)
 rhat_ha_08 <- load_rhat_values(path = path)
 
-path <- "./2-hosp/output/sim-HA-07/"
+path <- here("2-hosp", "output", "sim-HA-07")
 ha_07 <- load_draws(path)
 rhat_ha_07 <- load_rhat_values(path = path)
 ```
@@ -177,6 +188,8 @@ rhat_ha_07 <- load_rhat_values(path = path)
 #### Convergence
 
 ```{r}
+#| fig-height: 6
+#| fig-width: 10
 rhat_09 <- rhat_ha_09 |> 
     plot_rhat(y = `beta.1.`) +
     labs(
@@ -201,6 +214,8 @@ rhat_09 + rhat_08 + rhat_07
 #### P (Benefit)
 
 ```{r}
+#| fig-height: 6
+#| fig-width: 10
 p1 <- ha_09 |> 
     plot_p_benefit(param = `tx`)
 
@@ -252,6 +267,11 @@ formatted_summary <- all_summaries |>
     # transmute creates new columns and drops the old ones
     transmute(
         `True OR` = model_type,
+        `Clinical Effect` = case_when(
+            model_type == "or_09" ~ "~0.6 weeks",
+            model_type == "or_08" ~ "~1.2 weeks",
+            model_type == "or_07" ~ "~1.8 weeks"
+        ),
         # sprintf() formats the numbers and combines them into one string
         `Point Estimate (Median)` = sprintf("%.3f (%.3f)", mean_point_estimate, mcse_point_estimate),
         `Rejection Rate` = sprintf("%.3f (%.3f)", prob_rejection, mcse_prob_rejection),
@@ -261,186 +281,10 @@ formatted_summary <- all_summaries |>
         `Model SE`       = sprintf("%.3f (%.3f)", mean_modSE, mcse_modSE)
     )
 
+#export 
+saveRDS(formatted_summary, file = here("2-hosp", "output", "sim-summary_ha.rds"))
+
 formatted_summary |> knitr::kable()
 ```
-
-## Count Regression
-
-### Resampling H0
-
-#### Load draws + diagnostics
-```{r}
-# H0 no interaction
-path <- "./2-hosp/output/sim-resampling-H0-neg-binom/"
-neg_binom_h0 <- load_draws(path)
-rhat_neg_binom_h0 <- load_rhat_values(path = path)
-
-ate_neg_binom_h0 <- load_draws(path = path, glob = "*/ATE_draws.rds")
-```
-
-#### Convergence diagnostics
-```{r}
-rhat_plot_neg_binom_h0 <- rhat_neg_binom_h0 |> 
-    plot_rhat(y = b_tx1)
-
-# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
-```
-
-### Plot probability of benefit
-
-```{r}
-p1 <- neg_binom_h0 |> 
-    plot_p_benefit(param = b_tx1)
-
-p2 <- ate_neg_binom_h0 |>
-    plot_p_benefit(param = draw)
-
-p1 + p2
-
-# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
-```
-
-```{r}
-#plotting stacked posteriors
-post_neg_binom_h0 <- neg_binom_h0 |> 
-  plot_posterior_distribution(x_variable = b_tx1) + 
-  scale_x_continuous(limits = c(-1, 1))
-
-post_neg_binom_h0
-
-ate_post_neg_binom_h0 <- ate_neg_binom_h0 |> 
-  plot_posterior_distribution(x_variable = draw)
-
-# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
-```
-
-```{r}
-summary_neg_binom_h0 <- neg_binom_h0 |> 
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = b_tx1, 
-        true_param_value = log(1), 
-        threshold = 0.95) |> 
-    summarise_iterations()
-```
-
-## DRS 26
-
-Not actually 26 categories, but 1 to max(number of days not at home) + 1 worse for people who died.
-
-### H0
-
-#### Load draws + diagnostics
-```{r}
-# H0 rmsb (default dirichlet prior)
-path <- "./2-hosp/output/sim-drs26-h0/"
-drs26_h0 <- load_draws(path) |> 
-    mutate(`tx=1` = -`tx=1`) # change sign to match interpretation of other models
-rhat_drs26_h0 <- load_rhat_values(path = path)
-```
-
-#### Convergence diagnostics
-```{r}
-rhat_plot_drs26_h0 <- rhat_drs26_h0 |> 
-    plot_rhat(y = `tx=1`)
-rhat_plot_drs26_h0
-# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
-```
-
-#### Plot probability of benefit
-
-```{r}
-p1 <- drs26_h0 |> 
-    plot_p_benefit(param = `tx=1`)
-
-p1
-
-# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
-```
-
-```{r}
-#plotting stacked posteriors
-post_drs26_rmsb_h0 <- drs26_h0 |> 
-  plot_posterior_distribution(x_variable = `tx=1`)
-
-# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
-```
-
-```{r}
-summary_drs26_h0 <- drs26_h0 |> 
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = `tx=1`, 
-        true_param_value = log(1), 
-        threshold = 0.95) |> 
-    summarise_iterations()
-```
-
-### HA - Markov OR = 0.8
-
-#### Load draws + diagnostics
-```{r}
-# H0 rmsb (default dirichlet prior)
-path <- "./2-hosp/output/sim-drs26-HA-08/"
-drs26_ha_08 <- load_draws(path) |> 
-    mutate(tx = -tx) # change sign to match logodds <0 = benefit
-rhat_drs26_ha_08 <- load_rhat_values(path = path)
-```
-
-#### Convergence diagnostics
-```{r}
-rhat_plot_drs26_ha_08 <- rhat_drs26_ha_08 |> 
-    plot_rhat(y = tx)
-rhat_plot_drs26_ha_08
-# ggsave(filename = "./img/fig-rhat-markov.svg", width = 10, height = 5)
-```
-
-#### Plot probability of benefit
-
-```{r}
-# average p(benefit) over iterations
-drs26_ha_08 |> 
-    group_by(iter) |> 
-    summarise(
-        p_benefit = mean(tx < 0)
-    ) |> 
-    summarise(
-        mean_p_benefit = mean(p_benefit),
-        sd_p_benefit = sd(p_benefit),
-        n = n()
-    )
-
-p1 <- drs26_ha_08 |> 
-    plot_p_benefit(param = tx)
-
-p1
-
-# ggsave(filename = "./img/fig-pbenefit-markov.svg", width = 10, height = 5)
-```
-
-```{r}
-#plotting stacked posteriors
-post_drs26_ha_08 <- drs26_ha_08 |> 
-  plot_posterior_distribution(x_variable = tx)
-
-post_drs26_ha_07 <- drs26_ha_07 |> 
-  plot_posterior_distribution(x_variable = tx)
-
-
-# ggsave(filename = "./img/fig-posteriors-markov.svg", width = 10, height = 5)
-```
-
-```{r}
-summary_drs26_ha_08 <- drs26_ha_08 |> 
-    group_by(iter) |> 
-    summarise_posterior(
-        param_name = tx, 
-        true_param_value = log(1), #true param unclear
-        threshold = 0.95) |> 
-    summarise_iterations()
-
-summary_drs26_ha_08
-```
-
 
 
