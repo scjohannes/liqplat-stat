@@ -670,8 +670,7 @@ Where:
 
 [^12]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
 
-[^13]:
-    -   Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
+[^13]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
 
 #### Prior Specifications
 
@@ -691,11 +690,17 @@ The model will be fitted using the `blrm` function from the `rmsb` package in R,
 #| eval: FALSE
 #| echo: TRUE
 # Example R code for model fitting
-
-library(rmsb)
+pcontrast_arg <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.940
+)
 
 model_qol <- blrm(
   formula = y ~ tx + rcs(week, 4) + yprev * gap + ecog_fstcnt + diagnosis,
+  pcontrast = pcontrast_arg,
   data = data_survivors,
   ppo = ~week,             # Allow week effect to be non-proportional
   cppo = function(y) y,    # Constraint: non-proportionality linear in y
@@ -731,6 +736,14 @@ Key assumptions
 :::
 
 Given these assumptions, especially assumptions six to eight, we have **low confidence** in the results. Nevertheless, we believe that other analysis options we have explored are less optimal and would lead us to have very low confidence.
+
+#### Visualization of Estimate (QoL)
+
+We will visualize the SOPs and $\tau_{QoL}$ as shown below.
+
+![Marginal state occupancy probabilities (SOP) with 95% credible bands based the model fitted to a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 0.9$ weeks).](img/qol-primary-estimand-sop-line.svg){#fig-qol-sops}
+
+![Posterior distribution of the primary estimand, difference in weeks with good or better quality of life ($\tau_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 0.9$ weeks). Larger values favour the group invited to the SAT.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
 
 #### Simulation Study Summary (QoL)
 
@@ -858,7 +871,7 @@ Where:
 #### Prior Specifications
 
 -   **Intercepts** ($\alpha_j$): Priors are induced by a Dirichlet(0.392) distribution on the baseline cell probabilities, as recommended by the `rmsb` package for 5 outcome levels.
--   Treatment Parameter ($\\beta_{tx}$): We used prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that a prior of $\mathcal{N}(0, 0.541)$ for $\beta_{tx}$ produces a prior distribution for $\tau_{TAOOH}$ with a median at 0 weeks (no difference). This prior places 80% of its mass on $\beta_{tx}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which our simulations mapped to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately $[-6.0, +3.0]$.
+-   Treatment Parameter ($\beta_{tx}$): We used prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that a prior of $\mathcal{N}(0, 0.541)$ for $\beta_{tx}$ produces a prior distribution for $\tau_{TAOOH}$ with a median at 0 weeks (no difference). This prior places 80% of its mass on $\beta_{tx}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which our simulations mapped to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately $[-6.0, +3.0]$.
 -   **Fixed Effects Coefficients** ($\beta$​): All fixed-effect regression coefficients are assigned a weakly informative Normal(0, 100) prior (default in `rmsb`).
 -   **Random Effect Standard Deviation** ($\sigma_{\gamma}$​): The standard deviation of the random intercepts is given a Half-Normal(0, 1) prior (default in `rmsb`).
 
@@ -879,14 +892,20 @@ The model will be fitted using the `blrm` function from the `rmsb` package, incl
 ```{r toh-model-code}
 #| eval: FALSE 
 #| echo: TRUE
-
-library(rmsb) 
+pcontrast_arg <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.541
+)
 
 model_taooh <- blrm(
     formula = y ~ tx + rcs(week, 4) + yprev + ypprev + 
                 week %ia% yprev + week %ia% ypprev + 
                 ecog_fstcnt + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + 
                 cluster(id),
+    pcontrast = pcontrast_arg,
     data = data_toh,
     iter = 4000, chains = 4, seed = 68818,
 )
@@ -906,9 +925,17 @@ model_taooh <- blrm(
 
 To validate that our model adequately captures the complex longitudinal dependency in the TAOOH data, we will perform graphical checks. We will compare the empirical correlation structure of the observed weekly states against the correlation structure of data simulated from the fitted model. This comparison will be visualized using Spearman correlation heatmaps (@fig-corr-heat-comp) and variograms (@fig-var-heat-comp). This diagnostic check is possible for the TAOOH outcome because it is measured as a complete weekly series; a similar check is not feasible for the QoL endpoint due to its sparse and irregular data collection. The code used for the diagnostics can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/6-model-correlation-plots.pdf).
 
-![The left plot (A) shows the Spearman correlation between outcomes on each par of study weeks using historical data. The correlation is high for nearby weeks, but quickly decays during the first 9 weeks. The right plot (B) uses simulated data from the fitted model, resampling baseline covariates. We observe a decent match, indicating that our model is able to capture the correlation structure.](img/fig-sim-cor-heat-comparison.svg){#fig-corr-heat-comp}
+![Panel (A) shows the Spearman correlation between outcomes on each par of study weeks using historical data. The correlation is high for nearby weeks, but quickly decays during the first 9 weeks. Panel (B) uses simulated data from the fitted model, resampling baseline covariates. We observe a decent match, indicating that our model is able to capture the correlation structure.](img/fig-sim-cor-heat-comparison.svg){#fig-corr-heat-comp}
 
 ![Comparison of variograms, which plot the mean Spearman correlation (y-axis) against the time lag in weeks between measurements (x-axis). Panel (A), using historical data, shows the empirical correlation decaying as the time lag increases. Panel (B) shows the same plot for data simulated from the fitted model. The close alignment between the two plots suggests that the model effectively captures the decay in correlation over time.](img/fig-hosp-weekly-variogram-comparison.svg){#fig-var-heat-comp}
+
+#### Visualization of Estimate (TAOOH)
+
+We will visualize the SOPs and $\tau_{TAOOH}$ as shown below.
+
+![The left plot shows the empirical state occupancy probabilities (SOP) based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). The right plot shows the marginalized SOPs derived from the fitted model with 95 per cent credible bands.](img/taooh_sop_comp.svg){#fig-taooh-sops}
+
+![Posterior distribution of the primary estimand, difference in weeks alive and out of hospital ($\tau_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the SAT.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
 
 #### Frequentist Operating Characteristics (TAOOH)
 
@@ -967,8 +994,6 @@ As a simple illustrative example, assume ctDNA guided management only improves Q
 
 Results will be reported according to CONSORT guidelines where applicable, adapted for the SAT design. Analyses will follow the ITT principle (based on selection status). Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% CrI). \[Details TBD\].
 
-# References
-
 {{< pagebreak >}}
 
 # Appendices
@@ -1020,3 +1045,5 @@ The unconditionalization process proceeds as follows:
     $$
 
 This $S_j(l)$ is the marginal probability at time $j$ and is the state occupancy probability $P(Y_j = l | X, y_{-1}, y_0)$ for the given baseline conditions. This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history. The code that implements these calculations can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/12-estimand.pdf).
+
+{{< pagebreak >}}
