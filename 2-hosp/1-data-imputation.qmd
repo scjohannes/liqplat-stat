@@ -38,12 +38,37 @@ df_raw <- read_parquet(here("data", "long_data.parquet"))
 # remove observations after day 182
 # lump factor variables according to frequency to have a maximum of 5 levels
 
+# create random group allocation in historical data
+tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)
+
+df_raw <- df_raw |> 
+  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
+
+
+imputation_vars <- c(
+  "pat_id",
+  "tx",
+  "gender",
+  "ecog_fstcnt",
+  "diagnosis",
+  "age", 
+  "albumin",
+  "bilirubin", 
+  "c_reactive_protein",	
+  "lactate_dehydrogenase",
+  "day", 
+  "in_hospital", 
+  "unplanned_stay",
+  "er_visit",
+  "death"
+)
+
 df <- df_raw |> 
-  select(-c(randomselect_liqplat, offerpart_liqplat, icf_reg, q29, q30, QL2_trans, PF2_trans, PF2_trans_imput,diagnosis_details, y, leukocytes, lymphocytes_relative)) |> 
+  select(all_of(imputation_vars)) |> 
   mutate(
     diagnosis = fct_lump_n(diagnosis, n = 4),
     diagnosis = factor(as.integer(diagnosis)),    
-    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:3, ordered = TRUE),
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:3, ordered = TRUE), #in liqplat might be enough patients with 4 levels
     in_hospital = case_when(
         in_hospital == 1 ~ TRUE, 
         TRUE ~ FALSE),
@@ -57,13 +82,11 @@ df <- df_raw |>
   filter(day < 183) |>
   group_by(pat_id) |>
   mutate(
-    n_blood_products_all = sum(as.numeric(n_blood_products), na.rm = T),
     survival_time = max(day),
     died = if_else(any(death == 1), 1, 0)
   ) |> 
-  arrange(pat_id, day) |> 
   ungroup() |> 
-  select(-n_blood_products)
+  arrange(pat_id, day)
 ```
 
 ### Add Nelson-Aalen-estimates, "Randomize"
@@ -81,18 +104,19 @@ na_est <- cbind(na_df$pat_id, nelsonaalen(na_df, timevar = survival_time, status
     rename(pat_id = V1, na_est = V2)
 
 df <- df |> 
-    left_join(na_est, by = "pat_id")
-
-# create random group allocation.
-tx <- sample(unique(df$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)
-
-df <- df |> 
-  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
+    left_join(na_est, by = "pat_id") |> 
+    select(-survival_time)
 ```
 
 ## Variables for final analysis
 
 When analyzing the trial data, we will use the following predictors for imputation and modeling:
+
+For reasons explain in:
+Mathur, Maya B., Willi Zhang, and Ilya Shpitser. 2025. “Imputation without nightMARs: Graphical Criteria for Valid Imputation of Missing Data.” https://doi.org/10.31219/osf.io/zqne9_v2.
+
+We restrict the imputation model to only include variables included in the analysis model and variables that causally affect either the incomplete variables or the missingness indicators, i.e., we do not include post-baseline variables that are not part of the analysis model.
+
 
 **Demographics and baseline clinical:**
 
@@ -114,21 +138,7 @@ When analyzing the trial data, we will use the following predictors for imputati
 
 -   `lactate_dehydrogenase` - LDH (U/L)
 
-**Healthcare utilization:**
-
--   `n_blood_products_all` - number of blood product units received over 182 days
-
-**Clinical events:**
-
--   `event_next_treatment` - indicator for starting next line of treatment
-
--   `event_progression` - indicator for disease progression
-
-**Outcome tracking:**
-
--   `died` - death indicator whether patient died within 182 days
-
--   `na_est` - Nelson-Aalen cumulative hazard estimate
+**Treatment assignment:**
 
 -   `tx` - treatment group allocation
 
@@ -136,11 +146,15 @@ When analyzing the trial data, we will use the following predictors for imputati
 
 -   `day` - day after random selection
 
--   `in_hospital` - indicator for being in hospital on that day
+-   `in_hospital` - indicator for being in hospital at a given timepoint
 
--   `er_visit` - indicator for emergency room visit on that day
+-   `unplanned_stay` - indicator for the hospital stay to be unplanned
 
-Some variables are currently not available in the dummy dataset, so the code an this list might not match.
+-   `er_visit` - indicator for emergency room visit at that timepoint
+
+-   `na_est` - Nelson-Aalen cumulative hazard estimate
+
+-   `died` - death indicator
 
 ## Multiple imputation
 
@@ -153,10 +167,6 @@ md.pattern(df)
 init <- mice(df, maxit = 0)
 pred_matrix <- init$predictorMatrix
 meth <- init$method
-
-# don't want to use survival time because we use na_est.
-pred_matrix[, "survival_time"] <- 0 # 'time' will not predict any other variable
-pred_matrix["survival_time", ] <- 0 # 'time' will not be predicted by any other variable
 
 # Use patient ID as clustering variable
 pred_matrix[, "pat_id"] <- -2
@@ -171,7 +181,6 @@ meth["albumin"] <- "2lonly.pmm"
 meth["bilirubin"] <- "2lonly.pmm" 
 meth["c_reactive_protein"] <- "2lonly.pmm"
 meth["lactate_dehydrogenase"] <- "2lonly.pmm"
-meth["n_blood_products_all"] <- "2lonly.pmm"
 meth["died"] <- "2lonly.pmm"
 meth["na_est"] <- "2lonly.pmm"
 

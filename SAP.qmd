@@ -2,6 +2,7 @@
 title: "LIQPLAT Statistical Analysis Plan"
 author: "Johannes Schwenke"
 date: today
+csl: chicago-author-date-16th-edition.csl
 format: 
   typst:
     papersize: a4
@@ -38,17 +39,17 @@ library(tinytable)
 
 ## Roles and responsibilities
 
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Name              | Affiliation                                          | Role                                            |
-+:==================+:=====================================================+:================================================+
-| Giusi Moffa       | University of Basel                                  | Trial statistician                              |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Johannes Schwenke | University of Basel and University Hospital of Basel | PhD Student                                     |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Matthias Briel    | University of Basel and University Hospital of Basel | TBD                                             |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
++-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
+| Name              | Affiliation                                          | Role                                            |                         |
++:==================+:=====================================================+:================================================+=========================+
+| Johannes Schwenke | University of Basel and University Hospital of Basel | Trial Statistician                              |                         |
++-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
+| Giusi Moffa       | Bristol-Meyers-Squibb                                | Advising Statistician                           |                         |
++-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
+| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |                         |
++-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
+| Matthias Briel    | University of Basel and University Hospital of Basel | Methodologist                                   |                         |
++-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
 
 ## Abbreviations
 
@@ -197,18 +198,18 @@ Once three patients have been randomly selected for an invitation to the trial, 
 
 ### Randomized comparison with external comparator
 
-Randomly inviting patients from a prospective research registry to the SAT enables a randomized comparison with patients who were not invited to the trial, as the data on outcomes for the latter can be obtained from routine data. As visualized in @fig-dags, invitation to the trial and the outcomes of interest have no common causes, because the decision to select a patient for invitation to the SAT was made at random.
+Randomly inviting patients from a prospective research registry to the SAT enables a randomized comparison with patients who were not invited to the trial, as the data on outcomes for the latter can be obtained from routine data. In @fig-dags $Z$ is the indicator for selection for invitation to the SAT, $A$ indicates whether a patient was invited to the stdudy *and* accepted, $S$ indicates the selection into the population who accepted the invitation, $Y$ denotes the outcome of a patient, and $U$ denotes a set of unmeasured causes $A$ and $Y$. Selection for nvitation to the trial ($Z$) and the outcomes of interest ($Y$) have no common causes, because the decision to select a patient for invitation to the SAT was made at random.
 
-As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT is not random and likely to be influenced by factors ($U$) which also cause the outcome. In other words, the patients who were selected for invitation to the SAT and patients who were not selected for invitation to the SAT are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
+As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT ($A$) is not random and likely to be influenced by factors ($U$) which also cause the outcome. If we restrict the analysis to patients who have accepted the invitation (as represented by a box around $S$), we would be conditioning on the child of a mediator, leading to collider bias. In other words, the patients who were selected for invitation to the SAT and patients who were not selected for invitation to the SAT are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
 
-Even though LIQPLAT is not strictly speaking a randomized controlled trial (RCT), when considering selection for invitation to the trial as treatment, it can be analyzed analogously to an RCT. We will therefore specify and analyze comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment.
+Even though LIQPLAT is not strictly speaking a randomized controlled trial (RCT), when considering selection for invitation to the trial as treatment, it can be analyzed analogously to an RCT. We will therefore specify and analyze comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment. An analysis of the effect of actual participation in the SAT, would require additional assumption, which are outlined in @sec-appendix-alternative-estimands.
 
 ::: {#fig-dags layout-ncol="2"}
-![Dag 1](img/DAG1.drawio.svg){#fig-dag1}
+![Dag 1](img/dag-1.b-simplified.svg){#fig-dag1}
 
-![Dag 2](img/DAG.drawio.svg){#fig-dag2}
+![Dag 2](img/dag-1.a-simplified.svg){#fig-dag2}
 
-Simplified causal diagram for the LIQPLAT trial with random selection for invitation to the SAT as Z, actual invitation I, acceptance of the invitation A, and outcome Y. U represents the unmeasured common causes of I, A and Y. S is an indicator of selection for into the population who accepted the invitation . The Z-Y association in the population who accepted the invitation (a restriction represented by the box around S in the second causal diagram) will be affected by selection bias unless all prognostic factors L are correctly identified and adjusted for.
+Simplified causal diagrams for the LIQPLAT trial. \$$Z$ represents the indicator for selection for invitation to the SAT, $A$ indicates whether a patient was invited and accepted, and $Y$ denotes the outcome. $U$ represents a set of unmeasured common causes of $A$ and $Y$. $S$ indicates selection into the population who accepted the invitation. While $Z$ and $Y$ have no common causes due to random selection, $A$ is influenced by factors ($U$) that also cause the outcome. Restricting the analysis to patients who accepted the invitation (represented by the box around $S$ in the (b) conditions on the child of a mediator, leading to collider bias.
 :::
 
 ### Outcome data
@@ -250,15 +251,37 @@ All primary analyses will be conducted within a Bayesian framework. The inferent
 
 ## Missing Data Handling {#sec-missing-data}
 
-Missing data are expected for baseline covariates and longitudinal outcomes (QoL states, TAOOH states). Death is unlikely to be missing, as the data will be obtained from a very complete registry.
+Missing data are expected for baseline covariates and longitudinal outcomes (QoL states, TAOOH states). Death is unlikely to be missing, as the data will be obtained from a very complete registry. Multiple Imputation by Chained Equations (MICE) will be used, assuming data are Missing At Random (MAR). Based on @Mathur2025-sl we restrict the imputation model to variables included in the substantative analysis or those acting causally on the missing variables or on their missingness indicator, to avoid bias. Imputations will be run using a maximum of 50 iterations for each imputed dataset. We will create $m=50$ completed datasets.
 
-Multiple Imputation by Chained Equations (MICE) will be used, assuming data are Missing At Random (MAR). Imputations will be run using a maximum of 50 iterations for each imputed dataset. We will create $m=50$ completed datasets. For QoL[^1] and TAOOH[^2] we will use multilevel imputation, with the patient identifier as the cluster variable using Predictive Mean Matching (PMM) only. For OS[^3], data will be imputed in wide format. Convergence will be assessed via trace plots, the plausibility of the imputations will assess using diagnostics graphs comparing the distribution of observed and imputed data.
+For QoL[^1] and TAOOH[^2] we will use multilevel imputation, with the patient identifier as the cluster variable using Predictive Mean Matching (PMM) only.
 
-[^1]: More details on multiple imputation strategy for the QoL outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/1-qol/1-data-imputation.pdf). The variables used for imputation are: Age at enrollment, patient sex, ECOG performance status, primary cancer diagnosis, serum albumin, C-reactive protein (CRP), total days in hospital or emergency room, number of blood product units received, indicator for starting next line of treatment, indicator for disease progression, death indicator, Nelson-Aalen cumulative hazard estimate, treatment group allocation, day of questionnaire completion, and EORTC QLQ-C30 question 30.
+[^1]: More details on multiple imputation strategy for the QoL outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/1-qol/1-data-imputation.pdf). The variables used for imputation are: age at date of random selection, patient sex, ECOG performance status, primary cancer diagnosis, serum albumin, C-reactive protein (CRP), total days in hospital or emergency room, number of blood product units received, indicator for starting next line of treatment, indicator for disease progression, death indicator, Nelson-Aalen cumulative hazard estimate, treatment group allocation, day of questionnaire completion, and EORTC QLQ-C30 question 30.
 
-[^2]: More details on multiple imputation strategy for the TOAAH outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/1-data-imputation.pdf). The variables used for imputation are: age at enrollment, patient sex, ECOG performance status, and primary cancer diagnosis, serum albumin, C-reactive protein (CRP), serum bilirubin, and lactate dehydrogenase (LDH), number of blood product units received, indicator for starting next line of new treatment and indicator for disease progression, death indicator, Nelson-Aalen cumulative hazard estimate, and treatment group allocation, and day after random selection, indicator for being in hospital, and indicator for emergency room visit.
+[^2]: More details on multiple imputation strategy for the TOAAH outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/1-data-imputation.pdf). The predictor variables includes: age at enrollment, patient sex, ECOG performance status, primary cancer diagnosis, serum albumin, C-reactive protein (CRP), serum bilirubin, lactate dehydrogenase (LDH), treatment group allocation, day after random selection, indicator for being in hospital, indicator for unplanned hospital stay, indicator for emergency room visit, death indicator, and the Nelson-Aalen cumulative hazard estimate.
 
-[^3]: More details on multiple imputation strategy for the OS outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/1-data-imputation.pdf). The variables used for imputation are: age at enrollment, patient sex, ECOG performance status, and primary cancer diagnosis, serum albumin, C-reactive protein (CRP), serum bilirubin, and lactate dehydrogenase (LDH), total days in hospital or emergency room and number of blood product units received, indicator for starting next line of new treatment and indicator for disease progression, and death indicator, Nelson-Aalen cumulative hazard estimate, and treatment group allocation.
+Baseline variables at the patient level (Level 2), such as functional status at baseline (ECOG) or baseline laboratory values, are imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster mean. A standard linear regression model is fitted to the collapsed data.
+
+$$
+Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+$$
+
+Where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents the aggregated means of longitudinal predictors.
+
+Longitudinal variables at Level 1, such as QoL states or hospitalization states, are imputed using `2l.pmm`, which fits a linear mixed-effects.
+
+$$
+Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + \beta_2 \mathbf{Z}_{ij} + u_{0j} + \epsilon_{ij}
+$$
+
+Where $Y_{ij}$ is the missing longitudinal variable for the $i$-th observation of patient $j$, $\mathbf{X}_j$ represents fixed effects (both time-varying and static), and $u_{0j} \sim N(0, \sigma^2_u)$ represents the patient-specific random intercept.
+
+For both approaches, the final imputed value is selected using Type 1 PMM, as per default in `mice`, with a donor pool of $k=5$[^3].
+
+[^3]: Distance is calculated as $d(i,j) = |\hat{y}_{obs, i} - \dot{y}_{mis, j}|$. Predictions for candidate donors ($\hat{y}_{obs}$) are calculated using the best-fit parameters ($\hat{\beta}$), while predictions for missing cases ($\dot{y}_{mis}$) use stochastic parameters ($\dot{\beta}$) drawn from the posterior distribution [see @van-Buuren2021-pc, chap. 3.4, 7.3, 7.8].
+
+For OS[^4], data will be imputed in wide format. Convergence will be assessed via trace plots, the plausibility of the imputations will assess using diagnostics graphs comparing the distribution of observed and imputed data.
+
+[^4]: More details on multiple imputation strategy for the OS outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/1-data-imputation.pdf). The variables used for imputation are: age at enrollment, patient sex, ECOG performance status, and primary cancer diagnosis, serum albumin, C-reactive protein (CRP), serum bilirubin, and lactate dehydrogenase (LDH), total days in hospital or emergency room and number of blood product units received, indicator for starting next line of new treatment and indicator for disease progression, and death indicator, Nelson-Aalen cumulative hazard estimate, and treatment group allocation.
 
 Each model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed datasets. The posterior draws for all parameters and derived estimands from the 50 analyses will be combined (stacked) to form the final posterior distribution for reliable inference [@Zhou2010-nm].
 
@@ -325,19 +348,19 @@ $\tau_{OS}$ represents the average difference in days lived within the first 182
 ### Handling of Intercurrent Events (OS) {#sec-os-intercurrent-events}
 
 ::: {tbl-colwidths="[25, 25, 50]"}
-+-------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Intercurrent Event                        | Strategy             | Rationale                                                                                                                                                                                                                                               |
-+:==========================================+:=====================+:========================================================================================================================================================================================================================================================+
-| SAT not offered after selection           | Treatment Policy     | Analyze as selected (part of A=1). Preserves ITT principle; estimates effect of the *strategy* of offering ctDNA-guided care.                                                                                                                           |
-+-------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Patient declined participation in SAT     | Treatment Policy     | Analyze as selected (part of A=1). As above.                                                                                                                                                                                                            |
-+-------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Patient changes hospital / Lost to F/U    | Censoring (if alive) | Death information is obtained via CDWH / administrative databases, minimizing informative censoring due to death ascertainment. If lost to follow-up, e.g., moved out of country, and known alive at last contact, standard survival censoring applies. |
-+-------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Control patient receives ctDNA test       | Treatment Policy     | Analyze as not selected (part of A=0). Reflects real-world practice where ctDNA may be used outside the trial context.                                                                                                                                  |
-+-------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Discontinuation of ctDNA monitoring (SAT) | Treatment Policy     | Analyze as selected (part of A=1). Adherence does not affect assignment group.                                                                                                                                                                          |
-+-------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
++---------------------------------------------+------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Intercurrent Event                          | Strategy         | Rationale                                                                                                                                                                                                                                               |
++:============================================+:=================+:========================================================================================================================================================================================================================================================+
+| SAT not offered after selection             | Treatment Policy | Analyze as selected (part of A=1). Preserves ITT principle; estimates effect of the *strategy* of offering ctDNA-guided care.                                                                                                                           |
++---------------------------------------------+------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient declined participation in SAT       | Treatment Policy | Analyze as selected (part of A=1). As above.                                                                                                                                                                                                            |
++---------------------------------------------+------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient changes country / Lost to follow-up | Censoring        | Death information is obtained via CDWH / administrative databases, minimizing informative censoring due to death ascertainment. If lost to follow-up, e.g., moved out of country, and known alive at last contact, standard survival censoring applies. |
++---------------------------------------------+------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Control patient receives ctDNA test         | Treatment Policy | Analyze as not selected (part of A=0). Reflects real-world practice where ctDNA may be used outside the trial context.                                                                                                                                  |
++---------------------------------------------+------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Discontinuation of ctDNA monitoring (SAT)   | Treatment Policy | Analyze as selected (part of A=1). Adherence does not affect assignment group.                                                                                                                                                                          |
++---------------------------------------------+------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 :::
 
 ### Analysis Method (OS)
@@ -376,13 +399,13 @@ We assume the observed data for individual $i$, which consists of a time-to-even
 
 The hazard rate $h_i(t)$ for an individual is the product of a flexible baseline hazard, $h_0(t)$, and the exponentiated effect of their covariates, $\exp(\eta_i)$.
 
--   **Baseline Hazard**: $h_0(t)$ is modeled using M-splines with 5 degrees of freedom (three internal knots). $M_k(t)$ are non-negative M-spline basis functions.[^4]
--   **Linear Predictor**: $\eta_i$ contains the intercept ($\beta_0$), the effect of treatment ($\beta_{tx} \cdot \text{tx}_i$), the effects of the categorical predictors (represented by sums over their dummy variables), and the effects of the continuous predictors. We model the prognostic effects of the continuous baseline covariates using restricted cubic splines with three knots (boundary knots at the minimum and maximum, inner knot at the median). This generates two basis functions ($B_m$ and $B_n$) for each covariate. The model thus estimates $\beta_{crp,1}$, $\beta_{crp,2}$ and $\beta_{alb,1}$, $\beta_{alb,2}$.[^5] In historical data this approach led to more precise estimates of the baseline hazards than a simple log-transformation.
+-   **Baseline Hazard**: $h_0(t)$ is modeled using M-splines with 5 degrees of freedom (three internal knots). $M_k(t)$ are non-negative M-spline basis functions.[^5]
+-   **Linear Predictor**: $\eta_i$ contains the intercept ($\beta_0$), the effect of treatment ($\beta_{tx} \cdot \text{tx}_i$), the effects of the categorical predictors (represented by sums over their dummy variables), and the effects of the continuous predictors. We model the prognostic effects of the continuous baseline covariates using restricted cubic splines with three knots (boundary knots at the minimum and maximum, inner knot at the median). This generates two basis functions ($B_m$ and $B_n$) for each covariate. The model thus estimates $\beta_{crp,1}$, $\beta_{crp,2}$ and $\beta_{alb,1}$, $\beta_{alb,2}$.[^6] In historical data this approach led to more precise estimates of the baseline hazards than a simple log-transformation.
 -   **Priors**: The model specifies Normal priors for all regression coefficients. For treatment ($\beta_{tx}$), we use a Normal(0, 0.55) prior. For all other coefficients we use Normal(0, 2.5) priors. A Dirichlet(1) prior is used for the M-spline coefficients $\gamma$. The Dirichlet prior is used because the spline coefficients are constrained by `rstanarm` to be positive and sum to 1 for identification. The Normal(0, 0.55) prior on the treatment parameter places approximately 80% probability mass on Hazard Ratios between 0.5 and 2.0, reflecting a belief that the intervention is unlikely to more than halve or double the hazard rate.
 
-[^4]: In historical data, we compared the following hazard functions: exponential, weibull, B-splines with 5 degrees of freedom (df), M-splines with 5 df, and M-splines with 10 df. The predictive performance of these models according to LOOCV did not differ substantially. We therefore chose to model the hazard using M-splines with 5 df, for more flexibility should the trial data be substantially different, but more parsimony than when using 10 df. More details can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/2-model-comparisons.pdf).
+[^5]: In historical data, we compared the following hazard functions: exponential, weibull, B-splines with 5 degrees of freedom (df), M-splines with 5 df, and M-splines with 10 df. The predictive performance of these models according to LOOCV did not differ substantially. We therefore chose to model the hazard using M-splines with 5 df, for more flexibility should the trial data be substantially different, but more parsimony than when using 10 df. More details can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/2-model-comparisons.pdf).
 
-[^5]: While we refer to these as restricted cubic splines, the model was fit using the natural spline function, `ns()`, from the R `splines` package. This function implements the same model (a cubic spline restricted to be linear in the tails) but uses a B-spline basis. We chose to do this, as the truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
+[^6]: While we refer to these as restricted cubic splines, the model was fit using the natural spline function, `ns()`, from the R `splines` package. This function implements the same model (a cubic spline restricted to be linear in the tails) but uses a B-spline basis. We chose to do this, as the truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
 
 #### Implementation
 
@@ -483,9 +506,9 @@ rmst_results <- data.frame(rmst_0, rmst_1, rmst_diff)
 
 ### Data
 
-In LIQPLAT, Quality of Life (QoL), measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^6] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
+In LIQPLAT, Quality of Life (QoL), measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^7] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
 
-[^6]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
+[^7]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
 
 > How would you rate your overall [quality of life]{.underline} during the past week?
 
@@ -507,9 +530,9 @@ eortc_table |>
   tt(width = 1)
 ```
 
-For modeling purposes, we invert the scale. We will also assume that the categories that are not labeled according to EORTC can be labeled as follows:[^7]
+For modeling purposes, we invert the scale. We will also assume that the categories that are not labeled according to EORTC can be labeled as follows:[^8]
 
-[^7]: We acknowledge that not everyone would assign precisely these labels, but believe them to be agreeable to the majority of patients. The labels will serve for easier communication of results.
+[^8]: We acknowledge that not everyone would assign precisely these labels, but believe them to be agreeable to the majority of patients. The labels will serve for easier communication of results.
 
 ```{r}
 #| echo: false
@@ -652,35 +675,35 @@ Where:
 
 -   $\alpha_j$: Category-specific intercepts (cutpoints).
 -   $\eta_{it}$: Linear predictor for effects assuming proportional odds (PO).
-    -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).[^8]
-    -   $f(\text{week}_t)$: Flexible function of study week[^9] modeled as a restricted cubic spline with 4 knots.[^10]
-    -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^11]
-    -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^12]
+    -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).[^9]
+    -   $f(\text{week}_t)$: Flexible function of study week[^10] modeled as a restricted cubic spline with 4 knots.[^11]
+    -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^12]
+    -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^13]
     -   $\beta_{\text{yprev}=k \times \text{gap}}$: Interaction between previous state and time gap.
-    -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^13]
+    -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^14]
 -   $\gamma_{it,j}$: Models deviation from PO for the effect of time. We allow the effect of time to be non-proportional, constrained to be linear in the outcome category $j$. $\tau$ is the non-proportional odds parameter for time.
 
-[^8]: A treatment effect, if present, is unlikely to be constant over time. CtDNA sampling can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
+[^9]: A treatment effect, if present, is unlikely to be constant over time. CtDNA sampling can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
 
-[^9]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 weekly transitions vs. 182 daily transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
+[^10]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 weekly transitions vs. 182 daily transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
 
-[^10]: This function is parameterized into $p=3$ components: one for the linear trend and two for the nonlinear adjustments. This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
+[^11]: This function is parameterized into $p=3$ components: one for the linear trend and two for the nonlinear adjustments. This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
 
-[^11]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, an interaction of the six-level categorical variable `yprev` with flexibly modeled time would use too many degrees of freedom, given our sample size.
+[^12]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, an interaction of the six-level categorical variable `yprev` with flexibly modeled time would use too many degrees of freedom, given our sample size.
 
-[^12]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
+[^13]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
 
-[^13]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
+[^14]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
 
 #### Prior Specifications
 
--   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^14] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^15]
+-   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^15] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^16]
 -   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.940)$ on $\beta_{tx}$ produces a prior a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has $80\%$ of its prior mass between $[-6.0, +4.0]$.
 -   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (Default priors in `rmsb`).
 
-[^14]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
+[^15]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
 
-[^15]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
+[^16]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
 
 #### Implementation
 
@@ -877,9 +900,9 @@ Where:
 
 #### Rationale for selecting the second‑order model and interactions
 
-Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^16]
+Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^17]
 
-[^16]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+[^17]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
 
 #### Rationale for Random Intercepts
 
@@ -998,7 +1021,15 @@ Results will be reported according to CONSORT guidelines where applicable, adapt
 
 # Appendices
 
-## Appendix A: QoL Interval Censoring Investigation {#sec-appendix-qol-censoring .appendix}
+## Alternative Estimands {#sec-appendix-alternative-estimands .appendix}
+
+While the primary analysis defines the treatment as the random selection for invitation, an alternative estimand of clinical interest is the average causal effect of the intervention among patients who actually accepted the invitation.
+
+We consider an extended causal diagram, where $Z$ denotes random selection for invitation to the SAT, $I$ denotes invitation to the SAT, $A$ denotes acceptance of said invitation, and $Y$ denotes the coutome. $S$ is an indicator for selection into the population which accepted the invitation. $L_1$ and $L_2$ are measured (baseline) covariates which capture the effects of the unmeasured causes $U$ on $A$ and $I$. By adjusting for $L_1$ and $L_2$, we could block the paths $Z \rightarrow \boxed{S} \leftarrow I \leftarrow L_1 \leftarrow U \rightarrow Y$ and $Z \rightarrow \boxed{S} \leftarrow A \leftarrow L_2 \leftarrow U \rightarrow Y$. However, we have not evaluated / assessed whether our routine data adequately captures $L_1$ and $L_2$ and therefore do not plan to estimate this estimand.
+
+![Extended causal diagram for alternative estimands. $Z$ denotes random selection, $I$ denotes actual invitation, and $A$ denotes acceptance. $U$ represents unmeasured common causes of the treatment process and the outcome $Y$. $L_1$​ and $L_2$​ are measured covariates that act as mediators for $U$; $L_1$ predicts the actual invitation, while $L_2$​ predicts acceptance. $S$ represents the selection into the analyzed population.](img/dag-appendix.svg){#fig-dag-appendix}
+
+## QoL Interval Censoring Investigation {#sec-appendix-qol-censoring .appendix}
 
 ### Background
 
@@ -1018,7 +1049,7 @@ The interval censoring approach led to a substantial overestimation of the cumul
 
 Due to this potential for significant bias with sparse intermediate data, the interval censoring approach was deemed unsuitable for the primary QoL analysis, leading to the adoption of the Principal Stratum approach with its specific assumptions.
 
-## Appendix B: TAAOH State Occupancy Probabilities {#sec-appendix-taaoh .appendix}
+## TAAOH State Occupancy Probabilities {#sec-appendix-taaoh .appendix}
 
 The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order process, we define the SOP as $P(Y_j=k | X, y_{-1}, y_0)$, which is the probability of being in state $k$ at time $j$, conditional on a set of baseline covariates $X$ and the two baseline states, $y_{-1}$ (state at time $j=-1$) and $y_0$ (state at time $j=0$).
 
