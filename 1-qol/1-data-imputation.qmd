@@ -1,15 +1,19 @@
 ---
-title: QoL - Data imputation
+title: "Multiple Imputation Strategy for Quality of Life (QoL) Outcome"
 format: 
   typst:
     papersize: a4
     margin:
       x: 2cm
       y: 2.5cm
-    toc: false
+    toc: true
     columns: 1
     tbl-cap-location: bottom
 ---
+
+## Overview
+
+This document describes the multiple imputation strategy for the Quality of Life (QoL) outcome in the LIQPLAT trial. The approach uses Multiple Imputation by Chained Equations (MICE) with multilevel predictive mean matching (PMM) to handle missing data under the Missing At Random (MAR) assumption.
 
 ## Setup
 
@@ -23,230 +27,250 @@ library(miceadds)
 library(arrow)
 ```
 
-## Load data
+## Data
 
-These are historic data from patients of the Division of Medical Oncology at USB, which had their first appointment from 2023 to mid 2025, i.e., before LIQPLAT started. The data are not publicly available.
+The following code uses historical data from the Division of Medical Oncology at USB (first appointments from 2023 to mid-2024, prior to LIQPLAT initiation). These data are used to develop and validate the imputation procedure; actual trial data are not publicly available.
 
 ```{r}
 set.seed(1234)
-df <- read_parquet(here("data", "alt_qol.parquet"))
+df_raw <- read_parquet(here("data", "alt_qol.parquet"))
 ```
 
-### Simplify some baseline varaibles
+## Data Preprocessing
+
+### Inclusion Criteria
+
+The substantive analysis model includes only patients who survived beyond 182 days. To maintain congruence between the imputation and analysis models, we restrict the imputation dataset to:
+
+1.  Observations up to day 182 after random selection
+2.  Patients who either have no recorded death or died after day 182
+
+### Variable Transformations
+
+Ordered factors (ECOG, QoL, distress) are converted to numeric format for imputation. This avoids sparse dummy variable matrices that can cause convergence issues in MICE. Predictive mean matching preserves the discrete nature of these variables by imputing only observed values.
 
 ```{r}
-# remove observations after day 182
-# lump factor variables according to frequency to have a maximum of 5 levels
+tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df_raw$pat_id)), replace = FALSE)
 
-df <- df |> 
-  group_by(pat_id) |> 
-  filter(quest_day <= 182) |> 
-  ungroup() |> 
+imputation_vars <- c(
+  "pat_id",
+  "tx",
+  "gender",
+  "age", 
+  "ecog_fstcnt",
+  "diagnosis",
+  "plan_fstcnt_coded",
+  "week",
+  "distress",
+  "q30"
+  # Variables available in trial data but not in historical dataset:
+  # "albumin",
+  # "c_reactive_protein"
+)
+
+df <- df_raw |> 
+  filter(quest_day <= 182, (is.na(death_day) | death_day >= 182)) |>
   mutate(
+    tx = if_else(pat_id %in% tx, "1", "0"),
+    distress = as.numeric(as.factor(coalesce(distress_therm_2, distress_therm_v2, distress_therm_inpat)), ordered = TRUE),
+    week = ceiling(quest_day / 7),
     diagnosis = fct_lump_n(diagnosis, n = 4),
     diagnosis = factor(as.integer(diagnosis)),
     plan_fstcnt_coded = fct_lump_n(plan_fstcnt_coded, n = 4),
     plan_fstcnt_coded = factor(as.integer(plan_fstcnt_coded)),
-    status    = if_else(!is.na(death_day) & death_day <= 182, 1, 0),
-    time      = if_else(!is.na(death_day) & death_day <= 182, death_day, 182),
-    q30       = factor(q30, levels = 1:7, ordered = TRUE),    
-    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:4, ordered = TRUE),
+    q30       = as.numeric(as.character(q30)),    
+    ecog_fstcnt = as.numeric(as.character(ecog_fstcnt)),
+    tx = factor(tx)
     ) |> 
-  select(pat_id, pat_age, gender, ecog_fstcnt, diagnosis, plan_fstcnt_coded, time, status, quest_day, q30) |> 
-  arrange(pat_id, quest_day)
+  rename(age = pat_age) |> 
+  select(all_of(imputation_vars)) |> 
+  arrange(pat_id, week)
+
+# Extract baseline QoL: last observation at or before random selection (week <= 0)
+baseline_qol <- df |> 
+  filter(week <= 0) |> 
+  select(pat_id, q30, week) |>
+  group_by(pat_id) |>
+  arrange(desc(week)) |>
+  slice_head(n = 1) |> 
+  ungroup() |> 
+  select(pat_id, baseline_q30 = q30)
+
+df <- df |>
+  left_join(baseline_qol, by = "pat_id") |> 
+  filter(week > 0) |> 
+  relocate(baseline_q30, ecog_fstcnt, diagnosis, plan_fstcnt_coded, .after = pat_id)
+
+# Model non-linear time effects using restricted cubic splines with 4 knots
+basis_rcs <- rms::rcs(df$week, 4)
+
+df$week <- as.vector(basis_rcs[, 1])
+df$week_nl1 <- as.vector(basis_rcs[, 2])
+df$week_nl2 <- as.vector(basis_rcs[, 3])
 ```
 
-## Variables for final analysis
+## Imputation Variables {#sec-variables}
 
-When analyzing the trial data, we will use the following predictors for imputation and modeling:
+The imputation model includes variables from the substantive analysis model and auxiliary variables that are predictive of missing values or their missingness mechanism \[Mathur2025-sl; van-Buuren2021-pc\].
 
-**Demographics and baseline clinical:**
+### Analysis Variables
 
--   `tx` - treatment group allocation
+| Variable | Description | Level |
+|------------------------|-------------------------------|------------------|
+| `tx` | Treatment group allocation | Baseline |
+| `age` | Age at date of random selection (years) | Baseline |
+| `gender` | Patient sex | Baseline |
+| `ecog_fstcnt` | ECOG performance status at baseline (0–4) | Baseline |
+| `diagnosis` | Primary cancer diagnosis (5 categories) | Baseline |
+| `baseline_q30` | EORTC QLQ-C30 Q30 at baseline | Baseline |
+| `week` | Week of questionnaire completion (post-random selection) | Longitudinal |
+| `q30` | EORTC QLQ-C30 question 30 (overall QoL, 1–7) | Longitudinal |
 
--   `pat_age` - age at enrollment
+: Analysis variables included in the imputation model {#tbl-analysis-vars}
 
--   `gender` - patient sex
+### Auxiliary Variables
 
--   `ecog_fstcnt` - ECOG performance status (ordered factor: 0-4)
+| Variable | Description | Level |
+|------------------------|-------------------------------|------------------|
+| `distress` | Distress thermometer score (0–10) | Longitudinal |
+| `plan_fstcnt_coded` | Treatment intent at baseline (5 categories) | Baseline |
+| `albumin` | Serum albumin at baseline (g/L) | Baseline |
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L) | Baseline |
 
--   `diagnosis` - primary cancer diagnosis (lumped to 5 most frequent categories)
+: Auxiliary variables included in the imputation model. Albumin and CRP are available in trial data but not in the historical dataset used here. {#tbl-auxiliary-vars}
 
-**Laboratory values:**
+## Multiple Imputation Procedure {#sec-imputation}
 
--   `albumin` - serum albumin (g/L)
+We employ multilevel multiple imputation to account for the hierarchical data structure, where repeated QoL measurements (Level 1) are nested within patients (Level 2). The patient identifier (`pat_id`) serves as the clustering variable.
 
--   `c_reactive_protein` - CRP (mg/L)
+### Imputation Methods
 
-**Healthcare utilization:**
+**Baseline variables** (Level 2) are imputed using `2lonly.pmm` from the `miceadds` package. This method:
 
--   `n_stay_plus_ER` - total days in hospital or emergency room
+1.  Aggregates longitudinal predictors to the cluster level by computing patient means
 
--   `n_blood_products_all` - number of blood product units received
+2.  Fits a linear regression model on the collapsed data: 
+$$
+    Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+$$
 
-**Clinical events:**
+    where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents aggregated means of longitudinal predictors
 
--   `event_next_treatment` - indicator for starting next line of treatment
+3.  Selects imputed values via predictive mean matching
 
--   `event_progression` - indicator for disease progression
+**Longitudinal variables** (Level 1) are imputed using `2l.pmm`, which fits a linear mixed-effects model: 
+$$
+Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}
+$$
 
-**Outcome:**
+where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
 
--   `status` - death indicator
+For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ \[van-Buuren2021-pc, chapters 3.4, 7.3, 7.8\].
 
--   `na_est` - Nelson-Aalen cumulative hazard estimate
+### Predictor Matrix Configuration
 
-**Longitudinal outcome:**
+The predictor matrix is configured to:
 
--   `quest_day` - day of questionnaire completion
-
--   `q30` - EORTC QLQ-C30 overall quality of life (ordered factor: 1-7)
-
-The laboratory values and healthcare utilization variables are currently unavailable in the dummy dataset.
-
-### Add Nelson-Aalen-estimates, Randomize, and add missing on day 0
-
-We need to consider the day of random selection as day 0, otherwise we immortalize patients. This creates an new problem: people who die before the day of their first contact, even though they were randomly selected, would be deleted from the analysis dataset because of a missing yprev before their death observation. Because we need to get an accurate cumulative incidence for death, we need to impute a plausible QoL value for these patients before their death, e.g., at the day of random selection. We also need a value for day 0 for the marginalization. MI is probably better than carrying the first observed value backwards.
-
-I expect that 50% of patients are randomized on their date of first contact, and 50% before, but that death before the first contact will be exceedingly rare.
-
-```{r}
-# nelason alen estimator
-df_na_est <- df  |> select(pat_id, time, status)  |> distinct()
-
-na_est <- nelsonaalen(df_na_est, timevar = time, statusvar = status)
-na_est <- tibble(pat_id = df_na_est$pat_id, na_est)
-
-df <- df |> left_join(na_est, by = "pat_id")
-
-
-# create random group allocation.
-tx <- sample(unique(df$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)
-
-df <- df |> 
-  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
-
-
-id_cols <- c(
-  "pat_id", "pat_age", "gender", "ecog_fstcnt", "diagnosis",
-  "plan_fstcnt_coded", "time", "status", "na_est", "tx"
-)
-
-# ensure that everyone has a questionnaire at baseline
-empty_obs <- df |>
-    group_by(pick(all_of(id_cols))) |> 
-    complete(quest_day = union(quest_day, 0)) |> 
-    ungroup() |> 
-    mutate(week = ceiling(quest_day/7))  
-```
-
-## Multiple imputation
-
-Baseline values will be imputed at the patient (cluster level). This ensures that only one value per multiple rows of missing data for a single patient is imputed. We akso impute missing responses to q30.
+-   Use `pat_id` as the clustering variable (coded as $-2$)
+-   Prevent time variables from predicting static baseline variables
+-   Allow baseline variables to predict longitudinal outcomes
 
 ```{r}
 #| output: false
-md.pattern(empty_obs)
+md.pattern(df)
 
-init <- mice(empty_obs, maxit = 0)
+init <- mice(df, maxit = 0)
 pred_matrix <- init$predictorMatrix
 meth <- init$method
 
-# don't want to use survival time because we use na_est.
-pred_matrix[, "time"] <- 0 # 'time' will not predict any other variable
-pred_matrix["time", ] <- 0 # 'time' will not be predicted by any other variable
-meth["time"] <- "" 
-
-# Use patient ID as clustering variable
+# Set patient ID as clustering variable
 pred_matrix[, "pat_id"] <- -2
+pred_matrix["pat_id", ] <- 0
 
-# Impute individual q30 at the questionnaire level
+# Time variables should not predict static baseline variables
+baseline_vars <- c("tx", "age", "gender", "diagnosis", "ecog_fstcnt", "plan_fstcnt_coded", "baseline_q30")
+pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
+
+# Longitudinal variables: multilevel PMM
 meth["q30"] <- "2l.pmm"
+meth["distress"] <- "2l.pmm"
 
-
-# use mean matching at the cluster level for baseline observations
-# this ensures only one ecog per patient per imputation
+# Baseline variables: cluster-level PMM
 meth["ecog_fstcnt"] <- "2lonly.pmm"
 meth["plan_fstcnt_coded"] <- "2lonly.pmm"
 meth["diagnosis"] <- "2lonly.pmm"
+meth["baseline_q30"] <- "2lonly.pmm"
 
 
-imputed_data <- mice(empty_obs,
-                     m = 20, # 50 in final analysis
-                     maxit = 50,
+imputed_data <- mice(df,
+                     m = 5,        # 50 in final analysis
+                     maxit = 5,    # 50 in final analysis
                      predictorMatrix = pred_matrix,
                      method = meth,
+                     donors = 5,
                      seed = 78109823)
 ```
 
-## Diagnostics
+### Imputation Parameters
 
-The diagnostics look fine to me.
+For the final trial analysis:
 
-```{r}
+-   Number of imputed datasets: $m = 50$
+-   Maximum iterations: 50
+-   Donor pool size: $k = 5$
+
+## Convergence Diagnostics {#sec-diagnostics}
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
 plot(imputed_data)
-densityplot(imputed_data, ~q30 + ecog_fstcnt + diagnosis + plan_fstcnt_coded)
+```
+
+## Distribution Diagnostics {#sec-distribution}
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for baseline variables and QoL."
+densityplot(imputed_data, ~baseline_q30 + q30 + ecog_fstcnt + diagnosis + plan_fstcnt_coded)
 ```
 
 ```{r}
-#| echo: false
-plot_proportions <- function(mids_obj, var) {
-  # Get original data with missingness indicator
-  orig <- mids_obj$data |> 
-    mutate(imputed = is.na(!!sym(var)))
-  
-  # Get completed data for ALL imputations
-  comp <- complete(mids_obj, "long", include = FALSE)
-  
-  # Calculate proportions for observed data
-  orig_props <- orig |> 
-    filter(!imputed) |> 
-    count(!!sym(var)) |> 
-    mutate(prop = n/sum(n))
-  
-  # Calculate proportions for imputed values in each imputation
-  imp_props <- comp |> 
-    semi_join(orig |> filter(imputed), by = "pat_id") |> 
-    group_by(.imp) |> 
-    count(!!sym(var)) |> 
-    mutate(prop = n/sum(n)) |> 
-    ungroup()
-  
-  # Plot
-  ggplot() +
-    geom_col(data = orig_props, 
-             aes(x = !!sym(var), y = prop), 
-             fill = "gray70", alpha = 0.7, width = 0.7) +
-    geom_point(data = imp_props, 
-               aes(x = !!sym(var), y = prop),
-               color = "steelblue",
-               position = position_jitter(width = 0.1, height = 0), 
-               size = 2, alpha = 0.6) +
-    labs(title = paste("Distribution of", var),) +
-    theme_minimal()
-}
-
-p1 <- plot_proportions(imputed_data, "ecog_fstcnt")
-p2 <- plot_proportions(imputed_data, "diagnosis")
-p3 <- plot_proportions(imputed_data, "plan_fstcnt_coded")
-p4 <- plot_proportions(imputed_data, "q30")
-
-p1 + p2 + p3 + p4 + plot_layout(ncol = 2)
+#| fig-cap: "Strip plots of imputed values for baseline variables across imputed datasets."
+stripplot(imputed_data, baseline_q30 + ecog_fstcnt + diagnosis + plan_fstcnt_coded ~ .imp)
 ```
 
-## Select one imputation
-
-For the analysis of the trial data we will use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup.
-
-We can see that we have data for most days of follow-up, with a bit of scarcity from day 125 to day 150.
+```{r}
+#| fig-cap: "Scatter plots of QoL against time, by imputed dataset and treatment group, and against baseline QoL."
+xyplot(imputed_data, q30 ~ week | .imp, pch = c(1, 20))
+xyplot(imputed_data, q30 ~ week | tx, pch = c(1, 20))
+xyplot(imputed_data, q30 ~ baseline_q30 | .imp, pch = c(1, 20))
+```
 
 ```{r}
+#| fig-cap: "Scatter plot of QoL against distress thermometer score by imputed dataset."
+xyplot(imputed_data, q30 ~ distress | .imp, pch = c(1, 20))
+```
+
+## Analysis of Trial Data
+
+For the final trial analysis, all $m = 50$ imputed datasets will be analysed, and posterior draws will be stacked to propagate imputation uncertainty into the final inference.
+
+## Simulation Study Dataset
+
+For simulation studies, a single completed dataset is extracted. This is computationally necessary but does not reflect the full imputation uncertainty.
+
+```{r}
+#| fig-cap: "Distribution of QoL scores over time in the selected completed dataset."
 complete_data <- complete(imputed_data, 4)
 
 complete_data |> 
   mutate(q30 = as.numeric(q30)) |> 
-  ggplot(aes(x = quest_day, y = q30)) +
-  geom_point()
+  ggplot(aes(x = week, y = q30)) +
+  geom_point(alpha = 0.5) +
+  labs(x = "Week", y = "QoL (Q30)")
 ```
 
 ## Export
