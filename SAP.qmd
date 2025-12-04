@@ -10,6 +10,7 @@ format:
       x: 2cm
       y: 2.5cm
     toc: true
+    toc-depth: 2
     section-numbering: 1.1.1.1
     columns: 1
     tbl-cap-location: bottom
@@ -39,17 +40,17 @@ library(tinytable)
 
 ## Roles and responsibilities
 
-+-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
-| Name              | Affiliation                                          | Role                                            |                         |
-+:==================+:=====================================================+:================================================+=========================+
-| Johannes Schwenke | University of Basel and University Hospital of Basel | Trial Statistician                              |                         |
-+-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
-| Giusi Moffa       | Bristol-Meyers-Squibb                                | Advising Statistician                           |                         |
-+-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
-| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |                         |
-+-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
-| Matthias Briel    | University of Basel and University Hospital of Basel | Methodologist                                   |                         |
-+-------------------+------------------------------------------------------+-------------------------------------------------+-------------------------+
++-------------------+------------------------------------------------------+-------------------------------------------------+------------+
+| Name              | Affiliation                                          | Role                                            |            |
++:==================+:=====================================================+:================================================+============+
+| Johannes Schwenke | University of Basel and University Hospital of Basel | Trial Statistician                              |            |
++-------------------+------------------------------------------------------+-------------------------------------------------+------------+
+| Giusi Moffa       | Bristol-Meyers-Squibb                                | Advising Statistician                           |            |
++-------------------+------------------------------------------------------+-------------------------------------------------+------------+
+| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |            |
++-------------------+------------------------------------------------------+-------------------------------------------------+------------+
+| Matthias Briel    | University of Basel and University Hospital of Basel | Methodologist                                   |            |
++-------------------+------------------------------------------------------+-------------------------------------------------+------------+
 
 ## Abbreviations
 
@@ -251,39 +252,55 @@ All primary analyses will be conducted within a Bayesian framework. The inferent
 
 ## Missing Data Handling {#sec-missing-data}
 
-Missing data are expected for baseline covariates and longitudinal outcomes (QoL states, TAOOH states). Death is unlikely to be missing, as the data will be obtained from a very complete registry. Multiple Imputation by Chained Equations (MICE) will be used, assuming data are Missing At Random (MAR). Based on @Mathur2025-sl we restrict the imputation model to variables included in the substantative analysis or those acting causally on the missing variables or on their missingness indicator, to avoid bias. Imputations will be run using a maximum of 50 iterations for each imputed dataset. We will create $m=50$ completed datasets.
+Missing data are expected for baseline covariates, longitudinal QoL states, and exceptionally for TAOOH states. Death is unlikely to be missing, as the data will be obtained from a very complete registry. We will use Multiple Imputation by Chained Equations (MICE), assuming data are Missing At Random (MAR). Based on @Mathur2025-sl we restrict the imputation model to variables included in the substantative analysis or those acting causally on the missing variables or on their missingness indicator, to avoid bias. Imputations will be run using a maximum of 50 iterations for each imputed dataset. We will create $m=50$ completed datasets.
 
-For QoL[^1] and TAOOH[^2] we will use multilevel imputation, with the patient identifier as the cluster variable using Predictive Mean Matching (PMM) only.
+### Longitudinal Outcomes
 
-[^1]: More details on multiple imputation strategy for the QoL outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/1-qol/1-data-imputation.pdf). The variables used for imputation are: age at date of random selection, patient sex, ECOG performance status, primary cancer diagnosis, serum albumin, C-reactive protein (CRP), total days in hospital or emergency room, number of blood product units received, indicator for starting next line of treatment, indicator for disease progression, death indicator, Nelson-Aalen cumulative hazard estimate, treatment group allocation, day of questionnaire completion, and EORTC QLQ-C30 question 30.
+For QoL (details in @sec-appendix-qol-mi) and TAOOH (details in @sec-appendix-taooh-mi) we will use multilevel imputation, with the patient identifier as the cluster variable, using Predictive Mean Matching (PMM) for all variables.
 
-[^2]: More details on multiple imputation strategy for the TOAAH outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/1-data-imputation.pdf). The predictor variables includes: age at enrollment, patient sex, ECOG performance status, primary cancer diagnosis, serum albumin, C-reactive protein (CRP), serum bilirubin, lactate dehydrogenase (LDH), treatment group allocation, day after random selection, indicator for being in hospital, indicator for unplanned hospital stay, indicator for emergency room visit, death indicator, and the Nelson-Aalen cumulative hazard estimate.
+**Level 2 (Patient-Level Imputation)**
 
-Baseline variables at the patient level (Level 2), such as functional status at baseline (ECOG) or baseline laboratory values, are imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster mean. A standard linear regression model is fitted to the collapsed data.
-
-$$
-Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
-$$
-
-Where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents the aggregated means of longitudinal predictors.
-
-Longitudinal variables at Level 1, such as QoL states or hospitalization states, are imputed using `2l.pmm`, which fits a linear mixed-effects.
+Baseline variables (e.g., functional status at baseline \[ECOG\], baseline laboratory values), will be imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster (patient) mean. A linear regression model is fitted to the collapsed data.
 
 $$
-Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + \beta_2 \mathbf{Z}_{ij} + u_{0j} + \epsilon_{ij}
+Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
 $$
 
-Where $Y_{ij}$ is the missing longitudinal variable for the $i$-th observation of patient $j$, $\mathbf{X}_j$ represents fixed effects (both time-varying and static), and $u_{0j} \sim N(0, \sigma^2_u)$ represents the patient-specific random intercept.
+Where
 
-For both approaches, the final imputed value is selected using Type 1 PMM, as per default in `mice`, with a donor pool of $k=5$[^3].
+-   $Y_j$ is the missing baseline variable for patient $j$,
 
-[^3]: Distance is calculated as $d(i,j) = |\hat{y}_{obs, i} - \dot{y}_{mis, j}|$. Predictions for candidate donors ($\hat{y}_{obs}$) are calculated using the best-fit parameters ($\hat{\beta}$), while predictions for missing cases ($\dot{y}_{mis}$) use stochastic parameters ($\dot{\beta}$) drawn from the posterior distribution [see @van-Buuren2021-pc, chap. 3.4, 7.3, 7.8].
+-   $\mathbf{X}_j$ represents other baseline predictors, and
 
-For OS[^4], data will be imputed in wide format. Convergence will be assessed via trace plots, the plausibility of the imputations will assess using diagnostics graphs comparing the distribution of observed and imputed data.
+-   $\bar{\mathbf{Z}}_j$ represents the aggregated means of longitudinal predictors.
 
-[^4]: More details on multiple imputation strategy for the OS outcome can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/1-data-imputation.pdf). The variables used for imputation are: age at enrollment, patient sex, ECOG performance status, and primary cancer diagnosis, serum albumin, C-reactive protein (CRP), serum bilirubin, and lactate dehydrogenase (LDH), total days in hospital or emergency room and number of blood product units received, indicator for starting next line of new treatment and indicator for disease progression, and death indicator, Nelson-Aalen cumulative hazard estimate, and treatment group allocation.
+Longitudinal variables at Level 1, such as QoL states or hospitalization states, are imputed using `2l.pmm`, which fits a linear mixed-effects model.
 
-Each model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed datasets. The posterior draws for all parameters and derived estimands from the 50 analyses will be combined (stacked) to form the final posterior distribution for reliable inference [@Zhou2010-nm].
+$$
+Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}, \quad u_{0j} \sim N(0, \sigma^2_u), \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
+$$
+
+Where
+
+-   $Y_{ij}$ is the missing longitudinal variable for the $i$-th observation of patient $j$,
+
+-   $\mathbf{X}_j$ represents fixed effects (both time-varying and static),
+
+-   and $u_{0j} \sim N(0, \sigma^2_u)$ represents the patient-specific random intercept.
+
+For both approaches, the final imputed value is selected using Type 1 PMM, as per default in `mice`, with a donor pool of $k=5$ [^1].
+
+[^1]: Distance is calculated as $d(i,j) = |\hat{y}_{obs, i} - \dot{y}_{mis, j}|$. Predictions for candidate donors ($\hat{y}_{obs}$) are calculated using the best-fit parameters ($\hat{\beta}$), while predictions for missing cases ($\dot{y}_{mis}$) use stochastic parameters ($\dot{\beta}$) drawn from the posterior distribution [see @van-Buuren2021-pc, chap. 3.4, 7.3, 7.8].
+
+### Imputation for Suvival Analysis
+
+For OS (see details in @sec-appendix-os-mi), data will be imputed in wide format.
+
+### Diagnostics and inference
+
+Convergence will be assessed via trace plots, the plausibility of the imputations will assess using diagnostics graphs comparing the distribution of observed and imputed data.
+
+Following imputation, each analysis model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed datasets. The posterior draws for all parameters and derived estimands from the 50 analyses will be combined (stacked) to form the final posterior distribution for reliable inference [@Zhou2010-nm].
 
 ## Software
 
@@ -399,13 +416,13 @@ We assume the observed data for individual $i$, which consists of a time-to-even
 
 The hazard rate $h_i(t)$ for an individual is the product of a flexible baseline hazard, $h_0(t)$, and the exponentiated effect of their covariates, $\exp(\eta_i)$.
 
--   **Baseline Hazard**: $h_0(t)$ is modeled using M-splines with 5 degrees of freedom (three internal knots). $M_k(t)$ are non-negative M-spline basis functions.[^5]
--   **Linear Predictor**: $\eta_i$ contains the intercept ($\beta_0$), the effect of treatment ($\beta_{tx} \cdot \text{tx}_i$), the effects of the categorical predictors (represented by sums over their dummy variables), and the effects of the continuous predictors. We model the prognostic effects of the continuous baseline covariates using restricted cubic splines with three knots (boundary knots at the minimum and maximum, inner knot at the median). This generates two basis functions ($B_m$ and $B_n$) for each covariate. The model thus estimates $\beta_{crp,1}$, $\beta_{crp,2}$ and $\beta_{alb,1}$, $\beta_{alb,2}$.[^6] In historical data this approach led to more precise estimates of the baseline hazards than a simple log-transformation.
+-   **Baseline Hazard**: $h_0(t)$ is modeled using M-splines with 5 degrees of freedom (three internal knots). $M_k(t)$ are non-negative M-spline basis functions.[^2]
+-   **Linear Predictor**: $\eta_i$ contains the intercept ($\beta_0$), the effect of treatment ($\beta_{tx} \cdot \text{tx}_i$), the effects of the categorical predictors (represented by sums over their dummy variables), and the effects of the continuous predictors. We model the prognostic effects of the continuous baseline covariates using restricted cubic splines with three knots (boundary knots at the minimum and maximum, inner knot at the median). This generates two basis functions ($B_m$ and $B_n$) for each covariate. The model thus estimates $\beta_{crp,1}$, $\beta_{crp,2}$ and $\beta_{alb,1}$, $\beta_{alb,2}$.[^3] In historical data this approach led to more precise estimates of the baseline hazards than a simple log-transformation.
 -   **Priors**: The model specifies Normal priors for all regression coefficients. For treatment ($\beta_{tx}$), we use a Normal(0, 0.55) prior. For all other coefficients we use Normal(0, 2.5) priors. A Dirichlet(1) prior is used for the M-spline coefficients $\gamma$. The Dirichlet prior is used because the spline coefficients are constrained by `rstanarm` to be positive and sum to 1 for identification. The Normal(0, 0.55) prior on the treatment parameter places approximately 80% probability mass on Hazard Ratios between 0.5 and 2.0, reflecting a belief that the intervention is unlikely to more than halve or double the hazard rate.
 
-[^5]: In historical data, we compared the following hazard functions: exponential, weibull, B-splines with 5 degrees of freedom (df), M-splines with 5 df, and M-splines with 10 df. The predictive performance of these models according to LOOCV did not differ substantially. We therefore chose to model the hazard using M-splines with 5 df, for more flexibility should the trial data be substantially different, but more parsimony than when using 10 df. More details can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/2-model-comparisons.pdf).
+[^2]: In historical data, we compared the following hazard functions: exponential, weibull, B-splines with 5 degrees of freedom (df), M-splines with 5 df, and M-splines with 10 df. The predictive performance of these models according to LOOCV did not differ substantially. We therefore chose to model the hazard using M-splines with 5 df, for more flexibility should the trial data be substantially different, but more parsimony than when using 10 df. More details can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/3-survival/2-model-comparisons.pdf).
 
-[^6]: While we refer to these as restricted cubic splines, the model was fit using the natural spline function, `ns()`, from the R `splines` package. This function implements the same model (a cubic spline restricted to be linear in the tails) but uses a B-spline basis. We chose to do this, as the truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
+[^3]: While we refer to these as restricted cubic splines, the model was fit using the natural spline function, `ns()`, from the R `splines` package. This function implements the same model (a cubic spline restricted to be linear in the tails) but uses a B-spline basis. We chose to do this, as the truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
 
 #### Implementation
 
@@ -506,9 +523,9 @@ rmst_results <- data.frame(rmst_0, rmst_1, rmst_diff)
 
 ### Data
 
-In LIQPLAT, Quality of Life (QoL), measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^7] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
+In LIQPLAT, Quality of Life (QoL), measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^4] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
 
-[^7]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
+[^4]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
 
 > How would you rate your overall [quality of life]{.underline} during the past week?
 
@@ -530,9 +547,9 @@ eortc_table |>
   tt(width = 1)
 ```
 
-For modeling purposes, we invert the scale. We will also assume that the categories that are not labeled according to EORTC can be labeled as follows:[^8]
+For modeling purposes, we invert the scale. We will also assume that the categories that are not labeled according to EORTC can be labeled as follows:[^5]
 
-[^8]: We acknowledge that not everyone would assign precisely these labels, but believe them to be agreeable to the majority of patients. The labels will serve for easier communication of results.
+[^5]: We acknowledge that not everyone would assign precisely these labels, but believe them to be agreeable to the majority of patients. The labels will serve for easier communication of results.
 
 ```{r}
 #| echo: false
@@ -675,35 +692,35 @@ Where:
 
 -   $\alpha_j$: Category-specific intercepts (cutpoints).
 -   $\eta_{it}$: Linear predictor for effects assuming proportional odds (PO).
-    -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).[^9]
-    -   $f(\text{week}_t)$: Flexible function of study week[^10] modeled as a restricted cubic spline with 4 knots.[^11]
-    -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^12]
-    -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^13]
+    -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).[^6]
+    -   $f(\text{week}_t)$: Flexible function of study week[^7] modeled as a restricted cubic spline with 4 knots.[^8]
+    -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^9]
+    -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^10]
     -   $\beta_{\text{yprev}=k \times \text{gap}}$: Interaction between previous state and time gap.
-    -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^14]
+    -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^11]
 -   $\gamma_{it,j}$: Models deviation from PO for the effect of time. We allow the effect of time to be non-proportional, constrained to be linear in the outcome category $j$. $\tau$ is the non-proportional odds parameter for time.
 
-[^9]: A treatment effect, if present, is unlikely to be constant over time. CtDNA sampling can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
+[^6]: A treatment effect, if present, is unlikely to be constant over time. CtDNA sampling can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
 
-[^10]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 weekly transitions vs. 182 daily transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
+[^7]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 weekly transitions vs. 182 daily transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
 
-[^11]: This function is parameterized into $p=3$ components: one for the linear trend and two for the nonlinear adjustments. This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
+[^8]: This function is parameterized into $p=3$ components: one for the linear trend and two for the nonlinear adjustments. This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
 
-[^12]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, an interaction of the six-level categorical variable `yprev` with flexibly modeled time would use too many degrees of freedom, given our sample size.
+[^9]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, an interaction of the six-level categorical variable `yprev` with flexibly modeled time would use too many degrees of freedom, given our sample size.
 
-[^13]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
+[^10]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
 
-[^14]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
+[^11]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
 
 #### Prior Specifications
 
--   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^15] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^16]
+-   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^12] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^13]
 -   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.940)$ on $\beta_{tx}$ produces a prior a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has $80\%$ of its prior mass between $[-6.0, +4.0]$.
 -   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (Default priors in `rmsb`).
 
-[^15]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
+[^12]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
 
-[^16]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
+[^13]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
 
 #### Implementation
 
@@ -900,9 +917,9 @@ Where:
 
 #### Rationale for selecting the second‑order model and interactions
 
-Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^17]
+Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^14]
 
-[^17]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+[^14]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
 
 #### Rationale for Random Intercepts
 
@@ -1029,6 +1046,931 @@ We consider an extended causal diagram, where $Z$ denotes random selection for i
 
 ![Extended causal diagram for alternative estimands. $Z$ denotes random selection, $I$ denotes actual invitation, and $A$ denotes acceptance. $U$ represents unmeasured common causes of the treatment process and the outcome $Y$. $L_1$​ and $L_2$​ are measured covariates that act as mediators for $U$; $L_1$ predicts the actual invitation, while $L_2$​ predicts acceptance. $S$ represents the selection into the analyzed population.](img/dag-appendix.svg){#fig-dag-appendix}
 
+{{< pagebreak >}}
+
+## Multiple Imputation of Quality of Life Data {#sec-appendix-qol-mi .appendix}
+
+### Overview
+
+This appendix describes the multiple imputation strategy for the Quality of Life (QoL) outcome in the LIQPLAT trial. We use Multiple Imputation by Chained Equations (MICE) with multilevel predictive mean matching (PMM) to handle missing data under the Missing At Random (MAR) assumption.
+
+```{r}
+#| output: false
+#| echo: false
+library(here)
+library(tidyverse)
+library(patchwork)
+library(mice)
+library(miceadds)
+library(arrow)
+```
+
+### Data
+
+The following code uses historical data from the Division of Medical Oncology at USB (first appointments from 2023 to mid-2024, prior to LIQPLAT initiation). These data are used to develop and validate the imputation procedure.
+
+```{r}
+#| echo: false
+set.seed(1234)
+df_raw <- read_parquet(here("data", "alt_qol.parquet"))
+```
+
+### Data Preprocessing
+
+#### Inclusion Criteria
+
+The substantive analysis model includes only patients who survived beyond 182 days. To maintain congruence between the imputation and analysis models, we restrict the imputation dataset to:
+
+1.  Observations up to day 182 after random selection
+2.  Patients who either have no recorded death or died after day 182
+
+#### Variable Transformations
+
+Ordered factors (ECOG, QoL, distress) are converted to numeric format for imputation. This avoids sparse dummy variable matrices that can cause convergence issues in MICE. Predictive mean matching preserves the discrete nature of these variables by imputing only observed values.
+
+```{r}
+#| echo: false
+tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df_raw$pat_id)), replace = FALSE)
+```
+
+```{r}
+#| echo: false
+imputation_vars <- c(
+  "pat_id",
+  "tx",
+  "gender",
+  "age", 
+  "ecog_fstcnt",
+  "diagnosis",
+  "plan_fstcnt_coded",
+  "week",
+  "distress",
+  "q30"
+  # Variables available in trial data but not in historical dataset:
+  # "albumin",
+  # "c_reactive_protein"
+)
+
+df <- df_raw |> 
+  filter(quest_day <= 182, (is.na(death_day) | death_day >= 182)) |>
+  mutate(
+    tx = if_else(pat_id %in% tx, "1", "0"),
+    distress = as.numeric(as.factor(coalesce(distress_therm_2, distress_therm_v2, distress_therm_inpat)), ordered = TRUE),
+    week = ceiling(quest_day / 7),
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),
+    plan_fstcnt_coded = fct_lump_n(plan_fstcnt_coded, n = 4),
+    plan_fstcnt_coded = factor(as.integer(plan_fstcnt_coded)),
+    q30       = as.numeric(as.character(q30)),    
+    ecog_fstcnt = as.numeric(as.character(ecog_fstcnt)),
+    tx = factor(tx)
+    ) |> 
+  rename(age = pat_age) |> 
+  select(all_of(imputation_vars)) |> 
+  arrange(pat_id, week)
+
+# Extract baseline QoL: last observation at or before random selection (week <= 0)
+baseline_qol <- df |> 
+  filter(week <= 0) |> 
+  select(pat_id, q30, week) |>
+  group_by(pat_id) |>
+  arrange(desc(week)) |>
+  slice_head(n = 1) |> 
+  ungroup() |> 
+  select(pat_id, baseline_q30 = q30)
+
+df <- df |>
+  left_join(baseline_qol, by = "pat_id") |> 
+  filter(week > 0) |> 
+  relocate(baseline_q30, ecog_fstcnt, diagnosis, plan_fstcnt_coded, .after = pat_id)
+
+# Model non-linear time effects using restricted cubic splines with 4 knots
+basis_rcs <- rms::rcs(df$week, 4)
+
+df$week <- as.vector(basis_rcs[, 1])
+df$week_nl1 <- as.vector(basis_rcs[, 2])
+df$week_nl2 <- as.vector(basis_rcs[, 3])
+```
+
+### Imputation Variables
+
+The imputation model includes variables from the substantive analysis model and auxiliary variables which either causally affect the missing values or their missingness indicator [@Mathur2025-sl; @van-Buuren2021-pc].
+
+#### Analysis Variables
+
++----------------+----------------------------------------------------------+--------------+
+| Variable       | Description                                              | Level        |
++================+==========================================================+==============+
+| `tx`           | Treatment group allocation                               | Baseline     |
++----------------+----------------------------------------------------------+--------------+
+| `age`          | Age at date of random selection (years)                  | Baseline     |
++----------------+----------------------------------------------------------+--------------+
+| `gender`       | Patient sex                                              | Baseline     |
++----------------+----------------------------------------------------------+--------------+
+| `ecog_fstcnt`  | ECOG performance status at baseline (0–4)                | Baseline     |
++----------------+----------------------------------------------------------+--------------+
+| `diagnosis`    | Primary cancer diagnosis (5 categories)                  | Baseline     |
++----------------+----------------------------------------------------------+--------------+
+| `baseline_q30` | EORTC QLQ-C30 Q30 at baseline                            | Baseline     |
++----------------+----------------------------------------------------------+--------------+
+| `week`         | Week of questionnaire completion (post-random selection) | Longitudinal |
++----------------+----------------------------------------------------------+--------------+
+| `q30`          | EORTC QLQ-C30 question 30 (overall QoL, 1–7)             | Longitudinal |
++----------------+----------------------------------------------------------+--------------+
+
+: Analysis variables included in the imputation model {#tbl-analysis-vars}
+
+#### Auxiliary Variables
+
++----------------------+---------------------------------------------+---------------+
+| Variable             | Description                                 | Level         |
++======================+=============================================+===============+
+| `distress`           | Distress thermometer score (0–10)           | Longitudinal  |
++----------------------+---------------------------------------------+---------------+
+| `plan_fstcnt_coded`  | Treatment intent at baseline (5 categories) | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `albumin`            | Serum albumin at baseline (g/L)             | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L)       | Baseline      |
++----------------------+---------------------------------------------+---------------+
+
+: Auxiliary variables included in the imputation model. Albumin and CRP are available in trial data but not in the historical dataset used here. {#tbl-auxiliary-vars}
+
+### Multiple Imputation Procedure
+
+We use multilevel multiple imputation to account for the hierarchical data structure, where repeated QoL measurements (Level 1) are nested within patients (Level 2). The patient identifier (`pat_id`) serves as the clustering variable.
+
+#### Imputation Methods
+
+Baseline variables (Level 2) are imputed using `2lonly.pmm` from the `miceadds` package. This method:
+
+1.  Aggregates longitudinal predictors to the cluster level by computing patient means
+
+2.  Fits a linear regression model on the collapsed data:
+
+$$
+    Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+$$
+
+where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents aggregated means of longitudinal predictors
+
+3.  Selects imputed values via predictive mean matching
+
+Longitudinal variables (Level 1) are imputed using `2l.pmm`, which fits a linear mixed-effects model:
+
+$$
+Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}
+$$
+
+where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
+
+For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapters 3.4, 7.3, 7.8].
+
+#### Predictor Matrix Configuration
+
+The predictor matrix is configured to:
+
+-   Use `pat_id` as the clustering variable (coded as $-2$)
+-   Prevent week and it's transformations from predicting static baseline variables
+-   Allow baseline variables to predict longitudinal outcomes
+
+```{r}
+#| output: false
+#| echo: false
+md.pattern(df)
+
+init <- mice(df, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# Set patient ID as clustering variable
+pred_matrix[, "pat_id"] <- -2
+pred_matrix["pat_id", ] <- 0
+
+# Time variables should not predict static baseline variables
+baseline_vars <- c("tx", "age", "gender", "diagnosis", "ecog_fstcnt", "plan_fstcnt_coded", "baseline_q30")
+pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
+
+# Longitudinal variables: multilevel PMM
+meth["q30"] <- "2l.pmm"
+meth["distress"] <- "2l.pmm"
+
+# Baseline variables: cluster-level PMM
+meth["ecog_fstcnt"] <- "2lonly.pmm"
+meth["plan_fstcnt_coded"] <- "2lonly.pmm"
+meth["diagnosis"] <- "2lonly.pmm"
+meth["baseline_q30"] <- "2lonly.pmm"
+
+
+imputed_data <- mice(df,
+                     m = 5,        # 50 in final analysis
+                     maxit = 5,    # 50 in final analysis
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     donors = 5,
+                     seed = 78109823)
+```
+
+#### Imputation Parameters
+
+For the final trial analysis:
+
+-   Number of imputed datasets: $m = 50$
+-   Maximum iterations: 50
+-   Donor pool size: $k = 5$
+
+### Convergence Diagnostics
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
+#| echo: false
+#| fig-height: 8
+#| fig-width: 8
+plot(imputed_data, layout = c(2, 6))
+```
+
+### Distribution Diagnostics
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for baseline variables and QoL."
+#| echo: false
+#| fig-height: 5
+#| fig-width: 8
+densityplot(imputed_data, ~baseline_q30 + q30 + ecog_fstcnt + diagnosis + plan_fstcnt_coded)
+```
+
+```{r}
+#| fig-cap: "Strip plots of imputed values for baseline variables across imputed datasets."
+#| echo: false
+#| fig-height: 5
+#| fig-width: 8
+stripplot(imputed_data, baseline_q30 + ecog_fstcnt + diagnosis + plan_fstcnt_coded ~ .imp)
+```
+
+```{r}
+#| fig-cap: "Scatter plots of QoL against time, by imputed dataset and treatment group, and against baseline QoL."
+#| echo: false
+#| fig-height: 5
+#| fig-width: 8
+xyplot(imputed_data, q30 ~ week | .imp, pch = c(1, 20))
+xyplot(imputed_data, q30 ~ week | tx, pch = c(1, 20))
+xyplot(imputed_data, q30 ~ baseline_q30 | .imp, pch = c(1, 20))
+```
+
+```{r}
+#| fig-cap: "Scatter plot of QoL against distress thermometer score by imputed dataset."
+#| echo: false
+#| fig-height: 5
+#| fig-width: 8
+
+xyplot(imputed_data, q30 ~ distress | .imp, pch = c(1, 20))
+```
+
+### Analysis of Trial Data
+
+For the final trial analysis, all $m = 50$ imputed datasets will be analysed, and posterior draws will be stacked to propagate imputation uncertainty into the final inference.
+
+{{< pagebreak >}}
+
+## Multiple Imputation Strategy for Time Alive and Out of Hospital {#sec-appendix-taooh-mi .appendix}
+
+### Overview
+
+This appendix describes the multiple imputation strategy for the Time Alive and Out of Hospital (TAOOH) outcome in the LIQPLAT trial. The approach uses Multiple Imputation by Chained Equations (MICE) with multilevel predictive mean matching (PMM) to handle missing data under the Missing At Random (MAR) assumption.
+
+The TAOOH outcome is a 5-level ordinal score constructed from the imputed binary indicators: (1) Alive and Out of Hospital, (2) Alive and In Hospital (Planned Admission), (3) Alive and In Hospital (ER Visit), (4) Alive and In Hospital (Unplanned Admission), (5) Dead. This ordinal score is derived *after* imputation of the component indicators.
+
+```{r}
+#| output: false
+#| echo: false
+library(here)
+library(tidyverse)
+library(mice)
+library(miceadds)
+library(arrow)
+library(data.table)
+```
+
+### Data
+
+The following code uses historical data from the Division of Medical Oncology at USB (first appointments from 2023 to mid-2024, prior to LIQPLAT initiation). These data are used to develop and validate the imputation procedure.
+
+```{r}
+#| echo: false
+set.seed(1234)
+df_raw <- read_parquet(here("data", "long_data.parquet"))
+# Create random treatment allocation for historical data
+tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df_raw$pat_id)), replace = FALSE)
+
+df_raw <- df_raw |> 
+  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
+```
+
+### Data Preprocessing
+
+#### Variable Selection and Transformations
+
+```{r}
+#| echo: false
+imputation_vars <- c(
+  "pat_id",
+  "tx",
+  "gender",
+  "ecog_fstcnt",
+  "diagnosis",
+  "age", 
+  "albumin",
+  "bilirubin", 
+  "c_reactive_protein",
+  "lactate_dehydrogenase",
+  "day", 
+  "in_hospital", 
+  "unplanned_stay",
+  "er_visit",
+  "death"
+)
+
+df <- df_raw |> 
+  select(all_of(imputation_vars)) |> 
+  mutate(
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),    
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:3, ordered = TRUE), #In LIQPLAT there might be patients with level 4
+    in_hospital = case_when(
+        in_hospital == 1 ~ TRUE, 
+        TRUE ~ FALSE),
+    unplanned_stay = case_when(
+        unplanned_stay == 1 ~ TRUE, 
+        TRUE ~ FALSE),
+    er_visit = case_when(
+        er_visit == 1 ~ TRUE, 
+        TRUE ~ FALSE),
+    lactate_dehydrogenase = log(lactate_dehydrogenase + 1),
+    tx = factor(tx)   
+    ) |> 
+  filter(day < 183) |>
+  group_by(pat_id) |>
+  mutate(
+    survival_time = max(day),
+    died = if_else(any(death == 1), 1, 0),
+    week = ceiling(day / 7),
+    survival_time = ceiling(survival_time / 7) 
+  ) |> 
+  group_by(pat_id, week) |> 
+  mutate(
+    death = factor(max(death)),
+    in_hospital = factor(max(in_hospital)),
+    unplanned_stay = factor(max(unplanned_stay)),
+    er_visit = factor(max(er_visit))
+  ) |> 
+  ungroup() |> 
+  filter(week > -2) |>
+  select(-day) |> 
+  distinct() |> 
+  arrange(pat_id, week)
+
+# Model non-linear time effects using restricted cubic splines with 4 knots
+basis_rcs <- rms::rcs(df$week, 4)
+
+df$week <- as.vector(basis_rcs[, 1])
+df$week_nl1 <- as.vector(basis_rcs[, 2])
+df$week_nl2 <- as.vector(basis_rcs[, 3])
+```
+
+#### Nelson-Aalen Cumulative Hazard Estimate
+
+We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor for baseline variable imputation rather than using the `death` indicator directly. When imputing baseline variables using `2lonly.pmm`, longitudinal predictors are aggregated to patient-level means. We opted for the Nelson-Aalen cumulative hazard estimate:
+
+\[justification\]
+
+1.  Is the recommended approach for including survival information in imputation models [@van-Buuren2021-pc, chapter 9.2]
+
+```{r}
+#| echo: false
+na_df <- df |> 
+    select(pat_id, survival_time, died) |> 
+    unique()
+
+na_est <- cbind(na_df$pat_id, nelsonaalen(na_df, timevar = survival_time, statusvar = died)) |> 
+    data.table() |> 
+    rename(pat_id = V1, na_est = V2)
+
+df <- df |> 
+    left_join(na_est, by = "pat_id")
+```
+
+#### Simulating Missing Data for Validation
+
+For validation purposes, we introduce 10% missing data in the longitudinal outcome variables. In actual trial data, missingness in these variables is expected to be minimal.
+
+```{r}
+#| echo: false
+df <- df |>
+  mutate(
+    is_missing = rbinom(n = n(), size = 1, prob = 0.1)
+  ) |>
+  mutate(
+    er_visit = if_else(is_missing == 1, NA, er_visit),
+    unplanned_stay = if_else(is_missing == 1, NA, unplanned_stay),
+    in_hospital = if_else(is_missing == 1, NA, in_hospital)
+  ) |>
+    select(-is_missing)
+```
+
+### Imputation Variables
+
+Following @Mathur2025-sl, we restrict the imputation model to variables included in the analysis model or those acting causally on the incomplete variables or their missingness indicators.
+
+#### Analysis Variables
+
++----------------------+---------------------------------------------+---------------+
+| Variable             | Description                                 | Level         |
++======================+=============================================+===============+
+| `tx`                 | Treatment group allocation                  | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `ecog_fstcnt`        | ECOG performance status at baseline (0–4)   | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `diagnosis`          | Primary cancer diagnosis (5 categories)     | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `albumin`            | Serum albumin at baseline (g/L)             | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L)       | Baseline      |
++----------------------+---------------------------------------------+---------------+
+| `week`               | Week after randomisation (RCS with 4 knots) | Longitudinal  |
++----------------------+---------------------------------------------+---------------+
+| `in_hospital`        | Indicator for hospitalisation               | Longitudinal  |
++----------------------+---------------------------------------------+---------------+
+| `unplanned_stay`     | Indicator for unplanned hospital admission  | Longitudinal  |
++----------------------+---------------------------------------------+---------------+
+| `er_visit`           | Indicator for emergency room visit          | Longitudinal  |
++----------------------+---------------------------------------------+---------------+
+| `death`              | Death indicator                             | Longitudinal  |
++----------------------+---------------------------------------------+---------------+
+
+: Analysis variables included in the imputation model {#tbl-analysis-vars}
+
+#### Auxiliary Variables
+
++-------------------------+----------------------------------------------------------+---------------+
+| Variable                | Description                                              | Level         |
++=========================+==========================================================+===============+
+| `age`                   | Age at date of randomisation (years)                     | Baseline      |
++-------------------------+----------------------------------------------------------+---------------+
+| `gender`                | Patient sex                                              | Baseline      |
++-------------------------+----------------------------------------------------------+---------------+
+| `bilirubin`             | Serum bilirubin at baseline (µmol/L)                     | Baseline      |
++-------------------------+----------------------------------------------------------+---------------+
+| `lactate_dehydrogenase` | Lactate dehydrogenase at baseline (U/L, log-transformed) | Baseline      |
++-------------------------+----------------------------------------------------------+---------------+
+| `na_est`                | Nelson-Aalen cumulative hazard estimate                  | Post-Baseline |
++-------------------------+----------------------------------------------------------+---------------+
+
+: Auxiliary variables included in the imputation model {#tbl-auxiliary-vars}
+
+### Multiple Imputation Procedure
+
+We use multilevel multiple imputation to account for the hierarchical data structure, where repeated weekly observations (Level 1) are nested within patients (Level 2). The patient identifier (`pat_id`) serves as the clustering variable.
+
+#### Imputation Methods
+
+**Baseline variables** (Level 2) are imputed using `2lonly.pmm` from the `miceadds` package. This method:
+
+1.  Aggregates longitudinal predictors to the cluster level by computing patient means
+2.  Fits a linear regression model on the collapsed data:
+
+$$
+    Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+$$
+
+where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents aggregated means of longitudinal predictors
+
+3.  Selects imputed values via predictive mean matching
+
+**Longitudinal variables** (Level 1) are imputed using `2l.pmm`, which fits a linear mixed-effects model:
+
+$$
+Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}
+$$
+
+where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
+
+For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapters 3.4, 7.3, 7.8].
+
+#### Predictor Matrix Configuration
+
+The predictor matrix is configured to:
+
+-   Use `pat_id` as the clustering variable (coded as $-2$)
+-   Exclude death-related variables from predictions (we use `na_est` instead)
+-   Prevent time variables from predicting static baseline variables
+
+```{r}
+#| echo: false
+#| output: false
+md.pattern(df)
+
+init <- mice(df, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# Use patient ID as clustering variable
+pred_matrix[, "pat_id"] <- -2
+pred_matrix["pat_id", ] <- 0
+
+# Exclude raw death/survival variables from predictions (we use na_est instead)
+# This avoids aggregation artefacts when collapsing longitudinal data to cluster means
+pred_matrix[, "death"] <- 0
+pred_matrix["death", ] <- 0
+pred_matrix[, "died"] <- 0
+pred_matrix["died", ] <- 0
+pred_matrix[, "survival_time"] <- 0
+pred_matrix["survival_time", ] <- 0
+
+# week shouldn't predict static baseline variables nor itself
+baseline_vars <- c("tx", "age", "gender", "diagnosis", "ecog_fstcnt", "albumin", "bilirubin", 
+                   "c_reactive_protein", "lactate_dehydrogenase", "na_est")
+
+pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
+
+# treatment, gender, age, and week are be missing
+meth["tx"] <- ""
+meth["gender"] <- ""
+meth["age"] <- ""
+meth["week"] <- ""
+meth["week_nl1"] <- ""
+meth["week_nl2"] <- ""
+
+
+# use mean matching at the cluster level for baseline observations
+# this ensures only one ecog per patient per imputation
+meth["diagnosis"] <- "2lonly.pmm"
+meth["ecog_fstcnt"] <- "2lonly.pmm"
+meth["albumin"] <- "2lonly.pmm"
+meth["bilirubin"] <- "2lonly.pmm" 
+meth["c_reactive_protein"] <- "2lonly.pmm"
+meth["lactate_dehydrogenase"] <- "2lonly.pmm"
+
+# Longitudinal variables: multilevel PMM
+meth["in_hospital"] <- "2l.pmm"
+meth["unplanned_stay"] <- "2l.pmm"
+meth["er_visit"] <- "2l.pmm"
+
+
+imputed_data <- mice(df,
+                     m = 5,       # 50 in final analysis
+                     maxit = 5,   # 50 in final analysis
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     donors = 5,
+                     seed = 1234)
+```
+
+#### Imputation Parameters
+
+For the final trial analysis:
+
+-   Number of imputed datasets: $m = 50$
+-   Maximum iterations: 50
+-   Donor pool size: $k = 5$
+
+### Convergence Diagnostics
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r}
+#| echo: false
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
+#| fig-width: 8
+#| fig-height: 8
+plot(imputed_data, layout = c(2, 8))
+```
+
+### Distribution Diagnostics
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| echo: false
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for all imputed variables."
+#| fig-width: 8
+#| fig-height: 6
+densityplot(imputed_data)
+```
+
+```{r}
+#| echo: false
+#| fig-cap: "Density plot for ECOG performance status."
+#| fig-width: 5
+#| fig-height: 3
+densityplot(imputed_data, ~ecog_fstcnt)
+```
+
+```{r}
+#| echo: false
+#| fig-cap: "Scatter plots of imputed binary indicators against time, by imputed dataset."
+#| fig-width: 8
+#| fig-height: 6
+set.seed(1234)
+original_data <- imputed_data$data
+missing_pat_ids <- unique(original_data$pat_id[is.na(original_data$in_hospital)])
+sample_ids <- sample(missing_pat_ids, 9)
+
+xyplot(imputed_data, 
+       in_hospital ~ week | factor(pat_id), 
+       subset = pat_id %in% sample_ids,
+       pch = c(1, 20),
+       type = c("p"),
+       lwd = 0,
+       layout = c(3, 3),
+       main = "Hospitalisation: Observed vs Imputed")
+
+xyplot(imputed_data, 
+       unplanned_stay ~ week | factor(pat_id), 
+       subset = pat_id %in% sample_ids,
+       pch = c(1, 20),
+       type = c("p"),
+       lwd = 0,
+       layout = c(3, 3),
+       main = "Unplanned Stay: Observed vs Imputed")
+       
+xyplot(imputed_data, 
+       er_visit ~ week | factor(pat_id), 
+       subset = pat_id %in% sample_ids,
+       pch = c(1, 20),
+       type = c("p"),
+       lwd = 0,
+       layout = c(3, 3),
+       main = "ER Visit: Observed vs Imputed") 
+```
+
+### Constructing the Ordinal TAOOH Score
+
+After imputation of the component binary indicators, we construct a 5-level ordinal score representing the patient's weekly health state. The ordinal score is derived deterministically from the imputed indicators according to the following hierarchy:
+
++---------------+---------------------------+----------------------------------------------+
+| Score         | State                     | Condition                                    |
++===============+===========================+==============================================+
+| 5             | Dead                      | `death == 1`                                 |
++---------------+---------------------------+----------------------------------------------+
+| 4             | Unplanned Hospitalisation | `in_hospital == 1` and `unplanned_stay == 1` |
++---------------+---------------------------+----------------------------------------------+
+| 3             | Emergency Room Visit      | `er_visit == 1`                              |
++---------------+---------------------------+----------------------------------------------+
+| 2             | Planned Hospitalisation   | `in_hospital == 1` and `unplanned_stay == 0` |
++---------------+---------------------------+----------------------------------------------+
+| 1             | Alive and Out of Hospital | Otherwise                                    |
++---------------+---------------------------+----------------------------------------------+
+
+: Definition of the 5-level ordinal TAOOH score {#tbl-ordinal-score}
+
+### Analysis of Trial Data
+
+For the final trial analysis, all $m = 50$ imputed datasets will be analysed, and posterior draws will be stacked to propagate imputation uncertainty into the final inference.
+
+{{< pagebreak >}}
+
+## Multiple Imputation Strategy for Overall Survival {#sec-appendix-os-mi .appendix}
+
+### Overview
+
+This appendix describes the multiple imputation strategy for the Overall Survival (OS) outcome in the LIQPLAT trial. The approach uses Multiple Imputation by Chained Equations (MICE) to handle missing baseline covariate data under the Missing At Random (MAR) assumption.
+
+Since OS data are structured in wide format (one row per patient), we use standard single-level imputation methods appropriate for each variable type.
+
+```{r}
+#| output: false
+#| echo: false
+library(tidyverse)
+library(here)
+library(mice)
+library(arrow)
+```
+
+### Data
+
+The following code uses historical data from the Division of Medical Oncology at USB (first appointments from 2023 to mid-2024, prior to LIQPLAT initiation). These data are used to develop and validate the imputation procedure.
+
+```{r}
+#| echo: false
+df_raw <- read_parquet(here("data", "wide_data_730.parquet"))
+
+tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df_raw$pat_id)), replace = FALSE)
+
+df_raw <- df_raw |> 
+  mutate(tx = if_else(pat_id %in% tx, "1", "0"))
+```
+
+### Data Preprocessing
+
+#### Variable Transformations
+
+Survival time is censored at 182 days (6 months) for the primary analysis. The death event indicator is derived accordingly. Diagnosis categories are collapsed to the 5 most frequent groups to avoid sparse categories that could cause convergence issues.
+
+```{r}
+#| echo: false
+df <- df_raw |> 
+  mutate(
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),
+    event_death   = if_else(survival_time <= 182, 1, 0),
+    survival_time = pmin(survival_time, 182),
+    tx            = factor(tx),
+    ecog_fstcnt = factor(ecog_fstcnt, ordered = TRUE)
+  ) |> 
+  select(
+    pat_id,
+    gender,
+    age,
+    ecog_fstcnt,
+    tx,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    lactate_dehydrogenase,
+    event_death,
+    survival_time,
+    diagnosis
+  ) |> 
+  relocate(pat_id, event_death, survival_time)
+```
+
+#### Nelson-Aalen Cumulative Hazard Estimate
+
+We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor in the imputation model instead of survival time [@van-Buuren2021-pc, chapter 9.1].
+
+```{r}
+#| echo: false
+df$na_est <- nelsonaalen(df, timevar = survival_time, statusvar = event_death)
+```
+
+### Imputation Variables {#sec-variables}
+
+Following @Mathur2025-sl, we restrict the imputation model to variables included in the analysis model or those acting causally on the incomplete variables or their missingness indicators.
+
+#### Analysis Variables
+
++----------------------+-------------------------------------------+----------------+
+| Variable             | Description                               | Type           |
++======================+===========================================+================+
+| `tx`                 | Treatment group allocation                | Binary         |
++----------------------+-------------------------------------------+----------------+
+| `ecog_fstcnt`        | ECOG performance status at baseline (0–4) | Ordered factor |
++----------------------+-------------------------------------------+----------------+
+| `diagnosis`          | Primary cancer diagnosis (5 categories)   | Nominal factor |
++----------------------+-------------------------------------------+----------------+
+| `albumin`            | Serum albumin at baseline (g/L)           | Continuous     |
++----------------------+-------------------------------------------+----------------+
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L)     | Continuous     |
++----------------------+-------------------------------------------+----------------+
+| `event_death`        | Death indicator (within 182 days)         | Binary         |
++----------------------+-------------------------------------------+----------------+
+
+: Analysis variables included in the imputation model {#tbl-analysis-vars}
+
+#### Auxiliary Variables
+
++-------------------------+-----------------------------------------+---------------+
+| Variable                | Description                             | Type          |
++=========================+=========================================+===============+
+| `age`                   | Age at date of randomisation (years)    | Continuous    |
++-------------------------+-----------------------------------------+---------------+
+| `gender`                | Patient sex                             | Binary        |
++-------------------------+-----------------------------------------+---------------+
+| `bilirubin`             | Serum bilirubin at baseline (µmol/L)    | Continuous    |
++-------------------------+-----------------------------------------+---------------+
+| `lactate_dehydrogenase` | Lactate dehydrogenase at baseline (U/L) | Continuous    |
++-------------------------+-----------------------------------------+---------------+
+| `na_est`                | Nelson-Aalen cumulative hazard estimate | Continuous    |
++-------------------------+-----------------------------------------+---------------+
+
+: Auxiliary variables included in the imputation model {#tbl-auxiliary-vars}
+
+### Multiple Imputation Procedure {#sec-imputation}
+
+#### Imputation Methods
+
++-------------------------+--------------+-----------------------------------------------------------+
+| Variable                | Method       | Description                                               |
++=========================+==============+===========================================================+
+| `ecog_fstcnt`           | `polr`       | Proportional odds logistic regression for ordered factors |
++-------------------------+--------------+-----------------------------------------------------------+
+| `diagnosis`             | `polyreg`    | Polytomous logistic regression for unordered factors      |
++-------------------------+--------------+-----------------------------------------------------------+
+| `albumin`               | `pmm`        | Predictive mean matching for continuous variables         |
++-------------------------+--------------+-----------------------------------------------------------+
+| `bilirubin`             | `pmm`        | Predictive mean matching for continuous variables         |
++-------------------------+--------------+-----------------------------------------------------------+
+| `c_reactive_protein`    | `pmm`        | Predictive mean matching for continuous variables         |
++-------------------------+--------------+-----------------------------------------------------------+
+| `lactate_dehydrogenase` | `pmm`        | Predictive mean matching for continuous variables         |
++-------------------------+--------------+-----------------------------------------------------------+
+
+: Imputation methods by variable {#tbl-methods}
+
+Predictive mean matching (PMM) is used for continuous variables to preserve the marginal distributions and avoid imputing implausible values. We use Type 1 PMM with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapter 3.4]. For ordered categorical variables (ECOG), proportional odds logistic regression (`polr`) maintains the ordinal structure. For unordered categorical variables (diagnosis), polytomous logistic regression (`polyreg`) is used.
+
+#### Predictor Matrix Configuration
+
+The predictor matrix is configured to:
+
+-   Exclude `pat_id` from predictions (identifier only)
+-   Exclude `survival_time` from predictions (we use `na_est` instead to incorporate survival information)
+-   Allow all other variables to predict each other
+
+```{r}
+#| echo: false
+#| output: false
+md.pattern(df)
+
+init <- mice(df, maxit = 0)
+meth <- init$method
+pred_matrix <- init$predictorMatrix
+
+# Patient ID should not be used for imputation
+pred_matrix[, "pat_id"] <- 0
+pred_matrix["pat_id", ] <- 0
+meth["pat_id"] <- ""
+
+# Use Nelson-Aalen estimate instead of raw survival time
+pred_matrix[, "survival_time"] <- 0
+pred_matrix["survival_time", ] <- 0
+meth["survival_time"] <- ""
+
+imputed_data <- mice(df,
+                     m = 5,      # 50 in final analysis
+                     maxit = 5,  # 50 in final analysis
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     donors = 5,
+                     seed = 1234)
+```
+
+#### Imputation Parameters
+
+For the final trial analysis:
+
+-   Number of imputed datasets: $m = 50$
+-   Maximum iterations: 50
+-   Donor pool size: $k = 5$
+
+### Convergence Diagnostics {#sec-diagnostics}
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
+plot(imputed_data, layout = c(2, 6))
+```
+
+### Distribution Diagnostics {#sec-distribution}
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for all imputed variables."
+densityplot(imputed_data)
+```
+
+```{r}
+#| echo: false
+#| fig-cap: "Density plot for ECOG performance status."
+#| fig-width: 5
+#| fig-height: 3
+densityplot(imputed_data, ~ecog_fstcnt)
+```
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Strip plots of imputed values for continuous laboratory variables across imputed datasets."
+stripplot(imputed_data, albumin + bilirubin + c_reactive_protein + lactate_dehydrogenase ~ .imp)
+```
+
+```{r}
+#| echo: false
+#| fig-cap: "Strip plot of imputed values for ECOG performance status across imputed datasets."
+#| fig-width: 5
+#| fig-height: 3
+stripplot(imputed_data, ecog_fstcnt ~ .imp)
+```
+
+### Analysis of Trial Data
+
+For the final trial analysis, all $m = 50$ imputed datasets will be analysed, and posterior draws will be stacked to propagate imputation uncertainty into the final inference.
+
+{{< pagebreak >}}
+
 ## QoL Interval Censoring Investigation {#sec-appendix-qol-censoring .appendix}
 
 ### Background
@@ -1037,7 +1979,7 @@ An alternative to the Principal Stratum analysis for QoL is to model the 8-state
 
 ### Method
 
-We tested this using a simulated dataset derived from historical data (see `qol-sap.qmd`, Appendix C), where the true state trajectories were known. We created a sparse dataset (15% observations retained post-baseline) and fitted a first-order Markov model using `Ocens(y.a, y.b)` where `y.a=1, y.b=7` for missing weeks of alive patients, and `y.a=y.b=8` at death.
+We tested this using a simulated dataset derived from historical data, where the true state trajectories were known. We created a sparse dataset (15% observations retained post-baseline) and fitted a first-order Markov model using `Ocens(y.a, y.b)` where `y.a=1, y.b=7` for missing weeks of alive patients, and `y.a=y.b=8` at death.
 
 ### Findings
 
