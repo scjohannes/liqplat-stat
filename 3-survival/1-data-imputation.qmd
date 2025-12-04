@@ -1,15 +1,21 @@
 ---
-title: Overall Survival - Data imputation
+title: "Multiple Imputation Strategy for Overall Survival (OS) Outcome"
 format: 
   typst:
     papersize: a4
     margin:
       x: 2cm
       y: 2.5cm
-    toc: false
+    toc: true
     columns: 1
     tbl-cap-location: bottom
 ---
+
+## Overview
+
+This document describes the multiple imputation strategy for the Overall Survival (OS) outcome in the LIQPLAT trial. The approach uses Multiple Imputation by Chained Equations (MICE) to handle missing baseline covariate data under the Missing At Random (MAR) assumption.
+
+Since OS data are structured in wide format (one row per patient), we use standard single-level imputation methods appropriate for each variable type.
 
 ## Setup
 
@@ -21,15 +27,19 @@ library(mice)
 library(arrow)
 ```
 
-## Load data
+## Data
+
+The following code uses historical data from the Division of Medical Oncology at USB (first appointments from 2023 to mid-2024, prior to LIQPLAT initiation). These data are used to develop and validate the imputation procedure; actual trial data are not publicly available.
 
 ```{r}
 data_raw <- read_parquet(here("data", "wide_data_730.parquet"))
 ```
 
-## Format data, add Nelson-Aalen estimates
+## Data Preprocessing
 
-Everybody had at least 182 days of follow-up.
+### Variable Transformations
+
+Survival time is censored at 182 days (6 months) for the primary analysis. The death event indicator is derived accordingly. Diagnosis categories are collapsed to the 5 most frequent groups to avoid sparse categories that could cause convergence issues.
 
 ```{r}
 data <- data_raw |> 
@@ -38,8 +48,9 @@ data <- data_raw |>
     diagnosis = factor(as.integer(diagnosis)),
     event_death   = if_else(survival_time <= 182, 1, 0),
     survival_time = pmin(survival_time, 182),
-    tx            = if_else(randomselect_liqplat == "1", 1, 0),
-    ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)) |> 
+    tx            = factor(if_else(randomselect_liqplat == "1", 1, 0)),
+    ecog_fstcnt = factor(ecog_fstcnt, ordered = TRUE)
+  ) |> 
   select(
     pat_id,
     gender,
@@ -51,110 +62,155 @@ data <- data_raw |>
     c_reactive_protein,
     lactate_dehydrogenase,
     event_death,
-    event_next_treatment,
-    event_progression,
-    n_biopsies,
-    n_blood_products_all,
-    n_imaging_all,
-    n_stay_plus_ER,
     survival_time,
     diagnosis
   ) |> 
   relocate(pat_id, event_death, survival_time)
+```
 
+### Nelson-Aalen Cumulative Hazard Estimate
+
+We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor in the imputation model instead of survival time [van-Buuren2021-pc, chapter 9.1].
+
+```{r}
 data$na_est <- nelsonaalen(data, timevar = survival_time, statusvar = event_death)
 ```
 
-## Variables for final analysis
+## Imputation Variables {#sec-variables}
 
-When analyzing the trial data, we will use the following predictors for imputation and modeling:
+The imputation model includes variables from the substantive analysis model and auxiliary variables that are predictive of missing values or their missingness mechanism.
 
-**Demographics and baseline clinical:**
+### Analysis Variables
 
--   `age` - age at enrollment
+| Variable | Description | Type |
+|----------|-------------|------|
+| `tx` | Treatment group allocation | Binary |
+| `ecog_fstcnt` | ECOG performance status at baseline (0–4) | Ordered factor |
+| `diagnosis` | Primary cancer diagnosis (5 categories) | Nominal factor |
+| `albumin` | Serum albumin at baseline (g/L) | Continuous |
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L) | Continuous |
+| `event_death` | Death indicator (within 182 days) | Binary |
 
--   `gender` - patient sex
+: Analysis variables included in the imputation model {#tbl-analysis-vars}
 
--   `ecog_fstcnt` - ECOG performance status (ordered factor: 0-4)
+### Auxiliary Variables
 
--   `diagnosis` - primary cancer diagnosis (lumped to 5 most frequent categories)
+| Variable | Description | Type |
+|----------|-------------|------|
+| `age` | Age at date of randomisation (years) | Continuous |
+| `gender` | Patient sex | Binary |
+| `bilirubin` | Serum bilirubin at baseline (µmol/L) | Continuous |
+| `lactate_dehydrogenase` | Lactate dehydrogenase at baseline (U/L) | Continuous |
+| `na_est` | Nelson-Aalen cumulative hazard estimate | Continuous |
 
-**Laboratory values:**
+: Auxiliary variables included in the imputation model {#tbl-auxiliary-vars}
 
--   `albumin` - serum albumin (g/L)
+## Multiple Imputation Procedure {#sec-imputation}
 
--   `c_reactive_protein` - CRP (mg/L)
+### Imputation Methods
 
--   `bilirubin` - serum bilirubin (µmol/L)
+| Variable | Method | Description |
+|----------|--------|-------------|
+| `ecog_fstcnt` | `polr` | Proportional odds logistic regression for ordered factors |
+| `diagnosis` | `polyreg` | Polytomous logistic regression for unordered factors |
+| `albumin` | `pmm` | Predictive mean matching for continuous variables |
+| `bilirubin` | `pmm` | Predictive mean matching for continuous variables |
+| `c_reactive_protein` | `pmm` | Predictive mean matching for continuous variables |
+| `lactate_dehydrogenase` | `pmm` | Predictive mean matching for continuous variables |
 
--   `lactate_dehydrogenase` - LDH (U/L)
+: Imputation methods by variable {#tbl-methods}
 
-**Healthcare utilization:**
+Predictive mean matching (PMM) is used for continuous variables to preserve the marginal distributions and avoid imputing implausible values. We use Type 1 PMM with a donor pool of $k = 5$ [van-Buuren2021-pc, chapter 3.4]. For ordered categorical variables (ECOG), proportional odds logistic regression (`polr`) maintains the ordinal structure. For unordered categorical variables (diagnosis), polytomous logistic regression (`polyreg`) is used.
 
--   `n_stay_plus_ER` - total days in hospital or emergency room
+### Predictor Matrix Configuration
 
--   `n_blood_products_all` - number of blood product units received
+The predictor matrix is configured to:
 
-**Clinical events:**
-
--   `event_next_treatment` - indicator for starting next line of treatment
-
--   `event_progression` - indicator for disease progression
-
-**Outcome tracking:**
-
--   `event_death` - death indicator
-
--   `na_est` - Nelson-Aalen cumulative hazard estimate
-
--   `tx` - treatment group allocation
-
-## Multiple imputation
+- Exclude `pat_id` from predictions (identifier only)
+- Exclude `survival_time` from predictions (we use `na_est` instead to incorporate survival information)
+- Allow all other variables to predict each other
 
 ```{r}
 #| output: false
-#check if imputation methods correct
+md.pattern(data)
+
 init <- mice(data, maxit = 0)
 meth <- init$method
 pred_matrix <- init$predictorMatrix
 
-# ensure patient ID and survival time are not used for imputation
-pred_matrix[, "survival_time"] <- 0
-pred_matrix["survival_time", ] <- 0
+# Patient ID should not be used for imputation
 pred_matrix[, "pat_id"] <- 0
 pred_matrix["pat_id", ] <- 0
 meth["pat_id"] <- ""
+
+# Use Nelson-Aalen estimate instead of raw survival time
+pred_matrix[, "survival_time"] <- 0
+pred_matrix["survival_time", ] <- 0
 meth["survival_time"] <- ""
 
 imputed_data <- mice(data,
-                     m = 20, # final analysis uses 50
-                     maxit = 50,
+                     m = 10,      # 50 in final analysis
+                     maxit = 10,  # 50 in final analysis
                      predictorMatrix = pred_matrix,
                      method = meth,
+                     donors = 5,
                      seed = 1234)
 ```
 
-## Diagnostics
+### Imputation Parameters
 
-```{r}
+For the final trial analysis:
+
+- Number of imputed datasets: $m = 50$
+- Maximum iterations: 50
+- Donor pool size: $k = 5$
+
+## Convergence Diagnostics {#sec-diagnostics}
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
 #| fig-width: 8
 #| fig-height: 6
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
 plot(imputed_data)
 ```
 
+## Distribution Diagnostics {#sec-distribution}
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
 ```{r}
 #| fig-width: 8
 #| fig-height: 6
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for all imputed variables."
 densityplot(imputed_data)
-densityplot(imputed_data, ~ecog_fstcnt)
-stripplot(imputed_data)
 ```
 
-In this data diagnosis_cat was only missing in 1 patient.
+```{r}
+#| fig-cap: "Density plot for ECOG performance status."
+densityplot(imputed_data, ~ecog_fstcnt)
+```
 
-## Select one imputation
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Strip plots of imputed values for continuous laboratory variables across imputed datasets."
+stripplot(imputed_data, albumin + bilirubin + c_reactive_protein + lactate_dehydrogenase ~ .imp)
+```
 
-For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. I will use the data imputed in long format for the time being.
+```{r}
+#| fig-cap: "Strip plot of imputed values for ECOG performance status across imputed datasets."
+stripplot(imputed_data, ecog_fstcnt ~ .imp)
+```
+
+## Analysis of Trial Data
+
+For the final trial analysis, all $m = 50$ imputed datasets will be analysed, and posterior draws will be stacked to propagate imputation uncertainty into the final inference.
+
+## Simulation Study Dataset
+
+For simulation studies, a single completed dataset is extracted. This is computationally necessary but does not reflect the full imputation uncertainty.
 
 ```{r}
 complete_data <- complete(imputed_data, 4)
