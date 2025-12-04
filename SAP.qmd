@@ -1224,7 +1224,7 @@ $$
 
 where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
 
-For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapters 3.4, 7.3, 7.8].
+For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapters 3.4, 7.8].
 
 #### Predictor Matrix Configuration
 
@@ -1558,7 +1558,7 @@ $$
 
 where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
 
-For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapters 3.4, 7.3, 7.8].
+For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapters 3.4, 7.8].
 
 #### Predictor Matrix Configuration
 
@@ -1991,32 +1991,32 @@ The interval censoring approach led to a substantial overestimation of the cumul
 
 Due to this potential for significant bias with sparse intermediate data, the interval censoring approach was deemed unsuitable for the primary QoL analysis, leading to the adoption of the Principal Stratum approach with its specific assumptions.
 
-## TAAOH State Occupancy Probabilities {#sec-appendix-taaoh .appendix}
+## TAOOH State Occupancy Probabilities {#sec-appendix-taaoh .appendix}
 
-The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order process, we define the SOP as $P(Y_j=k | X, y_{-1}, y_0)$, which is the probability of being in state $k$ at time $j$, conditional on a set of baseline covariates $X$ and the two baseline states, $y_{-1}$ (state at time $j=-1$) and $y_0$ (state at time $j=0$).
+The state occupancy probability (SOP) is a foundational derived quantity from a transition model. For a second-order Markov process, the SOP is the probability of being in state $l$ at time $t$, conditional on baseline covariates $\mathbf{X}$ and two initial states observed prior to the first prediction. Let $Y_{-1}$ and $Y_0$ denote the states at times $-1$ and $0$, respectively. The SOP is then $S_t(l) = P(Y_t = l \mid \mathbf{X}, Y_{-1}, Y_0)$ for $t \geq 1$.
 
-In a first-order model, a single transition matrix is sufficient to describe the evolution of the system from time $j-1$ to $j$ (@rohde2024). In the second-order case, however, the probabilities of transitioning from state $k$ at time $j-1$ to state $l$ at time $j$ are themselves conditional on the state at time $j-2$. This dependency requires a set of transition matrices, one for each possible prior state ($Y_{j-2}=h$), rather than a single matrix. The core challenge is that the state of the system at any given time is not described by a single previous outcome, but by the joint probability distribution of the last two outcomes. Therefore, to compute the SOPs, we must recursively calculate the evolution of this joint probability distribution over time.
+In a first-order model, a single transition matrix is sufficient to describe the evolution of the system from time $t-1$ to $t$ [@rohde2024]. In the second-order case, the probability of transitioning to state $l$ at time $t$ depends on both the state at $t-1$ and the state at $t-2$. This dependency requires a set of transition matrices—one for each possible prior state $Y_{t-2}=h$—rather than a single matrix. The state of the system at any given time is described by the joint probability distribution of the last two outcomes. Therefore, to compute the SOPs, we must recursively calculate the evolution of this joint probability distribution over time.
 
-Let the conditional transition probability at time $j$ be denoted as $T_j(l | h, k) = P(Y_j=l | Y_{j-2}=h, Y_{j-1}=k, X)$. These probabilities, which represent the chance of moving to state $l$ given the history of being in state $h$ then state $k$, are calculated directly from the fitted ordinal transition model for a specific covariate profile $X$.
+Let the conditional transition probability at time $t$ be denoted as $T_t(l \mid h, k) = P(Y_t=l \mid Y_{t-2}=h, Y_{t-1}=k, \mathbf{X})$. These probabilities, which represent the chance of moving to state $l$ given the history of being in state $h$ then state $k$, are calculated directly from the fitted ordinal transition model for a specific covariate profile $\mathbf{X}$. We denote the joint probability of consecutive states ending at time $t$ as $J_t(k, l) = P(Y_{t-1}=k, Y_t=l)$.
 
 The unconditionalization process proceeds as follows:
 
-1.  **Initialization**: We begin with the known baseline states $y_{-1}$ and $y_0$. The joint probability of being in states $h$ and $k$ at times $j=-1$ and $j=0$ respectively, which we denote as $J_0(h, k) = P(Y_{-1}=h, Y_0=k)$, is initialized as a matrix of zeros with a 1 at the position $(h, k) = (y_{-1}, y_0)$. The initial SOP at time $j=0$ is therefore known with certainty: $S_0(k) = 1$ for the state $k=y_0$ and 0 otherwise.
+1.  **Initialization**: We begin with the known initial states $Y_{-1}$ and $Y_0$. The joint probability $J_0(h, k) = P(Y_{-1}=h, Y_0=k)$ is initialized as a matrix of zeros with a 1 at the position $(h, k) = (Y_{-1}, Y_0)$. The initial SOP at $t=0$ is known with certainty: $S_0(l) = 1$ for state $l = Y_0$ and 0 otherwise.
 
-2.  **Recursive Calculation of Joint Probabilities**: For each subsequent time point $j=1, 2, \dots, d$, we calculate the new joint probability distribution $J_j(k, l) = P(Y_{j-1}=k, Y_j=l)$ by marginalizing over the state at time $j-2$, denoted by $h$. Using the law of total probability, the recursion is defined as:
-
-    $$
-    J_j(k, l) = \sum_{h=1}^{K} T_j(l | h, k) \times J_{j-1}(h, k)
-    $$
-
-    In this step, we use the joint probabilities for times $j-2$ and $j-1$ , $J_{j-1}$, and the conditional transition probabilities for the current time step, $T_j$, to compute the joint probabilities for the current and previous time steps, $J_j$.
-
-3.  **Calculation of State Occupancy Probabilities**: Once the joint probability matrix $J_j$ for time $j$ is obtained, the SOP for being in state $l$ at time $j$, denoted $S_j(l)$, is calculated by marginalizing out the state at time $j-1$ (denoted by $k$):
+2.  **Recursive Calculation of Joint Probabilities**: For each subsequent time point $t = 1, 2, \dots, d$, we calculate the new joint probability distribution $J_t(k, l) = P(Y_{t-1}=k, Y_t=l)$ by marginalizing over the state at time $t-2$, denoted by $h$. Using the law of total probability, the recursion is:
 
     $$
-    S_j(l) = P(Y_j=l) = \sum_{k=1}^{K} J_j(k, l)
+    J_t(k, l) = \sum_{h=1}^{K} T_t(l \mid h, k) \times J_{t-1}(h, k)
     $$
 
-This $S_j(l)$ is the marginal probability at time $j$ and is the state occupancy probability $P(Y_j = l | X, y_{-1}, y_0)$ for the given baseline conditions. This three-step process is repeated for all time points up to the desired horizon, yielding the full set of SOPs for a subject with a given covariate profile and specific baseline history. The code that implements these calculations can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/12-estimand.pdf).
+    Here, $J_{t-1}(h, k) = P(Y_{t-2}=h, Y_{t-1}=k)$ provides the joint distribution at the previous step, and $T_t(l \mid h, k)$ gives the transition probability to state $l$. Their product, summed over all possible values of $h$, yields the updated joint distribution $J_t(k, l)$.
+
+3.  **Calculation of State Occupancy Probabilities**: Once the joint probability matrix $J_t$ for time $t$ is obtained, the SOP for being in state $l$ at time $t$, denoted $S_t(l)$, is calculated by marginalizing out the state at time $t-1$:
+
+    $$
+    S_t(l) = P(Y_t=l) = \sum_{k=1}^{K} J_t(k, l)
+    $$
+
+This $S_t(l)$ is the marginal probability of being in state $l$ at time $t$, conditional on the baseline covariates and initial states: $P(Y_t = l \mid \mathbf{X}, Y_{-1}, Y_0)$. This three-step process is repeated for all time points up to the desired horizon $d$, yielding the full set of SOPs for a subject with a given covariate profile and specific initial history. The code that implements these calculations can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/12-estimand.pdf).
 
 {{< pagebreak >}}
