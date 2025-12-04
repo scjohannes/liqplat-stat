@@ -1,15 +1,21 @@
 ---
-title: Long Ordinal - Data imputation
+title: "Multiple Imputation Strategy for Time Alive and Out of Hospital (TAOOH) Outcome"
 format: 
   typst:
     papersize: a4
     margin:
       x: 2cm
       y: 2.5cm
-    toc: false
+    toc: true
     columns: 1
     tbl-cap-location: bottom
 ---
+
+## Overview
+
+This document describes the multiple imputation strategy for the Time Alive and Out of Hospital (TAOOH) outcome in the LIQPLAT trial. The approach uses Multiple Imputation by Chained Equations (MICE) with multilevel predictive mean matching (PMM) to handle missing data under the Missing At Random (MAR) assumption.
+
+The TAOOH outcome is a 5-level ordinal score constructed from the imputed binary indicators: (1) Alive and Out of Hospital, (2) Alive and In Hospital (Planned Admission), (3) Alive and In Hospital (ER Visit), (4) Alive and In Hospital (Unplanned Admission), (5) Dead. This ordinal score is derived *after* imputation of the component indicators.
 
 ## Setup
 
@@ -23,27 +29,25 @@ library(arrow)
 library(data.table)
 ```
 
-## Load data
+## Data
 
-These are historic data from patients of the Division of Medical Oncology at USB, which had their first appointment from 2023 to mid 2025, i.e., before LIQPLAT started. The data are not publicly available.
+The following code uses historical data from the Division of Medical Oncology at USB (first appointments from 2023 to mid-2024, prior to LIQPLAT initiation). These data are used to develop and validate the imputation procedure; actual trial data are not publicly available.
 
 ```{r}
 set.seed(1234)
 df_raw <- read_parquet(here("data", "long_data.parquet"))
 ```
 
-### Simplify some baseline varaibles
+## Data Preprocessing
+
+### Variable Selection and Transformations
 
 ```{r}
-# remove observations after day 182
-# lump factor variables according to frequency to have a maximum of 5 levels
-
-# create random group allocation in historical data
-tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df$pat_id)), replace = FALSE)
+# Create random treatment allocation for historical data
+tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df_raw$pat_id)), replace = FALSE)
 
 df_raw <- df_raw |> 
   mutate(tx = if_else(pat_id %in% tx, "1", "0"))
-
 
 imputation_vars <- c(
   "pat_id",
@@ -54,7 +58,7 @@ imputation_vars <- c(
   "age", 
   "albumin",
   "bilirubin", 
-  "c_reactive_protein",	
+  "c_reactive_protein",
   "lactate_dehydrogenase",
   "day", 
   "in_hospital", 
@@ -68,7 +72,7 @@ df <- df_raw |>
   mutate(
     diagnosis = fct_lump_n(diagnosis, n = 4),
     diagnosis = factor(as.integer(diagnosis)),    
-    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:3, ordered = TRUE), #in liqplat might be enough patients with 4 levels
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 1:3, ordered = TRUE), #In LIQPLAT there might be patients with level 4
     in_hospital = case_when(
         in_hospital == 1 ~ TRUE, 
         TRUE ~ FALSE),
@@ -77,88 +81,141 @@ df <- df_raw |>
         TRUE ~ FALSE),
     er_visit = case_when(
         er_visit == 1 ~ TRUE, 
-        TRUE ~ FALSE)
+        TRUE ~ FALSE),
+    lactate_dehydrogenase = log(lactate_dehydrogenase + 1),
+    tx = factor(tx)   
     ) |> 
   filter(day < 183) |>
   group_by(pat_id) |>
   mutate(
     survival_time = max(day),
-    died = if_else(any(death == 1), 1, 0)
+    died = if_else(any(death == 1), 1, 0),
+    week = ceiling(day / 7),
+    survival_time = ceiling(survival_time / 7) 
+  ) |> 
+  group_by(pat_id, week) |> 
+  mutate(
+    death = factor(max(death)),
+    in_hospital = factor(max(in_hospital)),
+    unplanned_stay = factor(max(unplanned_stay)),
+    er_visit = factor(max(er_visit))
   ) |> 
   ungroup() |> 
-  arrange(pat_id, day)
+  filter(week > -2) |>
+  select(-day) |> 
+  distinct() |> 
+  arrange(pat_id, week)
+
+# Model non-linear time effects using restricted cubic splines with 4 knots
+basis_rcs <- rms::rcs(df$week, 4)
+
+df$week <- as.vector(basis_rcs[, 1])
+df$week_nl1 <- as.vector(basis_rcs[, 2])
+df$week_nl2 <- as.vector(basis_rcs[, 3])
 ```
 
-### Add Nelson-Aalen-estimates, "Randomize"
+### Nelson-Aalen Cumulative Hazard Estimate
 
-Nelson-Aalen yields slightly better predictions than raw survival time, see: https://stefvanbuuren.name/fimd/sec-toomany.html
+We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor for baseline variable imputation rather than using the `death` indicator directly. When imputing baseline variables using `2lonly.pmm`, longitudinal predictors are aggregated to patient-level means. We opted for the Nelson-Aalen cumulative hazard estimate:
+
+[justification]
+1. Is the recommended approach for including survival information in imputation models [van-Buuren2021-pc, chapter 9.2]
 
 ```{r}
 na_df <- df |> 
     select(pat_id, survival_time, died) |> 
     unique()
 
-# nelason alen estimator
 na_est <- cbind(na_df$pat_id, nelsonaalen(na_df, timevar = survival_time, statusvar = died)) |> 
     data.table() |> 
     rename(pat_id = V1, na_est = V2)
 
 df <- df |> 
-    left_join(na_est, by = "pat_id") |> 
-    select(-survival_time)
+    left_join(na_est, by = "pat_id")
 ```
 
-## Variables for final analysis
+### Simulating Missing Data for Validation
 
-When analyzing the trial data, we will use the following predictors for imputation and modeling:
+For validation purposes, we introduce 10% missing data in the longitudinal outcome variables. In actual trial data, missingness in these variables is expected to be minimal.
 
-For reasons explain in:
-Mathur, Maya B., Willi Zhang, and Ilya Shpitser. 2025. “Imputation without nightMARs: Graphical Criteria for Valid Imputation of Missing Data.” https://doi.org/10.31219/osf.io/zqne9_v2.
+```{r}
+df <- df |>
+  mutate(
+    is_missing = rbinom(n = n(), size = 1, prob = 0.1)
+  ) |>
+  mutate(
+    er_visit = if_else(is_missing == 1, NA, er_visit),
+    unplanned_stay = if_else(is_missing == 1, NA, unplanned_stay),
+    in_hospital = if_else(is_missing == 1, NA, in_hospital)
+  ) |>
+    select(-is_missing)
+```
 
-We restrict the imputation model to only include variables included in the analysis model and variables that causally affect either the incomplete variables or the missingness indicators, i.e., we do not include post-baseline variables that are not part of the analysis model.
+## Imputation Variables {#sec-variables}
 
+Following Mathur2025-sl, we restrict the imputation model to variables included in the analysis model or those acting causally on the incomplete variables or their missingness indicators.
 
-**Demographics and baseline clinical:**
+### Analysis Variables
 
--   `age` - age at enrollment
+| Variable | Description | Level |
+|----------|-------------|-------|
+| `tx` | Treatment group allocation | Baseline |
+| `ecog_fstcnt` | ECOG performance status at baseline (0–4) | Baseline |
+| `diagnosis` | Primary cancer diagnosis (5 categories) | Baseline |
+| `albumin` | Serum albumin at baseline (g/L) | Baseline |
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L) | Baseline |
+| `week` | Week after randomisation (RCS with 4 knots) | Longitudinal |
+| `in_hospital` | Indicator for hospitalisation | Longitudinal |
+| `unplanned_stay` | Indicator for unplanned hospital admission | Longitudinal |
+| `er_visit` | Indicator for emergency room visit | Longitudinal |
+| `death` | Death indicator | Longitudinal |
+| `na_est` | Nelson-Aalen cumulative hazard estimate | Baseline |
 
--   `gender` - patient sex
+: Analysis variables included in the imputation model {#tbl-analysis-vars}
 
--   `ecog_fstcnt` - ECOG performance status (ordered factor: 0-4)
+### Auxiliary Variables
 
--   `diagnosis` - primary cancer diagnosis (lumped to 5 most frequent categories)
+| Variable | Description | Level |
+|----------|-------------|-------|
+| `age` | Age at date of randomisation (years) | Baseline |
+| `gender` | Patient sex | Baseline |
+| `bilirubin` | Serum bilirubin at baseline (µmol/L) | Baseline |
+| `lactate_dehydrogenase` | Lactate dehydrogenase at baseline (U/L, log-transformed) | Baseline |
 
-**Laboratory values:**
+: Auxiliary variables included in the imputation model {#tbl-auxiliary-vars}
 
--   `albumin` - serum albumin (g/L)
+## Multiple Imputation Procedure {#sec-imputation}
 
--   `c_reactive_protein` - CRP (mg/L)
+We employ multilevel multiple imputation to account for the hierarchical data structure, where repeated weekly observations (Level 1) are nested within patients (Level 2). The patient identifier (`pat_id`) serves as the clustering variable.
 
--   `bilirubin` - serum bilirubin (µmol/L)
+### Imputation Methods
 
--   `lactate_dehydrogenase` - LDH (U/L)
+**Baseline variables** (Level 2) are imputed using `2lonly.pmm` from the `miceadds` package. This method:
 
-**Treatment assignment:**
+1. Aggregates longitudinal predictors to the cluster level by computing patient means
+2. Fits a linear regression model on the collapsed data:
+   $$
+   Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+   $$
+   where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents aggregated means of longitudinal predictors
+3. Selects imputed values via predictive mean matching
 
--   `tx` - treatment group allocation
+**Longitudinal variables** (Level 1) are imputed using `2l.pmm`, which fits a linear mixed-effects model:
+$$
+Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}
+$$
 
-**Longitudinal outcome:**
+where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
 
--   `day` - day after random selection
+For both methods, we use Type 1 predictive mean matching with a donor pool of $k = 5$ [van-Buuren2021-pc, chapters 3.4, 7.3, 7.8].
 
--   `in_hospital` - indicator for being in hospital at a given timepoint
+### Predictor Matrix Configuration
 
--   `unplanned_stay` - indicator for the hospital stay to be unplanned
+The predictor matrix is configured to:
 
--   `er_visit` - indicator for emergency room visit at that timepoint
-
--   `na_est` - Nelson-Aalen cumulative hazard estimate
-
--   `died` - death indicator
-
-## Multiple imputation
-
-Baseline values will be imputed at the patient (cluster level).
+- Use `pat_id` as the clustering variable (coded as $-2$)
+- Exclude death-related variables from predictions (we use `na_est` instead)
+- Prevent time variables from predicting static baseline variables
 
 ```{r}
 #| output: false
@@ -170,47 +227,142 @@ meth <- init$method
 
 # Use patient ID as clustering variable
 pred_matrix[, "pat_id"] <- -2
+pred_matrix["pat_id", ] <- 0
+
+# Exclude raw death/survival variables from predictions (we use na_est instead)
+# This avoids aggregation artefacts when collapsing longitudinal data to cluster means
+pred_matrix[, "death"] <- 0
+pred_matrix["death", ] <- 0
+pred_matrix[, "died"] <- 0
+pred_matrix["died", ] <- 0
+pred_matrix[, "survival_time"] <- 0
+pred_matrix["survival_time", ] <- 0
+
+# week shouldn't predict static baseline variables nor itself
+baseline_vars <- c("tx", "age", "gender", "diagnosis", "ecog_fstcnt", "albumin", "bilirubin", 
+                   "c_reactive_protein", "lactate_dehydrogenase", "na_est")
+
+pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
+
+# treatment, gender, age, and week are be missing
+meth["tx"] <- ""
+meth["gender"] <- ""
+meth["age"] <- ""
+meth["week"] <- ""
+meth["week_nl1"] <- ""
+meth["week_nl2"] <- ""
+
 
 # use mean matching at the cluster level for baseline observations
 # this ensures only one ecog per patient per imputation
-meth["age"] <- "2lonly.pmm"
 meth["diagnosis"] <- "2lonly.pmm"
-meth["gender"] <- "2lonly.pmm"
 meth["ecog_fstcnt"] <- "2lonly.pmm"
 meth["albumin"] <- "2lonly.pmm"
 meth["bilirubin"] <- "2lonly.pmm" 
 meth["c_reactive_protein"] <- "2lonly.pmm"
 meth["lactate_dehydrogenase"] <- "2lonly.pmm"
-meth["died"] <- "2lonly.pmm"
-meth["na_est"] <- "2lonly.pmm"
 
-# These are not missing in our dummy data but mnight have some missingness in the trial data
+# Longitudinal variables: multilevel PMM
 meth["in_hospital"] <- "2l.pmm"
 meth["unplanned_stay"] <- "2l.pmm"
 meth["er_visit"] <- "2l.pmm"
 
 
 imputed_data <- mice(df,
-                     m = 5, # will set to 50
-                     maxit = 20, #will set to 50
+                     m = 5,       # 50 in final analysis
+                     maxit = 5,   # 50 in final analysis
                      predictorMatrix = pred_matrix,
                      method = meth,
+                     donors = 5,
                      seed = 1234)
 ```
 
-## Diagnostics
+### Imputation Parameters
 
-The diagnostics look fine to me.
+For the final trial analysis:
 
-```{r}
+- Number of imputed datasets: $m = 50$
+- Maximum iterations: 50
+- Donor pool size: $k = 5$
+
+## Convergence Diagnostics {#sec-diagnostics}
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
 plot(imputed_data)
-densityplot(imputed_data)
-densityplot(imputed_data, ~ ecog_fstcnt)
 ```
 
-## Select one imputation
+## Distribution Diagnostics {#sec-distribution}
 
-For the analysis of the trial data we'd of course use all the imputed datasets and stack the posterior draws. However, for our simulations this is unfeasible, and we shall thus only use one complete dataset for the setup. I will use the data imputed in long format for the time being.
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for all imputed variables."
+densityplot(imputed_data)
+```
+
+```{r}
+#| fig-cap: "Density plot for ECOG performance status."
+densityplot(imputed_data, ~ecog_fstcnt)
+```
+
+```{r}
+set.seed(1234)
+original_data <- imputed_data$data
+missing_pat_ids <- unique(original_data$pat_id[is.na(original_data$in_hospital)])
+sample_ids <- sample(missing_pat_ids, 9)
+
+xyplot(imputed_data, 
+       in_hospital ~ week | factor(pat_id), 
+       subset = pat_id %in% sample_ids,
+       pch = c(1, 20),
+       type = c("p"),
+       lwd = 0,
+       layout = c(3, 3),
+       main = "Hospitalisation: Observed vs Imputed")
+
+xyplot(imputed_data, 
+       unplanned_stay ~ week | factor(pat_id), 
+       subset = pat_id %in% sample_ids,
+       pch = c(1, 20),
+       type = c("p"),
+       lwd = 0,
+       layout = c(3, 3),
+       main = "Unplanned Stay: Observed vs Imputed")
+       
+xyplot(imputed_data, 
+       er_visit ~ week | factor(pat_id), 
+       subset = pat_id %in% sample_ids,
+       pch = c(1, 20),
+       type = c("p"),
+       lwd = 0,
+       layout = c(3, 3),
+       main = "ER Visit: Observed vs Imputed") 
+```
+
+## Constructing the Ordinal TAOOH Score {#sec-ordinal-score}
+
+After imputation of the component binary indicators, we construct a 5-level ordinal score representing the patient's weekly health state. The ordinal score is derived deterministically from the imputed indicators according to the following hierarchy:
+
+| Score | State | Condition |
+|-------|-------|-----------|
+| 5 | Dead | `death == 1` |
+| 4 | Unplanned Hospitalisation | `in_hospital == 1` and `unplanned_stay == 1` |
+| 3 | Emergency Room Visit | `er_visit == 1` |
+| 2 | Planned Hospitalisation | `in_hospital == 1` and `unplanned_stay == 0` |
+| 1 | Alive and Out of Hospital | Otherwise |
+
+: Definition of the 5-level ordinal TAOOH score {#tbl-ordinal-score}
+
+## Analysis of Trial Data
+
+For the final trial analysis, all $m = 50$ imputed datasets will be analysed, and posterior draws will be stacked to propagate imputation uncertainty into the final inference.
+
+## Simulation Study Dataset
+
+For simulation studies, a single completed dataset is extracted.
 
 ```{r}
 complete_data <- complete(imputed_data, 4)
