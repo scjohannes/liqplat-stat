@@ -1,0 +1,402 @@
+---
+title: Simulating a super-population
+format: 
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
+---
+
+The historical data is unfortunately too sparse to derive plausible simulated datasets. Where therefore generate our own, using a latent brownian motion model.
+
+## Setup
+
+```{r}
+#| output: false
+library(here)
+library(tidyverse)
+library(arrow)
+library(patchwork)
+library(markov.misc)
+library(data.table)
+library(Hmisc)
+library(rms)
+library(VGAM)
+
+set.seed(1234)
+```
+
+```{r}
+data <- read_parquet(here("data", "qol_historic.parquet")) |> 
+  mutate(
+    yprev = factor(yprev, ordered = FALSE),
+    ecog_fstcnt = factor(ecog_fstcnt)
+  )
+```
+
+## Fit PO model
+
+```{r}
+# we ignore the gap in the historic data, because the data are too sparse and adding gap doesn't provide a better fit. 
+# In LIQPLAT we have about three times the data, with shorter spacings, so we will add the gap then
+# We use polynomial here, because it makes it easier to simulate data later, but results very similar to splines
+m <- vglm(ordered(y) ~ pol(week, 3) + yprev + ecog_fstcnt + diagnosis, family = cumulative(reverse = TRUE, parallel = TRUE), data = data)
+
+# we can use standardize_sops from markov misc to calculate marginal sops
+# we don't include tx in the linear predictor, so control or treatment will be the same
+bs_sops <- bootstrap_standardized_sops(m, data = data, n_boot = 96, workers = 8, parallel = TRUE, ylevels = factor(1:7), absorb = NULL, times = 1:26, varnames = list(tvarname = "week", pvarname = "yprev", id = "pat_id", tx = "tx", gap = NULL))
+
+# it all seems quite compatible with constant QoL over time, maybe slight initialy until about 12 weeks, then slight deterioration again
+plot_bootstrap_sops(bs_sops) +
+  coord_cartesian(ylim = c(0, 0.3))
+```
+
+## Simulate Data
+
+### Markov Data
+
+For setting a prior on the treatment effect, we simulate some data from the model fitted to historical data.
+
+```{r}
+ints <- rev(coef(m)[1:6])
+extra_params <- coef(m)[-c(1:6)]
+fu <- 26
+
+N <- 1e4
+
+baseline_data <- data |> 
+  select(pat_id, baseline_q30, ecog_fstcnt, diagnosis, tx) |>
+  distinct() |> 
+  mutate(
+    yprev = factor(baseline_q30, ordered = TRUE),
+    week = 1) |> 
+  slice_sample(n = N, replace = TRUE) |> 
+  mutate(
+    id = row_number()
+  ) |> 
+  select(-pat_id, -week)
+
+g <- function(yprev, t, tx, ecog_fstcnt, diagnosis, parameter, extra_params) {
+  tx_effect <- parameter * as.numeric(as.character(tx))
+  time_effect <- extra_params["pol(week, 3)week"] * t + 
+    extra_params["pol(week, 3)week^2"] * t^2 + 
+    extra_params["pol(week, 3)week^3"] * t^3
+
+   yprev_effect <- rep(0, length(yprev))
+    for (state in unique(yprev)) {
+        if (state != 1) {
+            state_idx <- which(yprev == state) # use which because function is vectorized
+            yprev_coef_name <- paste0("yprev", state)
+            if (yprev_coef_name %in% names(extra_params)) {
+                yprev_effect[state_idx] <- extra_params[[yprev_coef_name]]
+            }
+        }
+    }
+    diagnosis_effect <- rep(0, length(diagnosis))
+    for (diag in unique(diagnosis)) {
+        if (diag != levels(diagnosis)[1]) {
+            diag_idx <- which(diagnosis == diag)
+            diag_coef_name <- paste0("diagnosis", diag)
+            if (diag_coef_name %in% names(extra_params)) {
+                diagnosis_effect[diag_idx] <- extra_params[[diag_coef_name]]
+            }
+        }
+    }
+    ecog_effect <- ifelse(ecog_fstcnt == 2, extra_params["ecog_fstcnt2"], 0)
+    lp <- as.numeric(tx_effect + time_effect + yprev_effect + diagnosis_effect + ecog_effect)
+    lp
+}
+
+d <- sim_trajectories_markov(
+  baseline_data = baseline_data,
+  follow_up_time = fu,
+  intercepts = ints, 
+  lp_function = g,
+  extra_params = extra_params,
+  parameter = log(1),
+  absorbing_states = NULL,
+  seed = 1234,
+  covariate_names = c("tx", "ecog_fstcnt", "diagnosis")
+)
+
+plot_sops(d, time_var = "time", geom = "line", facet_var = NULL) +
+  coord_cartesian(ylim = c(0, 0.3))
+
+calc_time_in_state_diff(d, target_state = 1:3)
+
+d_ha <- sim_trajectories_markov(
+  baseline_data = baseline_data,
+  follow_up_time = fu,
+  intercepts = ints, 
+  lp_function = g,
+  extra_params = extra_params,
+  parameter = log(0.53),
+  absorbing_states = NULL,
+  seed = 1234,
+  covariate_names = c("tx", "ecog_fstcnt", "diagnosis")
+)
+
+plot_sops(d_ha, time_var = "time", facet_var = "tx") +
+  scale_fill_brewer(palette = "Dark2")
+
+calc_time_in_state_diff(d_ha, target_state = 1:3)
+
+d_ha2 <- sim_trajectories_markov(
+  baseline_data = baseline_data,
+  follow_up_time = fu,
+  intercepts = ints, 
+  lp_function = g,
+  extra_params = extra_params,
+  parameter = log(1.9),
+  absorbing_states = NULL,
+  seed = 1234,
+  covariate_names = c("tx", "ecog_fstcnt", "diagnosis")
+)
+
+plot_sops(d_ha2, time_var = "time", facet_var = "tx")
+
+calc_time_in_state_diff(d_ha2, target_state = 1:3)
+```
+
+### Brownian Motion
+
+We simulate data based on a brownian motion model, which very loosely approximates the data generated from the markov model. I.e., initial increase followed by decrease after about 15 weeks.
+
+```{r}
+int <- c(-2.5, -0.5, 1, 2.5, 5, 6.5)
+K <- 7
+fu <- 26
+mu <- 0.15
+mu_quad <- -0.011
+sigma <- 0.5
+N <- 5e4
+
+super_pop <- sim_trajectories_brownian(
+  n_patients = N,
+  follow_up_time = fu,
+  n_states = K,
+  mu_drift = mu,
+  mu_quad = mu_quad,
+  sigma_rw = sigma,
+  thresholds = int,
+  absorbing_state = NULL,
+  drift_change_times = c(20, 50)
+  ) |> 
+  mutate(week = time)
+
+effect_h0 <- calc_time_in_state_diff(super_pop, target_state = 1:3)$true_effect
+write_parquet(super_pop, here("1-qol", "sim-data", sprintf("super_pop_h0_effect_%.2f.parquet", effect_h0)))
+
+plot_sops(super_pop) +
+  scale_fill_brewer(palette = "Dark2")
+```
+
+1 week improvement
+
+```{r}
+super_pop_ha1 <- sim_trajectories_brownian(
+  n_patients = N,
+  follow_up_time = fu,
+  n_states = K,
+  mu_drift = mu,
+  mu_quad = mu_quad,
+  mu_treatment_effect = -0.02,
+  sigma_rw = sigma,
+  thresholds = int,
+  absorbing_state = NULL,
+  drift_change_times = c(20, 50)
+  ) |> 
+  mutate(week = time)
+
+effect_ha1 <- calc_time_in_state_diff(super_pop_ha1, target_state = 1:3)$true_effect
+write_parquet(super_pop_ha1, here("1-qol", "sim-data", sprintf("super_pop_ha1_effect_%.2f.parquet", effect_ha1)))
+
+plot_sops(super_pop_ha1) +
+  scale_fill_brewer(palette = "Dark2")
+
+calc_time_in_state_diff(super_pop_ha1, target_state = 1:3)
+```
+
+2 week improvement
+
+```{r}
+super_pop_ha2 <- sim_trajectories_brownian(
+  n_patients = N,
+  follow_up_time = fu,
+  n_states = K,
+  mu_drift = mu,
+  mu_quad = mu_quad,
+  mu_treatment_effect = -0.042,
+  sigma_rw = sigma,
+  thresholds = int,
+  absorbing_state = NULL,
+  drift_change_times = c(20, 50)
+  ) |> 
+  mutate(week = time)
+
+effect_ha2 <- calc_time_in_state_diff(super_pop_ha2, target_state = 1:3)$true_effect
+write_parquet(super_pop_ha2, here("1-qol", "sim-data", sprintf("super_pop_ha2_effect_%.2f.parquet", effect_ha2)))
+
+plot_sops(super_pop_ha2) +
+  scale_fill_brewer(palette = "Dark2")
+
+calc_time_in_state_diff(super_pop_ha2, target_state = 1:3)
+```
+
+3 week improvement
+
+```{r}
+super_pop_ha3 <- sim_trajectories_brownian(
+  n_patients = N,
+  follow_up_time = fu,
+  n_states = K,
+  mu_drift = mu,
+  mu_quad = mu_quad,
+  mu_treatment_effect = -0.065,
+  sigma_rw = sigma,
+  thresholds = int,
+  absorbing_state = NULL,
+  drift_change_times = c(20, 50)
+  ) |> 
+  mutate(week = time)
+
+effect_ha3 <- calc_time_in_state_diff(super_pop_ha3, target_state = 1:3)$true_effect
+write_parquet(super_pop_ha3, here("1-qol", "sim-data", sprintf("super_pop_ha3_effect_%.2f.parquet", effect_ha3)))
+
+plot_sops(super_pop_ha3) +
+  scale_fill_brewer(palette = "Dark2")
+
+calc_time_in_state_diff(super_pop_ha3, target_state = 1:3)
+```
+
+## Plots
+
+### Individual Trajectories
+
+```{r}
+#tile plot
+ids <- super_pop$id |> unique() |> sample(20)
+
+fig_tile_random <- super_pop |> 
+  filter(id %in% ids) |> 
+  mutate(id = as.factor(as.numeric(as.factor((id))))) |> 
+  ggplot(aes(y = id, x = time)) +
+  geom_tile(mapping = aes(fill = factor(y)), width = 0.95, height = 0.4) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = 1:26) +
+  labs(title = "Individual Trajectories - No Treatment Effect",
+       y = "Patient ID",
+       x = "Study Week",
+       fill = "State")
+
+fig_tile_random
+```
+
+The serial correlation appears appear to be quite low.
+
+### Transition Plot
+
+```{r}
+fu <- 26
+# Create the transition data.frame for week = x
+get_transitions_df <- function(df, x){
+  
+  
+  subset <- df[df$week == x, ]
+  subtable <- table(subset$y, subset$yprev, dnn = c("y", "yprev")) |> 
+  as.data.table()
+
+  subtable[, week := x]
+  return(subtable)
+}
+
+# Get the transition data frame for each week and combine
+# into a single data frame
+df_transitions <- 
+  map(2:fu, ~get_transitions_df(super_pop, .x)) |>
+  rbindlist()
+
+# Compute the proportion of transitions relative to the number of
+# transitions on each week
+df_transitions <-
+  df_transitions |>
+    mutate(total = sum(N),
+           p = N / total, .by=week)
+```
+
+```{r}
+FONT_SIZE <- 10
+df_transitions |>
+    filter(week%%2 == 0) |> 
+    mutate(yprev = as.factor(yprev), y = as.factor(y)) |>
+    filter(p != 0) |>
+    ggplot() +
+    aes(x = yprev, y = y, size = p) +
+    geom_point() +
+    scale_size_area(breaks = seq(0, 1, by = 0.1), max_size = 4) +
+    facet_wrap(~week,
+               nrow = 4,
+               scales = "free",
+               labeller = labeller(week = \(x) glue::glue("week {as.integer(x)-1} to {as.integer(x)}"))) +
+    scale_x_discrete(drop=FALSE) +
+    scale_y_discrete(drop=FALSE) +
+    theme(axis.ticks = element_blank()) +
+    theme(aspect.ratio = 0.9) +
+    labs(x = "Previous State",
+         y = "Current State",
+         size = "Proportion")
+```
+
+### Correlation Plot
+
+```{r}
+# Create correlation matrix
+corr <-
+  super_pop |> 
+    select(id, week, y) |>
+    arrange(week) |>
+    mutate(y = as.integer(y)) |>
+    pivot_wider(names_from = week, values_from = y) |>
+    ungroup() |>
+    select(-id) |>
+    cor(method="spearman", use="pairwise.complete.obs")
+
+corr |>
+  as.data.frame() |>
+  rownames_to_column() |>
+  pivot_longer(-rowname) |>
+  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
+  filter(rowname < name) |> #remove tiles below diagonal, because redundant
+  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
+  ggplot() + 
+    aes(x=rowname, y=name, fill=value) +
+    geom_tile() +
+    geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
+              color="black",
+              size = 3) +
+    scale_fill_viridis_c(limits=c(-0.01,1), n.breaks = 10) +
+    expand_limits(value = c(0, 1)) +
+    # cowplot::theme_half_open(font_size=FONT_SIZE,
+    #           font_family = "Source Sans Pro") +
+    theme(plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank()) +
+    theme(legend.key.height = unit(0.8, "in")) +
+    labs(x="Study week",
+         y="Study week",
+         fill="")
+```
+
+### Variogram
+
+Correlation deacreases over time, as expected.
+
+```{r}
+plotCorrM(corr)[[2]]
+```
