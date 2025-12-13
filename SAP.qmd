@@ -677,7 +677,7 @@ $$
 f(t) & = \sum_{p=1}^3 \beta_{t, p} \cdot B_p(t) \\
 \\
 \pi_1, \dots, \pi_K & \sim \text{Dirichlet}(0.308)\text{, which induces priors on } \alpha_j \\
-\beta_{tx} & \sim \mathcal{N}(0, 0.940) \\
+\beta_{tx} & \sim \mathcal{N}(0, 0.5) \\
 \beta_{t, p \in 1, 2, 3} & \sim \mathcal{N}(0, 100) \\
 \beta_{gap} & \sim \mathcal{N}(0, 100) \\
 \beta_{\text{yprev}=k \in 2..7} & \sim \mathcal{N}(0, 100) \\
@@ -715,12 +715,14 @@ Where:
 #### Prior Specifications
 
 -   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^12] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^13]
--   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.940)$ on $\beta_{tx}$ produces a prior a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has $80\%$ of its prior mass between $[-6.0, +4.0]$.
--   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (Default priors in `rmsb`).
+-   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.5)$ on $\beta_{tx}$ [^14]produces a prior distribution for $\tau_W^{\text{psATE}}$ with a median at $0$ weeks that has about $80\%$ of its prior mass between $[-3, +4]$.
+-   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (default priors in `rmsb`).
 
 [^12]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
 
 [^13]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
+
+[^14]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.52$ and $1.90$.
 
 #### Implementation
 
@@ -735,7 +737,7 @@ pcontrast_arg <- list(
   c2 = list(tx = 0),
   contrast = expression(c1 - c2),
   mu = 0,
-  sd = 0.940
+  sd = 0.5
 )
 
 model_qol <- blrm(
@@ -917,9 +919,9 @@ Where:
 
 #### Rationale for selecting the second‑order model and interactions
 
-Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^14]
+Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^15]
 
-[^14]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+[^15]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
 
 #### Rationale for Random Intercepts
 
