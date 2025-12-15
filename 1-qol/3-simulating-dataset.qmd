@@ -51,7 +51,7 @@ m <- vglm(ordered(y) ~ pol(week, 3) + yprev + ecog_fstcnt + diagnosis, family = 
 bs_sops <- bootstrap_standardized_sops(m, data = data, n_boot = 96, workers = 8, parallel = TRUE, ylevels = factor(1:7), absorb = NULL, times = 1:26, varnames = list(tvarname = "week", pvarname = "yprev", id = "pat_id", tx = "tx", gap = NULL))
 
 # it all seems quite compatible with constant QoL over time, maybe slight initialy until about 12 weeks, then slight deterioration again
-plot_bootstrap_sops(bs_sops) +
+plot_bootstrap_sops(bs_sops$sops) +
   coord_cartesian(ylim = c(0, 0.3))
 ```
 
@@ -110,7 +110,10 @@ g <- function(yprev, t, tx, ecog_fstcnt, diagnosis, parameter, extra_params) {
     lp <- as.numeric(tx_effect + time_effect + yprev_effect + diagnosis_effect + ecog_effect)
     lp
 }
+```
 
+```{r}
+# H0
 d <- sim_trajectories_markov(
   baseline_data = baseline_data,
   follow_up_time = fu,
@@ -126,8 +129,12 @@ d <- sim_trajectories_markov(
 plot_sops(d, time_var = "time", geom = "line", facet_var = NULL) +
   coord_cartesian(ylim = c(0, 0.3))
 
+plot_sops(d, time_var = "time", facet_var = "tx") +
+  scale_fill_brewer(palette = "Dark2")
+
 calc_time_in_state_diff(d, target_state = 1:3)
 
+# HA: largest plausible effect (only 10% of prior mass will be above this)
 d_ha <- sim_trajectories_markov(
   baseline_data = baseline_data,
   follow_up_time = fu,
@@ -145,6 +152,7 @@ plot_sops(d_ha, time_var = "time", facet_var = "tx") +
 
 calc_time_in_state_diff(d_ha, target_state = 1:3)
 
+# Inverge of the largest plausible effect (because we have to set normal prior on log scale)
 d_ha2 <- sim_trajectories_markov(
   baseline_data = baseline_data,
   follow_up_time = fu,
@@ -157,7 +165,8 @@ d_ha2 <- sim_trajectories_markov(
   covariate_names = c("tx", "ecog_fstcnt", "diagnosis")
 )
 
-plot_sops(d_ha2, time_var = "time", facet_var = "tx")
+plot_sops(d_ha2, time_var = "time", facet_var = "tx") +
+  scale_fill_brewer(palette = "Dark2")
 
 calc_time_in_state_diff(d_ha2, target_state = 1:3)
 ```
@@ -173,9 +182,9 @@ fu <- 26
 mu <- 0.15
 mu_quad <- -0.011
 sigma <- 0.5
-N <- 5e4
+N <- 2e5
 
-super_pop <- sim_trajectories_brownian(
+super_pop_h0 <- sim_trajectories_brownian(
   n_patients = N,
   follow_up_time = fu,
   n_states = K,
@@ -188,11 +197,12 @@ super_pop <- sim_trajectories_brownian(
   ) |> 
   mutate(week = time)
 
-effect_h0 <- calc_time_in_state_diff(super_pop, target_state = 1:3)$true_effect
-write_parquet(super_pop, here("1-qol", "sim-data", sprintf("super_pop_h0_effect_%.2f.parquet", effect_h0)))
+effect_h0 <- calc_time_in_state_diff(super_pop_h0, target_state = 1:3)$true_effect
 
-plot_sops(super_pop) +
+plot_sops(super_pop_h0) +
   scale_fill_brewer(palette = "Dark2")
+
+write_parquet(super_pop_h0, here("1-qol", "sim-data", sprintf("super_pop_h0_effect_%.2f.parquet", effect_h0)))
 ```
 
 1 week improvement
@@ -213,7 +223,7 @@ super_pop_ha1 <- sim_trajectories_brownian(
   mutate(week = time)
 
 effect_ha1 <- calc_time_in_state_diff(super_pop_ha1, target_state = 1:3)$true_effect
-write_parquet(super_pop_ha1, here("1-qol", "sim-data", sprintf("super_pop_ha1_effect_%.2f.parquet", effect_ha1)))
+write_parquet(super_pop_ha1, here("1-qol", "sim-data", sprintf("super_pop_ha_effect_%.2f.parquet", effect_ha1)))
 
 plot_sops(super_pop_ha1) +
   scale_fill_brewer(palette = "Dark2")
@@ -239,7 +249,7 @@ super_pop_ha2 <- sim_trajectories_brownian(
   mutate(week = time)
 
 effect_ha2 <- calc_time_in_state_diff(super_pop_ha2, target_state = 1:3)$true_effect
-write_parquet(super_pop_ha2, here("1-qol", "sim-data", sprintf("super_pop_ha2_effect_%.2f.parquet", effect_ha2)))
+write_parquet(super_pop_ha2, here("1-qol", "sim-data", sprintf("super_pop_ha_effect_%.2f.parquet", effect_ha2)))
 
 plot_sops(super_pop_ha2) +
   scale_fill_brewer(palette = "Dark2")
@@ -265,7 +275,7 @@ super_pop_ha3 <- sim_trajectories_brownian(
   mutate(week = time)
 
 effect_ha3 <- calc_time_in_state_diff(super_pop_ha3, target_state = 1:3)$true_effect
-write_parquet(super_pop_ha3, here("1-qol", "sim-data", sprintf("super_pop_ha3_effect_%.2f.parquet", effect_ha3)))
+write_parquet(super_pop_ha3, here("1-qol", "sim-data", sprintf("super_pop_ha_effect_%.2f.parquet", effect_ha3)))
 
 plot_sops(super_pop_ha3) +
   scale_fill_brewer(palette = "Dark2")
@@ -279,9 +289,9 @@ calc_time_in_state_diff(super_pop_ha3, target_state = 1:3)
 
 ```{r}
 #tile plot
-ids <- super_pop$id |> unique() |> sample(20)
+ids <- super_pop_h0$id |> unique() |> sample(20)
 
-fig_tile_random <- super_pop |> 
+fig_tile_random <- super_pop_h0 |> 
   filter(id %in% ids) |> 
   mutate(id = as.factor(as.numeric(as.factor((id))))) |> 
   ggplot(aes(y = id, x = time)) +
@@ -317,7 +327,7 @@ get_transitions_df <- function(df, x){
 # Get the transition data frame for each week and combine
 # into a single data frame
 df_transitions <- 
-  map(2:fu, ~get_transitions_df(super_pop, .x)) |>
+  map(2:fu, ~get_transitions_df(super_pop_h0, .x)) |>
   rbindlist()
 
 # Compute the proportion of transitions relative to the number of
@@ -356,7 +366,7 @@ df_transitions |>
 ```{r}
 # Create correlation matrix
 corr <-
-  super_pop |> 
+  super_pop_h0 |> 
     select(id, week, y) |>
     arrange(week) |>
     mutate(y = as.integer(y)) |>

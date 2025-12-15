@@ -1,0 +1,575 @@
+---
+title: "Bayesian Power Simulation Pipeline - QoL Analysis"
+---
+
+This document implements a Bayesian power simulation to compare three analysis 
+strategies for Quality of Life outcomes:
+  
+1. **Markov Model** (`blrm`): Longitudinal ordinal model using all repeated measures
+2. **6-Month Ordinal** (`blrm`): Cross-sectional ordinal model at 6 months only  
+3. **Change from Baseline** (`brms`): Linear model for change from baseline at 6 months
+
+All models use comparably skeptical priors centered at 0 for the treatment effect.
+
+**Scenarios:**
+
+- **H0**: effect_size = -0.05 (null hypothesis, treatment rerandomized)
+- **HA**: effect_size = 0.98, 1.96, 2.96 (alternative hypotheses, no rerandomization)
+
+The power for the 6-month ordinal models is an overestimate, because this analysis 
+assumes we would have data from every patient at 6 months, which in routine care 
+we would not.
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+library(here)
+library(arrow)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(purrr)
+library(furrr)
+library(fs)
+library(glue)
+library(data.table)
+library(rmsb)
+library(brms)
+library(markov.misc)
+
+# Configuration
+N_SIMULATIONS <- 96
+SAMPLE_SIZE <- 270 * 0.8       # Total patients to sample per iteration (20% die)
+ALLOCATION_RATIO <- 2/3        # Proportion allocated to treatment (2:1 ratio)
+N_CORES <- 6
+SEED <- 123456
+DECISION_THRESHOLD <- 0.95    # P(benefit) threshold for declaring success
+
+# Paths
+DATA_PATH <- here("1-qol", "sim-data")
+OUTPUT_PATH <- here("1-qol", "output", "bayesian-power-sim")
+MODEL_PATH <- here("1-qol", "models")
+
+# Create output directory if needed
+if (!dir.exists(OUTPUT_PATH)) dir.create(OUTPUT_PATH, recursive = TRUE)
+```
+
+## Step 1: Identify Scenarios
+
+We scan for available superpopulation files and classify them as H0 or HA.
+
+```{r identify-scenarios}
+# Get all superpopulation files
+h0_files <- list.files(DATA_PATH, pattern = "super_pop_h0_effect_.*\\.parquet", full.names = TRUE)
+ha_files <- list.files(DATA_PATH, pattern = "super_pop_ha_effect_.*\\.parquet", full.names = TRUE)
+
+# Extract effect sizes
+h0_effect_sizes <- as.numeric(gsub(".*super_pop_h0_effect_([0-9.-]+)\\.parquet", "\\1", h0_files))
+ha_effect_sizes <- as.numeric(gsub(".*super_pop_ha_effect_([0-9.-]+)\\.parquet", "\\1", ha_files))
+
+# Create scenario tibble
+scenarios <- bind_rows(
+  tibble(
+    scenario_type = "H0",
+    effect_size = h0_effect_sizes,
+    data_path = h0_files,
+    rerandomize = TRUE,
+    true_value = 0  # For H0, true effect under null is 0
+  ),
+  tibble(
+    scenario_type = "HA",
+    effect_size = ha_effect_sizes,
+    data_path = ha_files,
+    rerandomize = FALSE,
+    true_value = NA_real_  # True value unknown for HA scenarios
+  )
+) |>
+  mutate(
+    scenario_label = glue("{scenario_type}_effect_{effect_size}"),
+    output_path = file.path(OUTPUT_PATH, scenario_label)
+  )
+
+scenarios
+```
+
+## Step 2: Define Data Preparation Functions
+
+```{r data-prep-functions}
+#' Prepare data for Markov model (longitudinal analysis)
+#' 
+#' @param df Full dataset with repeated measures
+#' @param sample_percentage Proportion of follow-up observations to sample
+#' @return Data ready for blrm() Markov model
+prepare_markov_data <- function(df, sample_percentage = 0.15) {
+  # Create baseline observation
+  baseline <- df |>
+    filter(time == 1) |>
+    mutate(y = yprev, time = 0) |>
+    select(-yprev)
+  
+  # Sample follow-up observations (simulating sparse measurement)
+  follow_up <- df |>
+    slice_sample(prop = sample_percentage) |>
+    select(-yprev)
+  
+  # Combine and create lagged variables
+  data_for_model <- baseline |>
+    bind_rows(follow_up) |>
+    arrange(id, time) |>
+    group_by(id) |>
+    mutate(
+      yprev = lag(y, n = 1, order_by = time),
+      yprev = factor(yprev, levels = 1:7, ordered = FALSE),
+      timeprev = lag(time, n = 1, order_by = time),
+      gap = time - timeprev,
+      y = as.numeric(as.character(y))
+    ) |>
+    ungroup() |>
+    filter(!is.na(yprev)) |>
+    select(-timeprev)
+  
+  data_for_model
+}
+
+#' Prepare data for 6-month ordinal model (cross-sectional)
+#' 
+#' @param df Full dataset with repeated measures
+#' @return Data ready for blrm() ordinal model at 6 months
+prepare_6m_ordinal_data <- function(df) {
+  # Get baseline for each patient
+  baseline <- df |>
+    group_by(id) |>
+    arrange(time) |> 
+    slice_head(n = 1) |>
+    mutate(ybaseline = as.numeric(as.character(yprev))) |>
+    select(id, ybaseline)
+  
+  # Get last observation after week 14 (approximately 6 months)
+  data_for_model <- df |>
+    filter(time > 14) |>
+    group_by(id) |>
+    arrange(desc(time)) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    left_join(baseline, by = "id") |>
+    mutate(
+      ybaseline = factor(ybaseline, levels = 1:7, ordered = FALSE),
+      y = as.numeric(as.character(y))
+    )
+  
+  data_for_model
+}
+
+#' Prepare data for change-from-baseline model
+#' 
+#' @param df Full dataset with repeated measures
+#' @return Data ready for brms linear model
+prepare_cfb_data <- function(df) {
+  # Get baseline for each patient
+  baseline <- df |>
+    group_by(id) |>
+    arrange(time) |> 
+    slice_head(n = 1) |>
+    mutate(ybaseline = as.numeric(as.character(yprev))) |>
+    select(id, ybaseline)
+  
+  # Get last observation after week 14
+  data_for_model <- df |>
+    filter(time > 14) |>
+    group_by(id) |>
+    arrange(desc(time)) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    left_join(baseline, by = "id") |>
+    mutate(
+      y = as.numeric(as.character(y)),
+      y_delta = y - ybaseline
+    )
+  
+  data_for_model
+}
+```
+
+## Step 3: Load Pre-compiled BRMS Template
+
+```{r load-brms-template}
+brms_template <- readRDS(file.path(MODEL_PATH, "cfb_brms_template.rds"))
+```
+
+## Step 4: Define Bayesian Fitting Functions
+
+Each function fits a Bayesian model and returns results in the format expected 
+by `assess_operating_characteristics()`: a list where the first element is a 
+summary tibble with required columns.
+
+For Bayesian models, we use:
+- `estimate`: posterior median
+- `std_error`: posterior SD
+- `statistic`: NA (not applicable)
+- `p_value`: 1 - P(benefit) to work with standard "reject if p < alpha" logic
+- `conf_low`, `conf_high`: 95% credible interval
+
+The posterior draws are saved in the details for later analysis.
+
+```{r fitting-functions}
+#' Fit Markov model using blrm
+#' 
+#' @param data Sampled data from superpopulation
+#' @param iter Iteration number
+#' @return List with summary tibble and posterior draws
+fit_markov_blrm <- function(data, iter) {
+  # Prepare data for Markov model
+  markov_data <- prepare_markov_data(data, sample_percentage = 0.15)
+  
+  # Set up datadist
+  dd <- datadist(markov_data)
+  assign("dd", dd, envir = .GlobalEnv)
+  options(datadist = "dd")
+  
+  # Skeptical prior: normal(0, 0.5) on log-OR scale
+  pcontrast_arg <- list(
+    c1 = list(tx = 1),
+    c2 = list(tx = 0),
+    contrast = expression(c1 - c2),
+    mu = 0,
+    sd = 0.5
+  )
+  
+  model <- tryCatch({
+    blrm(
+      formula = y ~ tx + rcs(time, 4) + yprev * gap,
+      pcontrast = pcontrast_arg,
+      data = markov_data,
+      ppo = ~time,
+      cppo = function(y) y,
+      refresh = 0,
+      iter = 2000,
+      chains = 4,
+      method = "sampling",
+      seed = 1,
+      cores = 1,
+      loo = FALSE
+    )
+  }, error = function(e) {
+    message(glue("ERROR in Markov iteration {iter}: {e$message}"))
+    return(NULL)
+  })
+  
+  if (is.null(model)) {
+    return(list(
+      tibble(
+        iter = iter,
+        analysis = "markov_blrm",
+        se_type = "bayesian",
+        term = "tx",
+        estimate = NA_real_,
+        std_error = NA_real_,
+        statistic = NA_real_,
+        p_value = NA_real_,
+        conf_low = NA_real_,
+        conf_high = NA_real_
+      )
+    ))
+  }
+  
+  # Extract tx posterior
+  tx_col <- which(colnames(model$draws) == "tx")
+  if (length(tx_col) == 0) tx_col <- 7
+  tx_draws <- as.numeric(model$draws[, tx_col])
+  
+  # Calculate P(benefit): lower is better (log-OR < 0 means treatment helps)
+  p_benefit <- mean(tx_draws < 0)
+  
+  # Create summary in required format
+  summary_tbl <- tibble(
+    iter = iter,
+    analysis = "markov_blrm",
+    se_type = "bayesian",
+    term = "tx",
+    estimate = median(tx_draws),
+    std_error = sd(tx_draws),
+    statistic = NA_real_,
+    p_value = 1 - p_benefit,  # Convert so p < 0.05 means success
+    conf_low = quantile(tx_draws, 0.025),
+    conf_high = quantile(tx_draws, 0.975)
+  )
+  
+  # Return list: summary + details (posterior draws)
+  list(
+    summary_tbl,
+    list(
+      posterior_draws = tibble(
+        iter = iter,
+        analysis = "markov_blrm",
+        draw_id = seq_along(tx_draws),
+        tx_effect = tx_draws
+      ),
+      p_benefit = p_benefit
+    )
+  )
+}
+
+#' Fit 6-month ordinal model using blrm
+#' 
+#' @param data Sampled data from superpopulation
+#' @param iter Iteration number
+#' @return List with summary tibble and posterior draws
+fit_6m_ordinal_blrm <- function(data, iter) {
+  # Prepare data for 6-month ordinal model
+  ordinal_data <- prepare_6m_ordinal_data(data)
+  
+  ordinal_data <- ordinal_data |> 
+    mutate(ybaseline = factor(ybaseline, ordered = FALSE))
+  
+  dd <- datadist(ordinal_data)
+  assign("dd", dd, envir = .GlobalEnv)
+  options(datadist = "dd")
+  
+  # Skeptical prior: normal(0, 0.5) on log-OR scale
+  pcontrast_arg <- list(
+    c1 = list(tx = 1),
+    c2 = list(tx = 0),
+    contrast = expression(c1 - c2),
+    mu = 0,
+    sd = 0.5
+  )
+  
+  model <- tryCatch({
+    blrm(
+      formula = y ~ tx + ybaseline,
+      pcontrast = pcontrast_arg,
+      data = ordinal_data,
+      refresh = 0,
+      iter = 2000,
+      chains = 4,
+      method = "sampling",
+      seed = 1,
+      cores = 1,
+      loo = FALSE
+    )
+  }, error = function(e) {
+    message(glue("ERROR in 6m ordinal iteration {iter}: {e$message}"))
+    return(NULL)
+  })
+  
+  if (is.null(model)) {
+    return(list(
+      tibble(
+        iter = iter,
+        analysis = "ordinal_6m_blrm",
+        se_type = "bayesian",
+        term = "tx",
+        estimate = NA_real_,
+        std_error = NA_real_,
+        statistic = NA_real_,
+        p_value = NA_real_,
+        conf_low = NA_real_,
+        conf_high = NA_real_
+      )
+    ))
+  }
+  
+  # Extract tx posterior
+  tx_col <- which(colnames(model$draws) == "tx")
+  if (length(tx_col) == 0) tx_col <- 7
+  tx_draws <- as.numeric(model$draws[, tx_col])
+  
+  p_benefit <- mean(tx_draws < 0)
+  
+  summary_tbl <- tibble(
+    iter = iter,
+    analysis = "ordinal_6m_blrm",
+    se_type = "bayesian",
+    term = "tx",
+    estimate = median(tx_draws),
+    std_error = sd(tx_draws),
+    statistic = NA_real_,
+    p_value = 1 - p_benefit,
+    conf_low = quantile(tx_draws, 0.025),
+    conf_high = quantile(tx_draws, 0.975)
+  )
+  
+  list(
+    summary_tbl,
+    list(
+      posterior_draws = tibble(
+        iter = iter,
+        analysis = "ordinal_6m_blrm",
+        draw_id = seq_along(tx_draws),
+        tx_effect = tx_draws
+      ),
+      p_benefit = p_benefit
+    )
+  )
+}
+
+#' Fit change-from-baseline model using brms
+#' 
+#' @param data Sampled data from superpopulation
+#' @param iter Iteration number
+#' @return List with summary tibble and posterior draws
+fit_cfb_brms <- function(data, iter) {
+  # Prepare data for CFB model
+  cfb_data <- prepare_cfb_data(data)
+  
+  model <- tryCatch({
+    update(
+      brms_template,
+      newdata = cfb_data,
+      refresh = 0,
+      seed = 1,
+      cores = 1
+    )
+  }, error = function(e) {
+    message(glue("ERROR in CFB iteration {iter}: {e$message}"))
+    return(NULL)
+  })
+  
+  if (is.null(model)) {
+    return(list(
+      tibble(
+        iter = iter,
+        analysis = "cfb_brms",
+        se_type = "bayesian",
+        term = "tx",
+        estimate = NA_real_,
+        std_error = NA_real_,
+        statistic = NA_real_,
+        p_value = NA_real_,
+        conf_low = NA_real_,
+        conf_high = NA_real_
+      )
+    ))
+  }
+  
+  # Extract tx posterior
+  draws_df <- brms::as_draws_df(model)
+  tx_draws <- draws_df$b_tx
+  
+  p_benefit <- mean(tx_draws < 0)
+  
+  summary_tbl <- tibble(
+    iter = iter,
+    analysis = "cfb_brms",
+    se_type = "bayesian",
+    term = "tx",
+    estimate = median(tx_draws),
+    std_error = sd(tx_draws),
+    statistic = NA_real_,
+    p_value = 1 - p_benefit,
+    conf_low = quantile(tx_draws, 0.025),
+    conf_high = quantile(tx_draws, 0.975)
+  )
+  
+  list(
+    summary_tbl,
+    list(
+      posterior_draws = tibble(
+        iter = iter,
+        analysis = "cfb_brms",
+        draw_id = seq_along(tx_draws),
+        tx_effect = tx_draws
+      ),
+      p_benefit = p_benefit
+    )
+  )
+}
+```
+
+## Step 5: Run Simulations for All Scenarios
+
+```{r run-simulations}
+# Define fit functions list - all use the same data path since they're 
+# applied to the same sampled dataset
+fit_functions <- list(
+  markov_blrm = fit_markov_blrm,
+  ordinal_6m_blrm = fit_6m_ordinal_blrm,
+  cfb_brms = fit_cfb_brms
+)
+
+# Run simulations for each scenario
+for (i in seq_len(nrow(scenarios))) {
+  scenario <- scenarios[i, ]
+  
+  message(glue("\n=== Running scenario: {scenario$scenario_label} ==="))
+  
+  # Create output directory
+  if (!dir.exists(scenario$output_path)) {
+    dir.create(scenario$output_path, recursive = TRUE)
+  }
+  
+  # Data paths for all analyses (same file)
+  data_paths <- list(
+    markov_blrm = scenario$data_path,
+    ordinal_6m_blrm = scenario$data_path,
+    cfb_brms = scenario$data_path
+  )
+  
+  # Check for completed iterations
+  summary_dir <- file.path(scenario$output_path, "summary")
+  if (dir.exists(summary_dir)) {
+    completed_files <- list.files(summary_dir, pattern = "_iter_\\d+\\.rds", 
+                                   recursive = TRUE, full.names = TRUE)
+    completed_iters <- as.integer(
+      unique(gsub(".*_iter_(\\d+)\\.rds", "\\1", completed_files))
+    )
+  } else {
+    completed_iters <- integer(0)
+  }
+  
+  iters_to_run <- setdiff(1:N_SIMULATIONS, completed_iters)
+  n_to_run <- length(iters_to_run)
+  n_completed <- length(completed_iters)
+  
+  message(glue("{n_completed} of {N_SIMULATIONS} iterations already complete."))
+  
+  if (n_to_run > 0) {
+    message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
+    
+    future::plan(future.callr::callr, workers = N_CORES)
+    
+    furrr::future_map(
+      .x = iters_to_run,
+      .f = ~ markov.misc::assess_operating_characteristics(
+        iter_num = .x,
+        data_paths = data_paths,
+        output_path = scenario$output_path,
+        fit_functions = fit_functions,
+        sample_size = SAMPLE_SIZE,
+        allocation_ratio = ALLOCATION_RATIO,
+        seed = SEED,
+        rerandomize = scenario$rerandomize
+      ),
+      .options = furrr_options(
+        seed = TRUE,
+        globals = c(
+          # --- Helper Functions & Templates ---
+          "prepare_markov_data", 
+          "prepare_6m_ordinal_data", 
+          "prepare_cfb_data", 
+          "brms_template",
+          
+          # --- Configuration Constants ---
+          "SEED",
+          "SAMPLE_SIZE",
+          "ALLOCATION_RATIO",
+          "fit_functions",
+          
+          # --- Loop-Specific Variables ---
+          "scenario",     # Needed for scenario$output_path and scenario$rerandomize
+          "data_paths"    # Needed for the data_paths argument
+        ),
+        packages = c("rms", "rmsb", "brms", "dplyr", "tibble", "markov.misc")
+      ),
+      .progress = TRUE
+    )
+    
+    future::plan("sequential")
+    message(glue("Finished {n_to_run} simulations for {scenario$scenario_label}."))
+  } else {
+    message("All simulations already complete.")
+  }
+}
+
+message("\n=== All scenarios completed ===")
+```
