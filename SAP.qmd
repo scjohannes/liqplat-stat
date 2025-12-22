@@ -1,6 +1,5 @@
 ---
 title: "LIQPLAT Statistical Analysis Plan"
-author: "Johannes Schwenke"
 date: today
 csl: chicago-author-date-16th-edition.csl
 format: 
@@ -20,6 +19,7 @@ bibliography: references.bib
 ```{r}
 #| output: false
 #| echo: false
+library(here)
 library(tidyverse)
 library(tinytable)
 library(arrow)
@@ -143,24 +143,39 @@ library(arrow)
 
 This Statistical Analysis Plan has been reviewed and approved by the undersigned:
 
-|  |
-|:---|
-| **Principal Investigator** |
-|  |
-| Name: Benjamin Kasenda |
-|  |
++:----------------------------------------------------------------------------------+
+| **Principal Investigator**                                                        |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+| Name: Benjamin Kasenda                                                            |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
 | Signature: \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_ |
-|  |
-| Date: \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_ |
-|  |
-|  |
-| **Trial Statistician** |
-|  |
-| Name: Johannes Schwenke |
-|  |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+| Date: \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_          |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+| **Trial Statistician**                                                            |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+| Name: Johannes Schwenke                                                           |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
 | Signature: \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_ |
-|  |
-| Date: \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_ |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+| Date: \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_          |
++-----------------------------------------------------------------------------------+
 
 {{< pagebreak >}}
 
@@ -245,28 +260,28 @@ Trial specific data, such as dates of random selection, are stored within a REDC
 
 ## Primary Endpoints for Randomized Comparison
 
-This SAP focuses on the three primary endpoints for the randomized comparison between the group selected for invitation to the SAT and the external control group (not selected for invitation).
+This SAP focuses on the three primary endpoints for the randomized comparison between the group selected for invitation to the SAT and the external comparator (not selected for invitation).
 
-1.  **Overall Survival (OS):** Time from date of random selection until death due to any cause.
-2.  **Quality of Life (QoL):** Patient-reported global quality of life measured longitudinally using EORTC questionnaires during routine care.
-3.  **Time Alive and Out of Hospital (TAOOH):** Time spent alive and not hospitalized (including emergency room visits) during the follow-up period.
+1.  **Overall Survival (OS):** Time from date of random selection until death due to any cause within 6 months after random selection.
+2.  **Quality of Life (QoL):** Patient-reported global quality of life measured longitudinally using EORTC questionnaires during routine care up to 6 months after random selection.
+3.  **Time Alive and Out of Hospital (TAOOH):** Time spent alive and out of hospital up to 6 months after random selection.
 
-Secondary endpoints as described in the protocol (e.g., PFS, number of imaging exams) will be analyzed but are considered more exploratory.
+Secondary endpoints as described in the protocol (e.g., PFS, number of imaging exams) will be analyzed but are considered exploratory and are thus no pre-specified in more detail.
 
 ## Analysis Populations
 
 ### Intention-to-Treat (ITT) Population
 
-The ITT population includes all patients from the prospective research registry who were eligible for LIQPLAT according to the criteria in @sec-eligibility. It comprises two groups defined by the random selection process:
+The ITT population includes all patients from the prospective research registry who were eligible for LIQPLAT according to the criteria in @sec-eligibility and were considered for random invitation. It comprises two groups defined by the random selection process:
 
-1.  **Intervention Group (Selected for Invitation):** All eligible patients randomly selected for invitation to participate in the LIQPLAT single-arm trial (SAT).
-2.  **External Control Group (Not Selected for Invitation):** All eligible patients who were considered for invitation but not randomly selected during the same recruitment period.
+1.  **SAT Group (Selected for Invitation):** All eligible patients randomly selected for invitation to participate in the LIQPLAT SAT.
+2.  **External Comparator (Not Selected for Invitation):** All eligible patients who were considered for invitation but not randomly selected during the same recruitment period.
 
-This population forms the basis for the primary analyses of Overall Survival and Time Out of Hospital.
+This population forms the basis for the primary analyses of overall survival and time alive and out of hospital.
 
-### Principal Stratum Population (for QoL Analysis)
+### Principal Stratum Population
 
-The primary analysis for the Quality of Life endpoint will be conducted on the **Principal Stratum Population**. This population is defined as the subset of ITT patients who would have survived the entire 26-week (6-month) follow-up period, regardless of their assignment to be invited to the SAT or not. In practice, this population will be approximated by including all patients from the ITT population who were observed to be alive at the end of the 26-week follow-up. The rationale for restricting the QoL analysis to this Principal Stratum is detailed in @sec-qol-rationale-ps.
+The primary analysis for the QoL endpoint will be conducted on the Principal Stratum Population. This population is defined as the subset of ITT patients who would have survived the entire 26-week (6-month) follow-up period, regardless of their assignment to be invited to the SAT or not. In practice, this population will be approximated by including all patients from the ITT population who were observed to be alive at the end of the 26-week follow-up. The rationale for restricting the QoL analysis to this Principal Stratum is detailed in @sec-qol-rationale-ps.
 
 # General Statistical Considerations
 
@@ -287,30 +302,30 @@ For QoL (details in @sec-appendix-qol-mi) and TAOOH (details in @sec-appendix-ta
 Baseline variables (e.g., functional status at baseline \[ECOG\], baseline laboratory values), will be imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster (patient) mean. A linear regression model is fitted to the collapsed data.
 
 $$
-Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
+Y_j = \beta_0 + \mathbf{X}_j\boldsymbol{\beta_1}  + \bar{\mathbf{Z}}_j\boldsymbol{\beta_2} + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
 $$
 
 Where
 
 -   $Y_j$ is the missing baseline variable for patient $j$,
 
--   $\mathbf{X}_j$ represents other baseline predictors, and
+-   $\mathbf{X}_j$ represents other baseline predictors with coefficients $\boldsymbol{\beta_1}$, and
 
 -   $\bar{\mathbf{Z}}_j$ represents the aggregated means of longitudinal predictors.
 
 Longitudinal variables at Level 1, such as QoL states or hospitalization states, are imputed using `2l.pmm`, which fits a linear mixed-effects model.
 
 $$
-Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}, \quad u_{0j} \sim N(0, \sigma^2_u), \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
+Y_{ij} = \beta_0 + \mathbf{X}_{ij}\boldsymbol{\beta_1} + u_{0j} + \epsilon_{ij}, \quad u_{0j} \sim N(0, \sigma^2_u), \quad \epsilon_{ij} \sim N(0, \sigma^2_\epsilon)
 $$
 
 Where
 
 -   $Y_{ij}$ is the missing longitudinal variable for the $i$-th observation of patient $j$,
 
--   $\mathbf{X}_j$ represents fixed effects (both time-varying and static),
+-   $\mathbf{X}_{ij}$ represents fixed effects (both time-varying and static) with coefficients $\boldsymbol{\beta_1}$, and
 
--   and $u_{0j} \sim N(0, \sigma^2_u)$ represents the patient-specific random intercept.
+-   $u_{0j} \sim N(0, \sigma^2_u)$ represents the patient-specific random intercept.
 
 For both approaches, the final imputed value is selected using Type 1 PMM, as per default in `mice`, with a donor pool of $k=5$ [^1].
 
@@ -318,13 +333,13 @@ For both approaches, the final imputed value is selected using Type 1 PMM, as pe
 
 ### Imputation for Suvival Analysis
 
-For OS (see details in @sec-appendix-os-mi), data will be imputed in wide format.
+For OS data will be imputed in wide format. For details see @sec-appendix-os-mi.
 
 ### Diagnostics and inference
 
-Convergence will be assessed via trace plots, the plausibility of the imputations will assess using diagnostics graphs comparing the distribution of observed and imputed data.
+Convergence will be assessed via trace plots, the plausibility of the imputations will be assessed using diagnostics graphs comparing the distribution of observed and imputed data.
 
-Following imputation, each analysis model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed datasets. The posterior draws for all parameters and derived estimands from the 50 analyses will be combined (stacked) to form the final posterior distribution for reliable inference [@Zhou2010-nm].
+Following imputation, each analysis model (OS, QoL, TAOOH) will be fitted to each of the $m=50$ imputed datasets. The posterior draws for all parameters and derived estimands from the 50 analyses will be combined (stacked) to form the final posterior distribution [@Zhou2010-nm].
 
 ## Software
 
@@ -332,21 +347,21 @@ Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesi
 
 # Sample Size
 
-The trial aims to enroll $150$ participants who accept the invitation to the single-arm trial (SAT). This target sample size is driven by feasibility, including logistical constraints (such as a maximum of three invitations per week) and the capacity of the Department of Pathology. Based on estimates of patient acceptance, we anticipate needing to invite approximately $180$ eligible patients to achieve this target (an acceptance rate of $\approx 83%$).
+The trial aims to enroll $150$ participants who accept the invitation to the single-arm trial (SAT). This target sample size is driven by feasibility, including logistical constraints (such as a maximum of three invitations per week) and the capacity of the Department of Pathology. Based on estimates of patient acceptance, we anticipate needing to invite approximately $180$ eligible patients to achieve this target (an acceptance rate of $\approx 83 \%$).
 
-The random invitation process, as described in @sec-eligibility, uses a $2:1$ allocation ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected external control group (not selected for invitation) of approximately $90$ patients.
+The random invitation process, as described in @sec-eligibility, uses a $2:1$ allocation ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected external comparator (not selected for invitation) of approximately $90$ patients.
 
-Therefore, the total Intention-to-Treat (ITT) population for the randomized comparison is expected to be $N = 270$ ($180$ patients in the intervention group \[selected for invitation\] and $90$ patients in the external control group). All simulation studies for power and operating characteristics are based on this total sample size of $N = 270$.
+Therefore, the ITT population for the randomized comparison is expected to be $N = 270$. All simulation studies for power and operating characteristics are based on this total sample size of $N = 270$.
 
 This trial is not formally powered for a single primary endpoint using a frequentist framework, as the sample size is fixed by feasibility. Instead, the Bayesian analyses will provide posterior distributions and probabilities of benefit for the three primary endpoints. The operating characteristics presented in the analysis sections provide an indication of the study's ability to detect various plausible effect sizes given this fixed sample size.
 
-It is crucial to note that the primary estimand for all outcomes is the effect of the treatment policy, which compares the group selected for invitation ($A=1$) to the group not selected for invitation ($A=0$). This treatment policy estimand is inherently diluted by non-adherence (i.e., the $\approx 30$ patients in the $A=1$ group who are expected to decline participation).
+The primary estimand for all outcomes is the effect of the treatment policy, which compares the group selected for invitation to the group not selected for invitation. This treatment policy estimand is inherently diluted by non-adherence (i.e., the $\approx 30$ patients in the $A=1$ group who are expected to decline participation).
 
-The simulation studies (e.g., for TAOOH, @tbl-oper-char-toh-ha) did not explicitly model this non-uptake mechanism. Instead, the true effect sizes used in the simulations (e.g., a true OR of $0.7$) are assumed to represent this already-diluted ITT effect. In other words, a simulated OR of 0.7 reflects the average effect of the invitation strategy across all 180 invited patients (including non-acceptors), compared to the $90$ non-invited patients.
+The simulations (e.g., for TAOOH, @tbl-oper-char-toh-ha) do not explicitly model this non-uptake mechanism. Instead, the true effect sizes used in the simulations (e.g., a true OR of $0.7$) are assumed to represent this already-diluted ITT effect. In other words, a simulated OR of 0.7 reflects the average effect of the invitation strategy across all 180 invited patients (including non-acceptors), compared to the $90$ non-invited patients.
 
 # Analysis
 
-## Overall Survival (OS)
+## Overall Survival
 
 ### Estimand Definition
 
@@ -357,9 +372,9 @@ The estimand definition for Overall Survival is summarized in @tbl-os-estimand.
 +:========================+:=====================================================================================================+
 | **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first line therapy. |
 +-------------------------+------------------------------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                          |
+| **Treatment Arms**      | (A=1): Selection for invitation to the SAT. \|                                                       |
 |                         |                                                                                                      |
-|                         | (A=0): No selection for invitation (External Control Group / SoC).                                   |
+|                         | (A=0): No selection for invitation. \|                                                               |
 +-------------------------+------------------------------------------------------------------------------------------------------+
 | **Variable**            | Time-to-event: Time (in days) from random selection to death from any cause.                         |
 +-------------------------+------------------------------------------------------------------------------------------------------+
@@ -379,7 +394,7 @@ We use the potential outcomes framework [@Rubin2005-wc]. Let $T_i^a$ be the pote
 The Restricted Mean Survival Time (RMST) under treatment $a$ up to the time horizon $t_{max}=182$ days is the area under the survival curve:
 
 $$
-\text{RMST}^a(t_{max}) = \int_0^{t_{max}} S^a(t) dt
+\text{RMST}^a(t_{max}) = \mathbb{E}[\text{min}(T, t_{max})] = \int_0^{t_{max}} S^a(t) dt
 $$
 
 Our primary estimand for OS is the Average Treatment Effect (ATE) on the RMST at 182 days, denoted $\tau_{OS}$:
@@ -390,7 +405,7 @@ $$
 
 $\tau_{OS}$ represents the average difference in days lived within the first 182 days comparing the group selected for invitation to the SAT versus the external control group.
 
-### Handling of Intercurrent Events (OS) {#sec-os-intercurrent-events}
+### Handling of Intercurrent Events {#sec-os-intercurrent-events}
 
 The handling of intercurrent events for the OS analysis is described in @tbl-os-ie.
 
@@ -412,7 +427,7 @@ The handling of intercurrent events for the OS analysis is described in @tbl-os-
 : Handling of intercurrent events for Overall Survival analysis. {#tbl-os-ie}
 :::
 
-### Analysis Method (OS)
+### Analysis Method
 
 #### Statistical Model
 
@@ -457,7 +472,7 @@ The splines use B-spline basis functions with three knots (min, median, max). Th
 
 [^3]: We will `ns()`, from the R `splines` package. The truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
 
-We assign a regularizing prior of $\mathcal{N}(0, 0.55)$ to the treatment effect $\beta_{tx}$. This places approximately 80% of the probability mass on hazard ratios between 0.5 and 2.0, reflecting the belief that the intervention is unlikely to more than halve or double the hazard rate. Remaining regression coefficients are assigned default `rstanarm`, weakly informative priors, and the baseline hazard coefficients $\mathbb{\gamma}$ follow a symmetric Dirichlet distribution:
+We assign a regularizing prior of $\mathcal{N}(0, 0.55)$ to the treatment effect $\beta_{tx}$. This places approximately 80% of the probability mass on hazard ratios between 0.5 and 2.0, reflecting our belief that the intervention is unlikely to more than halve or double the hazard rate. Remaining regression coefficients are assigned default `rstanarm`, weakly informative priors, and the baseline hazard coefficients $\mathbb{\gamma}$ follow a symmetric Dirichlet distribution:
 
 $$
 \begin{aligned} 
@@ -477,22 +492,62 @@ The model will be fitted using the `stan_surv` function from the `rstanarm` pack
 
 #### Obtaining the Estimand
 
-1.  **Generate Posterior Survival Curves:** Using the fitted model (`model_os`), generate posterior draws of the marginalized survival curves for each treatment group ($a=0$ and $a=1$) up to $t_{max}=182$ days.
-2.  **Calculate RMST per Draw:** For each posterior draw, calculate the RMST for both treatment groups ($\widehat{\text{RMST}}^0$ and $\widehat{\text{RMST}}^1$) by integrating the respective survival curves from $t=0$ to $t_{max}=182$ days. We will approximate the integral using the trapezoidal rule on 200 discrete time points.
-3.  **Calculate RMST Difference per Draw:** For each posterior draw, compute the difference $\widehat{\tau}_{OS, \text{draw}} = \widehat{\text{RMST}}^1_{\text{draw}} - \widehat{\text{RMST}}^0_{\text{draw}}$.
-4.  **Summarize Posterior:** The collection of $\widehat{\tau}_{OS, \text{draw}}$ values forms the posterior distribution of the primary estimand. Summarize this distribution using the posterior median and a 95% credible interval.
+Using the fitted model we generate posterior draws of the marginalized survival curves for under each treatment ($a=0$ and $a=1$) up to $t_{max}=182$ days. For each posterior draw, we calculate the RMST under both treatments ($\widehat{\text{RMST}}^0$ and $\widehat{\text{RMST}}^1$) by integrating the respective survival curves from $t=0$ to $t_{max}=182$ days. We will approximate the integral using the trapezoidal rule on 200 discrete time points. We then compute the difference $\widehat{\tau}_{OS, \text{draw}} = \widehat{\text{RMST}}^1_{\text{draw}} - \widehat{\text{RMST}}^0_{\text{draw}}$. The collection of $\widehat{\tau}_{OS, \text{draw}}$ values forms the posterior distribution of the primary estimand. Example code for obtaining the RMST difference is provided in @sec-appendix-os-code.
 
-Example code for obtaining the RMST difference is provided in @sec-appendix-os-code.
+#### Simulated Power
 
-#### Simulated Power (OS)
+We evaluated the operating characteristics OS endpoint through a simulation study based on historical patient data.
 
-\[Still need to finalize the simulations\].
+To ensure realistic survival trajectories, we generated data using a second-order Markov ordinal transition model fitted to historical *daily* status data from the Division of Medical Oncology. This model predicts daily transitions between five health states, where State 5 (Death) is an absorbing state. For each simulation iteration, we generated trajectories for $N=270$ patients, allocated 2:1 to the intervention ($n=180$) and control ($n=90$) arms, mirroring the trial's fixed sample size.
 
-## Quality of Life (QoL)
+We defined a null scenario (H0) and several alternative scenarios (HA) by introducing a treatment effect into the transition model. The treatment effect was implemented as an odds ratio (OR) applied to the daily transitions, reducing the probability of moving to a worse health state (including death).
+
+These transition-based effects were mapped to the primary estimand, the difference in RMST at 6 months:
+
+-   **H0 (Null):** True OR = 1.0 (Treatment re-randomized, True RMST difference $\approx$ 0 days).
+-   **HA (Small):** True OR = 0.9 (True RMST difference $\approx$ 3 days).
+-   **HA (Medium):** True OR = 0.8 (True RMST difference $\approx$ 6 days).
+-   **HA (Large):** True OR = 0.7 (True RMST difference $\approx$ 9 days).
+-   **HA (Very Large):** True OR = 0.6 (True RMST difference $\approx$ 12 days).
+
+We performed 1,000 simulations for each scenario. In each iteration:
+
+1.  Daily health states were simulated for all patients up to 182 days.
+2.  The daily trajectories were reduced to a standard time-to-event format (time to death or censoring at 182 days).
+3.  The primary analysis model (Bayesian proportional hazards with M-spline baseline hazard) was fitted to the synthetic dataset.
+4.  Power was calculated as the proportion of simulations where the posterior probability of benefit ($P(\tau_{OS} > 0)$) exceeded $0.95$.
+
+```{r}
+#| echo: false
+#| message: false
+#| tbl-cap: "Operating characteristics for Overall Survival (OS) analysis under various true effect sizes (difference in RMST at 182 days)."
+rmst_sim <- read_parquet(here("3-survival", "output", "bayesian-power-sim", "operating_characteristics_survival.parquet"))
+
+rmst_sim |> 
+  # we rerandomized treated and untreated for smallest effect size, so true diff 0
+  mutate(rmst_diff_true = if_else(rmst_diff_true < 1, 0, rmst_diff_true)) |>
+  arrange(rmst_diff_true) |> 
+  mutate(
+    rmst_diff_true = sprintf("%.1f", rmst_diff_true),
+    p_val   = sprintf("%.1f", power * 100),
+    low_ci  = sprintf("%.1f", (power - power_mcse * 1.96) * 100),
+    high_ci = sprintf("%.1f", (power + power_mcse * 1.96) * 100),
+    
+    power = str_glue("{p_val}% ({low_ci}% - {high_ci}%)")
+  ) |> 
+  select(rmst_diff_true, power) |>
+  rename(
+    "True difference in RMST (days)" = rmst_diff_true,
+    "Assertion Probability (95% CI)" = power
+  ) |>
+  knitr::kable(digits = 1)
+```
+
+## Quality of Life
 
 ### Data
 
-In LIQPLAT, Quality of Life (QoL), measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^4] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
+In LIQPLAT QoL, measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^4] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
 
 [^4]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
 
@@ -538,7 +593,7 @@ eortc_mod |>
   tt(width = 1)
 ```
 
-In the LIQPLAT, QoL questionnaires are completed at clinical appointments, which occur frequently but at irregular intervals for each patient. We anticipate an average interval of about six weeks. This data structure has two key implications.
+In LIQPLAT, QoL questionnaires are completed at clinical appointments, which occur frequently but at irregular intervals for each patient. We anticipate an average interval of about six weeks. This data structure has key implications.
 
 1.  **Time-Dependent Correlation:** A patient's QoL at one time point is correlated with their QoL at preceding time points. This within-subject correlation should be accounted for [@Harrell2015-bj]. In other words, multiple measurements within a subject are *not* exchangeable, as would be assumed by a simple random intercept and the associated compound symmetric correlation structure [@Harrell2015-bj].
 2.  **Irregular Gaps:** The correlation between two measurements likely weakens as the time gap between them increases. The analytical model should explicitly incorporate the time gap between consecutive measurements to better approximate the decaying correlation structure. If we assume that the irregularity of follow-up is random conditional on a set of baseline covariates and the previous QoL state, the irregular spacing could be used to reconstruct QoL trajectories over the entire follow-up period.
@@ -550,7 +605,7 @@ We propose to make use of the irregular, near-random follow-up of usual care and
 
 ![Conceptual overview of the statistical approach for reconstructing Quality of Life (QoL) trajectories. The analysis bridges the gap between the hypothetical, complete QoL data (far left), from which empirical state occupancy probabilities (SOPs) could be directly calculated, and the actual observed data, which is sparse and irregularly spaced (second from left). A statistical model (third from left) is fitted to these sparse observations to generate complete, model-derived SOPs for the entire follow-up period (far right), reconstructing the full QoL trajectory for the population and providing associated uncertainty estimates.](img/qol-sap-fit-1.svg){#fig-qol-concept}
 
-### Estimand Definition (QoL)
+### Estimand Definition
 
 The estimand definition for Quality of Life is summarized in @tbl-qol-estimand.
 
@@ -560,9 +615,9 @@ The estimand definition for Quality of Life is summarized in @tbl-qol-estimand.
 +:========================+:=====================================================================================================================================================================================================================+
 | **Target Population**   | The Principal Stratum of adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first-line therapy, defined as patients who would survive at least 26 weeks after their first appointment. |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                                                                                          |
+| **Treatment Arms**      | (A=1): Selection for invitation to the SAT. \|                                                                                                                                                                       |
 |                         |                                                                                                                                                                                                                      |
-|                         | (A=0): No selection for invitation (External Control Group / SoC).                                                                                                                                                   |
+|                         | (A=0): No selection for invitation to the SAT. \|                                                                                                                                                                    |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | **Variable**            | Ordinal QoL state (7 levels, derived from EORTC QLQ-C30 Q30) measured longitudinally at irregular intervals. We use an inverted scale where 1='Excellent', ..., 7='Very Poor'.                                       |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -576,11 +631,11 @@ The estimand definition for Quality of Life is summarized in @tbl-qol-estimand.
 : Estimand definition for Quality of Life. {#tbl-qol-estimand}
 :::
 
-#### Formal Definition (QoL)
+#### Formal Definition
 
 Let $S_i^a$ be an indicator for survival of patient $i$ at 26 weeks under treatment assignment $a \in \{0, 1\}$. $S_i^a=1$ if patient $i$ survives, $S_i^a=0$ otherwise. The Principal Stratum of "always-survivors" is the sub-population of patients for whom $S_i^1 = S_i^0 = 1$.
 
-Let $Y_{it}^a$ be the potential ordinal QoL state (1-7, 1=best) for patient $i$ at week $t$ under treatment $a$. Let $W_i^a$ be the potential total number of weeks patient $i$ spends in a "Good" QoL state ($j \in \{1, 2, 3\}$) under treatment $a$ over 26 weeks:
+Let $Y_{it}^a$ be the potential ordinal QoL state (1-7, 1=best) for patient $i$ at week $t$ under treatment $a$. Let $W_i^a$ be the potential total number of weeks patient $i$ spends in a 'good' or better QoL state ($j \in \{1, 2, 3\}$) under treatment $a$ over 26 weeks:
 
 $$
 W_i^a = \sum_{t=1}^{26}\sum_{j=1}^{3}\mathbb{I}(Y_{it}^a = j)
@@ -592,47 +647,47 @@ $$
 \tau_{QoL}^{\text{psATE}} = \mathbb{E}[W_i^1 | S_i^1 = 1, S_i^0 = 1] - \mathbb{E}[W_i^0 | S_i^1 = 1, S_i^0 = 1]
 $$
 
-#### Identification Assumption (QoL) {#sec-qol-identification}
+#### Identification Assumption {#sec-qol-identification}
 
 Identification of $\tau_{QoL}^{\text{psATE}}$ by analyzing only those patients *observed* to survive 26 weeks relies on the key assumption that selection for invitation to the SAT has no effect on 26-week survival status: For all patients $i$, $S_i^1 = S_i^0$. Under this assumption, the group observed to survive is equivalent to the "always-survivor" Principal Stratum.
 
-#### Rationale for Principal Stratum (QoL) {#sec-qol-rationale-ps}
+#### Rationale for Principal Stratum {#sec-qol-rationale-ps}
 
-Modeling the QoL trajectory while incorporating the absorbing state of death proved problematic with sparse intermediate QoL measurements common in routine care. Our simulations indicated that interval-censoring approaches for missing QoL states led to biased estimates, particularly overestimating the probability of death (@sec-appendix-qol-censoring). Assuming no treatment effect on 6-month survival allows us to focus the QoL analysis on the stratum of patients who survive this period regardless of treatment, providing a potentially less biased estimate of the QoL effect *for this subgroup*, conditional on the validity of the no-survival-effect assumption.
+Modeling the QoL trajectory while incorporating the absorbing state of death proved problematic with sparse intermediate QoL measurements common in routine care. Our simulations indicated that interval-censoring approaches for missing QoL states led to biased estimates, particularly overestimating the probability of death (@sec-appendix-qol-censoring). Assuming no treatment effect on 6-month survival allows us to focus the QoL analysis on the stratum of patients who survive this period regardless of treatment, providing a potentially less biased estimate of the QoL effect *for this subgroup*, conditional on the validity of the no-survival-effect assumption. We will check the plausibility of this assumption by comparing 6-month survival between treatment groups in the ITT population. If there is substantial evidence of differences, we will discuss the implications for interpreting the QoL estimand.
 
-### Handling of Intercurrent Events (QoL) {#sec-qol-intercurrent-events}
+### Handling of Intercurrent Events {#sec-qol-intercurrent-events}
 
 The handling of intercurrent events for the QoL analysis is described in @tbl-qol-ie.
 
 ::: {tbl-colwidths="[25, 25, 50]"}
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Intercurrent Event                        | Strategy            | Rationale                                                                                                                                                    |
-+:==========================================+:====================+:=============================================================================================================================================================+
-| **Death**                                 | *Principal Stratum* | Death before 26 weeks defines exclusion from the primary analysis population. This relies on the assumption in @sec-qol-identification.                      |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Discontinuation of ctDNA monitoring (SAT) | *Treatment Policy*  | Analyze as selected (part of A=1). Preserves ITT principle; estimates the effect of the *strategy* of offering ctDNA-guided care, irrespective of adherence. |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Switch to best supportive care (BSC)      | *???*               | Patient remains in their assigned group (A=1 or A=0). BSC could lead to cessation of QoL data collection.                                                    |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Treatment at another hospital / LFU       | *???*               | ???                                                                                                                                                          |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| SAT not offered after selection           | *Treatment Policy*  | Analyze as selected (part of A=1).                                                                                                                           |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Patient declined participation in SAT     | *Treatment Policy*  | Analyze as selected (part of A=1).                                                                                                                           |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Control patient receives ctDNA test       | *Treatment Policy*  | Analyze as not selected (part of A=0).                                                                                                                       |
-+-------------------------------------------+---------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------+
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Intercurrent Event                        | Strategy            | Rationale                                                                                                                                                                                                                                                                                                                                          |
++:==========================================+:====================+:===================================================================================================================================================================================================================================================================================================================================================+
+| **Death**                                 | *Principal Stratum* | Death before 26 weeks defines exclusion from the primary analysis population. This relies on the assumption in @sec-qol-identification.                                                                                                                                                                                                            |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Discontinuation of ctDNA monitoring (SAT) | *Treatment Policy*  | Analyze as selected (part of A=1). Preserves ITT principle; estimates the effect of the *strategy* of offering ctDNA-guided care, irrespective of adherence.                                                                                                                                                                                       |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Switch to best supportive care            | *Treatment Policy*  | Patient remains in their assigned group (A=1 or A=0). Patients generally remain under the care of the Division of Medical Oncology, although visit frequency may decrease. The longitudinal transition model handles irregular intervals and projects QoL states for unobserved weeks based on the last observed state and model parameters (MAR). |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Treatment at another hospital             | *Treatment Policy*  | Patient remains in their assigned group (A=1 or A=0). We project the QoL trajectory for the unobserved period using the transition model parameters estimated from the available data (MAR).                                                                                                                                                       |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| SAT not offered after selection           | *Treatment Policy*  | Analyze as selected (part of A=1).                                                                                                                                                                                                                                                                                                                 |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient declined participation in SAT     | *Treatment Policy*  | Analyze as selected (part of A=1).                                                                                                                                                                                                                                                                                                                 |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Control patient receives ctDNA test       | *Treatment Policy*  | Analyze as not selected (part of A=0).                                                                                                                                                                                                                                                                                                             |
++-------------------------------------------+---------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 
 : Handling of intercurrent events for Quality of Life analysis. {#tbl-qol-ie}
 :::
 
 ::: callout-warning
-**Challenge: Informative Missingness due to Routine Care Data Collection** A major limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to BSC, different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. See @sec-qol-limitations.
+**Informative Missingness due to Routine Care Data Collection**: A design limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to BSC, different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. To assess the potential for differential informative missingness, we will compare the cumulative incidence of switching to Best Supportive Care (BSC) between the two trial arms. If the rates and timing of switching to BSC are similar between groups, it reduces the concern that missingness driven by palliative care transitions biases the treatment comparison.
 :::
 
-### Analysis Method (QoL)
+### Analysis Method
 
-To target the estimand we use a first-order Markov longitudinal ordinal transition model [@rohde2024]. This model analyzes the probability of transitioning between QoL states from one week to the next, conditional on the previous state and the time gap since the last measurement. This approach accounts for the ordinal nature, longitudinal correlation, irregular measurement times, and provides a framework to derive interpretable summary measures like time spent in specific states. A higher-order Markov model would no be feasible, as quality of life states prior to baseline are not available.
+To target the estimand we use a first-order Markov longitudinal ordinal transition model [@rohde2024]. This model analyzes the probability of transitioning between QoL states from one week to the next, conditional on the previous state and the time gap since the last measurement. This approach accounts for the ordinal nature, longitudinal correlation, irregular measurement times, and provides a framework to derive interpretable summary measures like time spent in specific states. A higher-order Markov model would not be feasible, as quality of life states prior to baseline are not available.
 
 #### Statistical Model: Bayesian First-Order Markov Ordinal Transition Model
 
@@ -668,23 +723,23 @@ $$
 
 Where:
 
--   $\alpha_j$: Category-specific intercepts (cutpoints).
+-   $\alpha_j$: Category-specific intercepts.
 -   $\eta_{it}$: Linear predictor for effects assuming proportional odds (PO).
     -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).[^6]
-    -   $f(\text{week}_t)$: Flexible function of study week[^7] modeled as a restricted cubic spline with 4 knots.[^8]
+    -   $f(\text{t})$: Flexible function of time[^7] modeled as a restricted cubic spline with 4 knots.[^8]
     -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^9]
     -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^10]
     -   $\beta_{\text{yprev}=k \times \text{gap}}$: Interaction between previous state and time gap.
     -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^11]
 -   $\gamma_{it,j}$: Models deviation from PO for the effect of time. We allow the effect of time to be non-proportional, constrained to be linear in the outcome category $j$. $\tau$ is the non-proportional odds parameter for time.
 
-[^6]: A treatment effect, if present, is unlikely to be constant over time. CtDNA sampling can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
+[^6]: A treatment effect, if present, is unlikely to be constant over time. CtDNA analysis can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
 
-[^7]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 weekly transitions vs. 182 daily transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
+[^7]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 transitions vs. 182 transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
 
-[^8]: This function is parameterized into $p=3$ components: one for the linear trend and two for the nonlinear adjustments. This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
+[^8]: This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
 
-[^9]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, an interaction of the six-level categorical variable `yprev` with flexibly modeled time would use too many degrees of freedom, given our sample size.
+[^9]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, estimating an interaction of the six-level categorical variable `yprev` with flexibly modeled time would not be feasible given our sample size.
 
 [^10]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
 
@@ -693,31 +748,30 @@ Where:
 #### Prior Specifications
 
 -   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^12] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^13]
--   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.5)$ on $\beta_{tx}$ [^14]produces a prior distribution for $\tau_{QoL}^{\text{psATE}}$ with a median at $0$ weeks that has about $80\%$ of its prior mass between $[-3, +4]$.
+-   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.5)$ on $\beta_{tx}$[^14] (i.e., on the log odds scale) produces a prior distribution for $\tau_{QoL}^{\text{psATE}}$ with a median at $0$ weeks that has about $80\%$ of its prior mass between for a increase in the time spent with 'good' or better QoL by $4$ weeks (benefit) and a decrease by $3$ weeks (harm). The prior is placed on the log odds scale and not on the scale of the estimand because of technical limitations.
 -   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (default priors in `rmsb`).
 
 [^12]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
 
-[^13]: Unlike the TAOOH model, a patient-level random intercept is not included here. With an anticipated average of only \~5 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data.
+[^13]: Unlike the TAOOH model, we do not include a patient-level random intercept. With an anticipated average of only \~4 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data. The Type I error inflation is mtigated by the skeptical prior.
 
-[^14]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.52$ and $1.90$.
+[^14]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.53$ and $1.90$.
 
 #### Implementation
 
 The model will be fitted using the `blrm` function from the `rmsb` package in R, restricted to the Principal Stratum population (survivors at 26 weeks). MCMC settings as per OS analysis. Example implementation code is provided in @sec-appendix-qol-code.
 
-#### Obtaining the Estimand (QoL)
+#### Obtaining the Estimand
 
-1.  **Fit Model:** Fit the `model_qol` to each multiply imputed dataset restricted to the Principal Stratum.
-2.  **Calculate Weekly SOPs:** For each posterior draw from the fitted model, calculate the State Occupancy Probabilities (SOPs), $\widehat{P}(Y_{t}^a = j)$, for each week $t=1, \dots, 26$, for each state $j=1, \dots, 7$, and for each treatment arm $a \in \{0, 1\}$. This involves marginalizing over the distribution of baseline covariates, baseline QoL states, and the Markov process transitions over time.
-3.  **Calculate Expected Weeks in "Good" State per Draw:** For each posterior draw, calculate the expected number of weeks in a "Good" state (1, 2, or 3) for each treatment arm by summing the relevant SOPs over the 26 weeks:
+Using the fitted model, we generate posterior draws of the marginalized SOPs under each treatment ($a=0$ and $a=1$) over the 26-week follow-up period. For each posterior draw, we calculate $\widehat{P}(Y_{t}^a = j)$ for each week $t=1, \dots, 26$, for each state $j=1, \dots, 7$, and for each treatment. This involves marginalizing over the distribution of baseline covariates, baseline QoL states, and the Markov process transitions over time.
+
+For each posterior draw, we then calculate the expected number of weeks in a "Good" state (1, 2, or 3) for each treatment arm by summing the relevant SOPs over the 26 weeks:
 
 $$
-    \widehat{\mathbb{E}}[W^a]_{\text{draw}} = \sum_{t=1}^{26}\sum_{j=1}^{3} \widehat{\text{SOP}}(Y_{t}^a = j)_{\text{draw}}
+\widehat{\mathbb{E}}[W^a]_{\text{draw}} = \sum_{t=1}^{26}\sum_{j=1}^{3} \widehat{\text{SOP}}(Y_{t}^a = j)_{\text{draw}}
 $$
 
-4.  **Calculate Difference per Draw:** For each posterior draw, compute the difference $\widehat{\tau}_{W, \text{draw}}^{\text{psATE}} = \widehat{\mathbb{E}}[W^1]_{\text{draw}} - \widehat{\mathbb{E}}[W^0]_{\text{draw}}$.
-5.  **Summarize Posterior:** The collection of $\widehat{\tau}_{W, \text{draw}}^{\text{psATE}}$ values forms the posterior distribution of the primary estimand for QoL.
+We then compute the difference $\widehat{\tau}_{W, \text{draw}}^{\text{psATE}} = \widehat{\mathbb{E}}[W^1]_{\text{draw}} - \widehat{\mathbb{E}}[W^0]_{\text{draw}}$. The collection of $\widehat{\tau}_{W, \text{draw}}^{\text{psATE}}$ values forms the posterior distribution of the primary estimand for QoL. Example code for obtaining the QoL difference is provided in @sec-appendix-qol-code.
 
 #### Assumptions
 
@@ -738,7 +792,7 @@ Key assumptions
 
 Given these assumptions, especially assumptions six to eight, we have **low confidence** in the results. Nevertheless, we believe that other analysis options we have explored are less optimal and would lead us to have very low confidence.
 
-#### Visualization of Estimate (QoL)
+#### Visualization of Estimate
 
 We will visualize the SOPs and $\tau_{QoL}$ as shown below.
 
@@ -746,7 +800,7 @@ We will visualize the SOPs and $\tau_{QoL}$ as shown below.
 
 ![Posterior distribution of the primary estimand, difference in weeks with good or better quality of life ($\tau_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=216$) from simulated data with a true underlying difference of two weeks. Larger values favour the group invited to the SAT.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
 
-#### Simulation Study Summary (QoL)
+#### Simulated Power
 
 @tbl-oper-char-qol shows frequentist operating characteristics of the transition model. The data-generating mechanism assumes a sample size of $N = 216$, as we assume that $20\%$ of initially $270$ patients would die before 6 months. $85\%$ of post-baseline observations are missing completely at random (MCAR), which equals about $4$ post-baseline measurements per patient. A first order transition model was fit to historical data to obtain plausible QoL trajectories. The data were then generated using a latent Brownian Motion model to approximate the trajectories from the previous step, to create three scenarios with a difference in good QoL states of $0$, $1$ week, $2$ weeks, and $3$ weeks over the 26-week period. For each scenario, 1,000 datasets were simulated and analyzed using the proposed Bayesian first-order Markov ordinal transition model. The power is estimated as the proportion of simulations where the posterior probability of any benefit exceeds 0.95. We will not use the posterior to make a dichotomous claim of benefit. However, for the purpose of evaluating the operating characteristics of our analysis plan, we assess power and Type I error under the hypothetical decision rule of requiring a posterior probability of benefit greater than 0.95.
 
@@ -824,15 +878,15 @@ $\tau_{TAOOH}$ represents the population-average difference in weeks spent alive
 
 Death is explicitly modeled as the absorbing state (State 5) within the transition model. Other intercurrent events follow the Treatment Policy approach as outlined for OS (@sec-os-intercurrent-events).
 
-\[**MORE DETAILS**\]
-
 ### Analysis Method (TAOOH)
 
-### Rationale for Ordinal Longitudinal Modeling (TAOOH)
+#### Rationale for Ordinal Longitudinal Modeling
 
 We define a patient's state weekly based on their location and vital status: 1=Alive and Out of Hospital, 2=Alive and In Hospital (Planned Admission), 3=Alive and In Hospital (ER), 4=Alive and In Hospice (Unplanned Admission), 5=Dead. This creates a longitudinal ordinal outcome (with state 5 being absorbing).
 
-### Statistical Model: Bayesian Second-Order Markov Ordinal Transition Model with Random Effects
+#### Statistical Model
+
+We use a Bayesian second-order Markov ordinal transition model with patient-level random effects. This model analyzes the probability of transitioning between health states from one week to the next, conditional on the states at the previous two weeks. The second-order specification captures the empirical finding in historic data that both the immediate prior state and the state two weeks earlier contain predictive information about the current health status.
 
 Let $y_{it}$ be the ordinal health state (1-5) for patient $i$ at week $t$. Let $y_{i, t-1}$ and $y_{i, t-2}$ be the states at the previous two weeks. The model is a cumulative logit model:
 
@@ -879,18 +933,17 @@ Where:
 -   $\alpha_j$: Category-specific intercepts (cutpoints).
 -   $\eta_{it}$: Linear predictor.
     -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).
-    -   $f(t)$: A flexible function of study time, modeled as a restricted cubic spline with 4 knots. This generates 3 basis functions ($B_p(t)$)
+    -   $f(t)$: A flexible function of study time, modeled as a restricted cubic spline with 4 knots. This generates 3 basis functions ($B_p(t)$).
     -   $\beta_{\text{yprev1, k}}$, $\beta_{\text{yprev2, l}}$: Effects of the state at week $t-1$ and $t-2$ (categorical, state 1 reference). The summation stops at 4, as 5 is an absorbing state.
     -   $\beta_{t \times yprev1}$, $\beta_{t \times \text{yprev2}}$: Interaction terms allowing the effect of each previous state to change linearly over time.
     -   Baseline covariates: Effects of baseline ECOG, diagnosis, albumin, and C-reactive protein. The continuous covariates albumin and CRP are modeled flexibly using restricted cubic splines with 3 knots (2 basis functions each).
--   $\gamma_{it}$: A patient-specific random intercept to account for within-patient correlation beyond the Markov dependency.
+-   $\gamma_{0i}$: A patient-specific random intercept to account for within-patient correlation beyond the Markov dependency.
 
 #### Prior Specifications
 
--   **Intercepts** ($\alpha_j$): Priors are induced by a Dirichlet(0.392) distribution on the baseline cell probabilities, as recommended by the `rmsb` package for 5 outcome levels.
--   Treatment Parameter ($\beta_{tx}$): We used prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that a prior of $\mathcal{N}(0, 0.541)$ for $\beta_{tx}$ produces a prior distribution for $\tau_{TAOOH}$ with a median at 0 weeks (no difference). This prior places 80% of its mass on $\beta_{tx}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which our simulations mapped to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately $[-6.0, +3.0]$.
--   **Fixed Effects Coefficients** ($\beta$​): All fixed-effect regression coefficients are assigned a weakly informative Normal(0, 100) prior (default in `rmsb`).
--   **Random Effect Standard Deviation** ($\sigma_{\gamma}$​): The standard deviation of the random intercepts is given a Half-Normal(0, 1) prior (default in `rmsb`).
+We assign a regularizing prior of $\mathcal{N}(0, 0.541)$ to the treatment effect $\beta_{tx}$. We used prior predictive simulation to select this prior, which implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that this prior on the log odds scale produces a prior distribution for $\tau_{TAOOH}$ with a median at 0 weeks (no difference), with 80% of its mass on $\beta_{tx}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which our simulations mapped to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately $[-6.0, +3.0]$ weeks.
+
+The intercepts $\alpha_j$ have priors induced by a Dirichlet(0.392) distribution on the baseline cell probabilities, as recommended by the `rmsb` package for 5 outcome levels. All fixed-effect regression coefficients are assigned weakly informative $\mathcal{N}(0, 100)$ priors (default in `rmsb`). The standard deviation of the random intercepts is given a Half-Normal(0, 1) prior (default in `rmsb`)
 
 #### Rationale for selecting the second‑order model and interactions
 
@@ -906,18 +959,17 @@ Longitudinal data, such as the weekly states, are characterized by within-patien
 
 The model will be fitted using the `blrm` function from the `rmsb` package, including the `cluster(id)` term for random effects. MCMC settings as per OS analysis. Example implementation code is provided in @sec-appendix-taooh-code.
 
-#### Obtaining Estimand (TAOOH)
+#### Obtaining the Estimand
 
-1.  **Fit Model:** Fit the `model_taooh` to each multiply imputed dataset (using the full ITT population).
-2.  **Calculate Weekly SOPs:** For each posterior draw, calculate the SOPs, $\widehat{P}(Y_{t}^a = j)$, for each week $t=1, \dots, 26$, state $j=1, \dots, 5$, and treatment arm $a \in \{0, 1\}$. This requires a recursive calculation accounting for the second-order dependency and marginalizing over baseline covariates, baseline state pairs ($y_{-1}, y_0$), and random effects. Deatils can be found in \[placeholder\].
-3.  **Calculate Expected Weeks Alive/Out-of-Hospital per Draw:** For each posterior draw, calculate the expected number of weeks in State 1 for each treatment arm by summing the SOPs for State 1 over the 26 weeks:
+Using the fitted model, we generate posterior draws of the marginalized State Occupancy Probabilities (SOPs) under each treatment ($a=0$ and $a=1$) over the 26-week follow-up period. For each posterior draw, we calculate $\widehat{P}(Y_{t}^a = j)$ for each week $t=1, \dots, 26$, state $j=1, \dots, 5$, and treatment. This requires a recursive calculation accounting for the second-order dependency and marginalizing over baseline covariates, baseline state pairs ($y_{-1}, y_0$), and random effects. Details can be found in \[placeholder\].
+
+For each posterior draw, we then calculate the expected number of weeks in State 1 (Alive and Out of Hospital) for each treatment arm by summing the SOPs for State 1 over the 26 weeks:
 
 $$
     \widehat{\mathbb{E}}[W^a]_{\text{draw}} = \sum_{t=1}^{26} \widehat{\text{SOP}}(Y_{t}^a = 1)_{\text{draw}}
 $$
 
-4.  **Calculate Difference per Draw:** For each posterior draw, compute the difference $\widehat{\tau}_{TAOOH, \text{draw}} = \widehat{\mathbb{E}}[W^1]_{\text{draw}} - \widehat{\mathbb{E}}[W^0]_{\text{draw}}$.
-5.  **Summarize Posterior:** The collection of $\widehat{\tau}_{TAOOH, \text{draw}}$ values forms the posterior distribution of the primary estimand for TAOOH.
+We then compute the difference $\widehat{\tau}_{TAOOH, \text{draw}} = \widehat{\mathbb{E}}[W^1]_{\text{draw}} - \widehat{\mathbb{E}}[W^0]_{\text{draw}}$. The collection of $\widehat{\tau}_{TAOOH, \text{draw}}$ values forms the posterior distribution of the primary estimand for TAOOH. Example code for obtaining the TAOOH difference is provided in @sec-appendix-taooh-code.
 
 #### Model Diagnostics: Assessment of Correlation Structure
 
@@ -927,7 +979,7 @@ To validate that our model adequately captures the complex longitudinal dependen
 
 ![Comparison of variograms, which plot the mean Spearman correlation (y-axis) against the time lag in weeks between measurements (x-axis). Panel (A), using historical data, shows the empirical correlation decaying as the time lag increases. Panel (B) shows the same plot for data simulated from the fitted model. The close alignment between the two plots suggests that the model effectively captures the decay in correlation over time.](img/fig-hosp-weekly-variogram-comparison.svg){#fig-var-heat-comp}
 
-#### Visualization of Estimate (TAOOH)
+#### Visualization of Estimate
 
 We will visualize the SOPs and $\tau_{TAOOH}$ as shown below.
 
@@ -935,7 +987,7 @@ We will visualize the SOPs and $\tau_{TAOOH}$ as shown below.
 
 ![Posterior distribution of the primary estimand, difference in weeks alive and out of hospital ($\tau_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the SAT.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
 
-#### Frequentist Operating Characteristics (TAOOH)
+#### Simulated Power
 
 ```{r}
 #| echo: false
@@ -1183,7 +1235,7 @@ Baseline variables (Level 2) are imputed using `2lonly.pmm` from the `miceadds` 
 2.  Fits a linear regression model on the collapsed data:
 
 $$
-    Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+Y_j = \beta_0 + \mathbf{X}_j\boldsymbol{\beta_1}  + \bar{\mathbf{Z}}_j\boldsymbol{\beta_2} + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
 $$
 
 where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents aggregated means of longitudinal predictors
@@ -1193,7 +1245,7 @@ where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ rep
 Longitudinal variables (Level 1) are imputed using `2l.pmm`, which fits a linear mixed-effects model:
 
 $$
-Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}
+Y_{ij} = \beta_0 + \mathbf{X}_{ij}\boldsymbol{\beta_1} + u_{0j} + \epsilon_{ij}, \quad u_{0j} \sim N(0, \sigma^2_u), \quad \epsilon_{ij} \sim N(0, \sigma^2_\epsilon)
 $$
 
 where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
@@ -1517,7 +1569,7 @@ We use multilevel multiple imputation to account for the hierarchical data struc
 2.  Fits a linear regression model on the collapsed data:
 
 $$
-    Y_j = \beta_0 + \beta_1 \mathbf{X}_j + \beta_2 \bar{\mathbf{Z}}_j + \epsilon_j
+Y_j = \beta_0 + \mathbf{X}_j\boldsymbol{\beta_1}  + \bar{\mathbf{Z}}_j\boldsymbol{\beta_2} + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
 $$
 
 where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ represents other baseline predictors, and $\bar{\mathbf{Z}}_j$ represents aggregated means of longitudinal predictors
@@ -1527,7 +1579,7 @@ where $Y_j$ is the missing baseline variable for patient $j$, $\mathbf{X}_j$ rep
 **Longitudinal variables** (Level 1) are imputed using `2l.pmm`, which fits a linear mixed-effects model:
 
 $$
-Y_{ij} = \beta_0 + \beta_1 \mathbf{X}_{ij} + u_{0j} + \epsilon_{ij}
+Y_{ij} = \beta_0 + \mathbf{X}_{ij}\boldsymbol{\beta_1} + u_{0j} + \epsilon_{ij}, \quad u_{0j} \sim N(0, \sigma^2_u), \quad \epsilon_{ij} \sim N(0, \sigma^2_\epsilon)
 $$
 
 where $Y_{ij}$ is the outcome for observation $i$ of patient $j$, $\mathbf{X}_{ij}$ includes fixed effects (time-varying and static predictors), and $u_{0j} \sim N(0, \sigma^2_u)$ is the patient-specific random intercept.
