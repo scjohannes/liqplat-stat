@@ -13,6 +13,11 @@ format:
     section-numbering: 1.1.1.1
     columns: 1
     tbl-cap-location: bottom
+    linkcolor: blue
+    link-decoration: underline
+  docx:
+    toc: true
+    toc-depth: 2
 bibliography: references.bib
 ---
 
@@ -41,17 +46,17 @@ library(arrow)
 
 ## Roles and responsibilities
 
-+-------------------+------------------------------------------------------+-------------------------------------------------+------------+
-| Name              | Affiliation                                          | Role                                            |            |
-+:==================+:=====================================================+:================================================+============+
-| Johannes Schwenke | University of Basel and University Hospital of Basel | Trial Statistician                              |            |
-+-------------------+------------------------------------------------------+-------------------------------------------------+------------+
-| Giusi Moffa       | Bristol-Meyers-Squibb                                | Advising Statistician                           |            |
-+-------------------+------------------------------------------------------+-------------------------------------------------+------------+
-| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |            |
-+-------------------+------------------------------------------------------+-------------------------------------------------+------------+
-| Matthias Briel    | University of Basel and University Hospital of Basel | Methodologist                                   |            |
-+-------------------+------------------------------------------------------+-------------------------------------------------+------------+
++-------------------+------------------------------------------------------+-------------------------------------------------+
+| Name              | Affiliation                                          | Role                                            |
++:==================+:=====================================================+:================================================+
+| Johannes Schwenke | University of Basel and University Hospital of Basel | Trial Statistician                              |
++-------------------+------------------------------------------------------+-------------------------------------------------+
+| Giusi Moffa       | Independent                                          | Advising Statistician                           |
++-------------------+------------------------------------------------------+-------------------------------------------------+
+| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |
++-------------------+------------------------------------------------------+-------------------------------------------------+
+| Matthias Briel    | University of Basel and University Hospital of Basel | Methodologist                                   |
++-------------------+------------------------------------------------------+-------------------------------------------------+
 
 ## Abbreviations
 
@@ -208,7 +213,7 @@ LIQPLAT is a single-arm, single-center trial at the University Hospital Basel. P
 
 Based on past-data of the Division of Medical Oncology, around 240-300 patients would be eligible for the trial over a period of 18 months. However, for logistic reasons and capacity of the Department of Pathology, we limit the sample size to 150 participants, with a maximum of three patients selected for invitation to the trial per week.
 
-![Patients are randomly selected for invitation to the single-arm trial (SAT) from a prospective research registry. Some eligible participants might not be considered for selection for operational reasons, e.g., inpatients who require emergency treatment before trial staff was made aware of their existence. All outcome data are obtained from routinely collected data. The design enables an unconfounded (randomized) comparison of patients who were selected for invitation to the SAT with patients who were eligible but not selected for invitation.](img/liqplat-flow.png){#fig-trial-design}
+![Patients are randomly selected for invitation to the single-arm trial from a prospective research registry. Some eligible participants might not be considered for selection for operational reasons, e.g., inpatients who require emergency treatment before trial staff was made aware of their existence. All outcome data are obtained from routinely collected data. The design enables an unconfounded (randomized) comparison of patients who were selected for invitation to the single-arm trial with patients who were eligible but not selected for invitation.](img/liqplat-flow.png){#fig-trial-design}
 
 ### Trial population {#sec-eligibility}
 
@@ -230,7 +235,7 @@ Based on past-data of the Division of Medical Oncology, around 240-300 patients 
 
 We build a weekly screening list containing all patients who have an appointment for a first consultation for advanced cancer at the Division of Medical Oncology in the following week in REDCap (v. 14.3.14), using routinely collected data from the electronic patient records. The list is randomly ordered by sorting a hashed version (SHA-256) of the sequentially generated patient hospital ID. The trial team (at least one board-certified oncologist) checks whether patients fulfill the eligibility criteria every Friday afternoon.
 
-#### Invitation to SAT
+#### Invitation to the Single-Arm Trial
 
 Descending the screening list row by row, we select up to three patients per week who will be invited to the trial. The decision to invite is made randomly, using a random sampling table uploaded to REDCap. The random sampling table was generated by a trialist not associated with the trial using R version 4.3.1 (2023-06-16) @RCoreTeam. The table was stratified by presence or absence of a primary diagnosis of a lung cancer, with a block size of 9, and has odds of 2:1 for an invitation to the trial. All investigators are blinded to the random sampling table.
 
@@ -472,7 +477,7 @@ The splines use B-spline basis functions with three knots (min, median, max). Th
 
 [^3]: We will `ns()`, from the R `splines` package. The truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
 
-We assign a regularizing prior of $\mathcal{N}(0, 0.55)$ to the treatment effect $\beta_{tx}$. This places approximately 80% of the probability mass on hazard ratios between 0.5 and 2.0, reflecting our belief that the intervention is unlikely to more than halve or double the hazard rate. Remaining regression coefficients are assigned default `rstanarm`, weakly informative priors, and the baseline hazard coefficients $\mathbb{\gamma}$ follow a symmetric Dirichlet distribution:
+We assign a regularizing prior of $\mathcal{N}(0, 0.55)$ to the treatment effect $\beta_{tx}$. This places approximately 80% of the probability mass on hazard ratios between 0.5 and 2.0, reflecting our belief that the intervention is unlikely to more than halve or double the hazard rate. Remaining regression coefficients are assigned default `rstanarm`, weakly informative priors, and the baseline hazard coefficients $\gamma$ follow a symmetric Dirichlet distribution:
 
 $$
 \begin{aligned} 
@@ -494,7 +499,7 @@ The model will be fitted using the `stan_surv` function from the `rstanarm` pack
 
 Using the fitted model we generate posterior draws of the marginalized survival curves for under each treatment ($a=0$ and $a=1$) up to $t_{max}=182$ days. For each posterior draw, we calculate the RMST under both treatments ($\widehat{\text{RMST}}^0$ and $\widehat{\text{RMST}}^1$) by integrating the respective survival curves from $t=0$ to $t_{max}=182$ days. We will approximate the integral using the trapezoidal rule on 200 discrete time points. We then compute the difference $\widehat{\tau}_{OS, \text{draw}} = \widehat{\text{RMST}}^1_{\text{draw}} - \widehat{\text{RMST}}^0_{\text{draw}}$. The collection of $\widehat{\tau}_{OS, \text{draw}}$ values forms the posterior distribution of the primary estimand. Example code for obtaining the RMST difference is provided in @sec-appendix-os-code.
 
-#### Simulated Power
+#### Operating Characteristics
 
 We evaluated the operating characteristics OS endpoint through a simulation study based on historical patient data.
 
@@ -520,7 +525,8 @@ We performed 1,000 simulations for each scenario. In each iteration:
 ```{r}
 #| echo: false
 #| message: false
-#| tbl-cap: "Operating characteristics for Overall Survival (OS) analysis under various true effect sizes (difference in RMST at 182 days)."
+#| label: tbl-oper-char-os
+#| tbl-cap: "Operating characteristics for Overall Survival analysis under various true effect sizes (difference in RMST at 182 days)."
 rmst_sim <- read_parquet(here("3-survival", "output", "bayesian-power-sim", "operating_characteristics_survival.parquet"))
 
 rmst_sim |> 
@@ -682,33 +688,73 @@ The handling of intercurrent events for the QoL analysis is described in @tbl-qo
 :::
 
 ::: callout-warning
-**Informative Missingness due to Routine Care Data Collection**: A design limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to BSC, different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. To assess the potential for differential informative missingness, we will compare the cumulative incidence of switching to Best Supportive Care (BSC) between the two trial arms. If the rates and timing of switching to BSC are similar between groups, it reduces the concern that missingness driven by palliative care transitions biases the treatment comparison.
+**Informative Missingness due to Routine Care Data Collection**: A design limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to best supportive care (BSC), different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. To assess the potential for differential informative missingness, we will compare the cumulative incidence of switching to BSC between the two trial arms. If the rates and timing of switching to BSC are similar between groups, it reduces the concern that missingness driven by palliative care transitions biases the treatment comparison.
 :::
 
 ### Analysis Method
 
 To target the estimand we use a first-order Markov longitudinal ordinal transition model [@rohde2024]. This model analyzes the probability of transitioning between QoL states from one week to the next, conditional on the previous state and the time gap since the last measurement. This approach accounts for the ordinal nature, longitudinal correlation, irregular measurement times, and provides a framework to derive interpretable summary measures like time spent in specific states. A higher-order Markov model would not be feasible, as quality of life states prior to baseline are not available.
 
-#### Statistical Model: Bayesian First-Order Markov Ordinal Transition Model
+#### Statistical Model
 
 Let $y_{it}$ be the ordinal QoL state (1-7, 1=best) for patient $i$ at week $t$. Let $y_{it'}$ be the last observed state at a prior week $t'$, and let the time gap be $\Delta t = t - t'$. The model is a cumulative logit model for transition probabilities:
 
 $$
-\begin{align*}
-\operatorname{logit}\left( P(y_{it} \ge j \mid y_{it'}, t, \Delta t, \mathbf{x}_i, \text{tx}_i) \right) & = \alpha_j + \eta_{it} + \gamma_{it,j} \\
-& \quad \text{for }j = 2, \dots, 7\\
-\eta_{it} & = \beta_{\text{tx}} \cdot \text{tx}_i + f(t) + \sum_{k=2}^{7} \beta_{\text{yprev}=k} \cdot \mathbb{I}(y_{it'} = k) \\
-& \qquad + \beta_{\text{gap}} \cdot \Delta t + \sum_{k=2}^{7} \beta_{\text{yprev}=k \times \text{gap}} \cdot \mathbb{I}(y_{it'} = k) \cdot \Delta t \\
-& \qquad + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} \\
-\gamma_{it,j} & = (\tau \cdot t) \cdot j \\
-\end{align*}
+\operatorname{logit}\left( P(y_{it} \ge j \mid y_{it'}, t, \Delta t, \mathbf{X}_i, \text{tx}_i) \right) = \alpha_j + \eta_{it} + \gamma_{it,j}, \quad \text{for } j = 2, \dots, 7
 $$
 
+The category-specific intercepts $\alpha_j$ define the baseline cumulative probabilities of being in state $j$ or worse. The linear predictor $\eta_{it}$ captures the effects that are assumed to satisfy the proportional odds assumption:
+
 $$
-\begin{align*}
-\text{where:} \\
-f(t) & = \sum_{p=1}^3 \beta_{t, p} \cdot B_p(t) \\
-\\
+\begin{aligned}
+\eta_{it} & = \beta_{\text{tx}} \cdot \text{tx}_i + f(t) + \sum_{k=2}^{7} \beta_{\text{yprev}=k} \cdot \mathbb{I}(y_{it'} = k) \\
+& \qquad + \beta_{\text{gap}} \cdot \Delta t + \sum_{k=2}^{7} \beta_{\text{yprev}=k \times \text{gap}} \cdot \mathbb{I}(y_{it'} = k) \cdot \Delta t \\
+& \qquad + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik}
+\end{aligned}
+$$
+
+where $\beta_{\text{tx}}$ is the main effect of treatment selection (A=1 vs A=0),[^6] and categorical predictors ($\text{ecog}$, $\text{diag}$) are represented by sums over their dummy variables. We model time flexibly[^7] using a restricted cubic spline with 4 knots,[^8] which generates 3 basis functions:
+
+[^6]: A treatment effect, if present, is unlikely to be constant over time. CtDNA analysis can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
+
+[^7]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 transitions vs. 182 transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
+
+[^8]: This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
+
+$$
+f(t) = \sum_{p=1}^3 \beta_{t, p} \cdot B_p(t)
+$$
+
+The effect of the previous QoL state ($\beta_{\text{yprev}=k}$, with state 1 as reference)[^9] and its interaction with the time gap ($\beta_{\text{yprev}=k \times \text{gap}}$) capture how the current state depends on the previous measurement and the time elapsed since then.[^10] The baseline covariates $\mathbf{X}_i\boldsymbol{\beta}_x$ include ECOG performance status and diagnosis category.[^11]
+
+[^9]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, estimating an interaction of the six-level categorical variable `yprev` with flexibly modeled time would not be feasible given our sample size.
+
+[^10]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
+
+[^11]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
+
+The term $\gamma_{it,j}$ models deviation from proportional odds for the effect of time, constrained to be linear in the outcome category $j$:
+
+$$
+\gamma_{it,j} = (\tau \cdot t) \cdot j
+$$
+
+where $\tau$ is the non-proportional odds parameter for time.
+
+#### Prior Specifications
+
+We assign a regularizing prior of $\mathcal{N}(0, 0.5)$ to the treatment effect $\beta_{\text{tx}}$. We used prior predictive simulation to select this prior, which implies a clinically plausible distribution for our estimand $\tau_{QoL}^{\text{psATE}}$. Our simulation, based on historical data, suggests that this prior on the log odds scale[^12] produces a prior distribution for $\tau_{QoL}^{\text{psATE}}$ with a median at 0 weeks (no difference), with approximately 80% of its mass on an increase in weeks with "good" or better QoL by 4 weeks (benefit) to a decrease by 3 weeks (harm).
+
+[^12]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.53$ and $1.90$.
+
+The intercepts $\alpha_j$ have priors induced by a Dirichlet distribution with a concentration parameter of 0.308[^13] on the baseline cell probabilities, which ensures proper ordering ($\alpha_2 < \dots < \alpha_7$).[^14] All other regression coefficients---including the time spline coefficients, previous state effects, gap effects, their interactions, and baseline covariate effects---are assigned weakly informative $\mathcal{N}(0, 100)$ priors (the default in `rmsb`). The non-proportional odds parameter $\tau$ also receives a $\mathcal{N}(0, 100)$ prior.
+
+[^13]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$, which evaluates to $0.308$ for a 7-level outcome.
+
+[^14]: Unlike the TAOOH model, we do not include a patient-level random intercept. With an anticipated average of only \~4 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data. The Type I error inflation is mitigated by the skeptical prior.
+
+$$
+\begin{aligned}
 \pi_1, \dots, \pi_K & \sim \text{Dirichlet}(0.308)\text{, which induces priors on } \alpha_j \\
 \beta_{tx} & \sim \mathcal{N}(0, 0.5) \\
 \beta_{t, p \in 1, 2, 3} & \sim \mathcal{N}(0, 100) \\
@@ -717,45 +763,9 @@ f(t) & = \sum_{p=1}^3 \beta_{t, p} \cdot B_p(t) \\
 \beta_{\text{yprev}=k \times \text{gap} \in 2..7} & \sim \mathcal{N}(0, 100) \\
 \beta_{ecog, j \in 2,3} & \sim \mathcal{N}(0, 100) \\
 \beta_{diag, k \in 2..5} & \sim \mathcal{N}(0, 100) \\
-\tau & \sim \mathcal{N}(0, 100)\\
-\end{align*}
+\tau & \sim \mathcal{N}(0, 100)
+\end{aligned}
 $$
-
-Where:
-
--   $\alpha_j$: Category-specific intercepts.
--   $\eta_{it}$: Linear predictor for effects assuming proportional odds (PO).
-    -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).[^6]
-    -   $f(\text{t})$: Flexible function of time[^7] modeled as a restricted cubic spline with 4 knots.[^8]
-    -   $\beta_{\text{yprev}=k}$: Effect of the previous QoL state (categorical, state 1 as reference).[^9]
-    -   $\beta_{\text{gap}}$: Linear effect of the time gap $\Delta t$.[^10]
-    -   $\beta_{\text{yprev}=k \times \text{gap}}$: Interaction between previous state and time gap.
-    -   $\beta_{ecog, j \in 2,3}, \beta_{diag, k \in 2..5}$: Effects of baseline covariates (ECOG status, diagnosis category).[^11]
--   $\gamma_{it,j}$: Models deviation from PO for the effect of time. We allow the effect of time to be non-proportional, constrained to be linear in the outcome category $j$. $\tau$ is the non-proportional odds parameter for time.
-
-[^6]: A treatment effect, if present, is unlikely to be constant over time. CtDNA analysis can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
-
-[^7]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 transitions vs. 182 transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
-
-[^8]: This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
-
-[^9]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, estimating an interaction of the six-level categorical variable `yprev` with flexibly modeled time would not be feasible given our sample size.
-
-[^10]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
-
-[^11]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
-
-#### Prior Specifications
-
--   **Intercepts (**$\alpha_j$): Priors induced by a Dirichlet(0.308)[^12] distribution on baseline cell probabilities. Ensures ordering $\alpha_2 < \dots < \alpha_7$.[^13]
--   **Treatment Parameter (**$\beta_{tx}$): We use prior predictive simulation to select a prior for $\beta_{tx}$ that implies a clinically plausible distribution for our estimand $\tau_{W}^{\text{psATE}}$. Our simulation, based on historical data, suggests that a prior of $\mathcal{N}(0, 0.5)$ on $\beta_{tx}$[^14] (i.e., on the log odds scale) produces a prior distribution for $\tau_{QoL}^{\text{psATE}}$ with a median at $0$ weeks that has about $80\%$ of its prior mass between for a increase in the time spent with 'good' or better QoL by $4$ weeks (benefit) and a decrease by $3$ weeks (harm). The prior is placed on the log odds scale and not on the scale of the estimand because of technical limitations.
--   **Other Coefficients**: Non-informative priors, $\mathcal{N}(0, 100)$, (default priors in `rmsb`).
-
-[^12]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$ , which evaluates to $0.308$ for a 7-level outcome.
-
-[^13]: Unlike the TAOOH model, we do not include a patient-level random intercept. With an anticipated average of only \~4 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data. The Type I error inflation is mtigated by the skeptical prior.
-
-[^14]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.53$ and $1.90$.
 
 #### Implementation
 
@@ -798,22 +808,22 @@ We will visualize the SOPs and $\tau_{QoL}$ as shown below.
 
 ![Marginal state occupancy probabilities (SOP) with 95% credible bands based the model fitted to a sample ($n=216$) from simulated data with a true difference in good or better QoL of $2$ weeks. SOPs have been grouped for illustrative purposes. States 1 to 3 are categorized as 'Good', state 4 as 'Average', and states 5-7 as 'Bad' QoL.](img/qol-primary-estimand-sop-line-grouped.svg){#fig-qol-sops}
 
-![Posterior distribution of the primary estimand, difference in weeks with good or better quality of life ($\tau_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=216$) from simulated data with a true underlying difference of two weeks. Larger values favour the group invited to the SAT.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
+![Posterior distribution of the estimated difference in weeks with good or better quality of life ($\hat{\tau}_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=216$) of simulated data with a true underlying difference of two weeks. Larger values favour the group selected for invitation to the SAT.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
 
-#### Simulated Power
+#### Operating Characteristics
 
-@tbl-oper-char-qol shows frequentist operating characteristics of the transition model. The data-generating mechanism assumes a sample size of $N = 216$, as we assume that $20\%$ of initially $270$ patients would die before 6 months. $85\%$ of post-baseline observations are missing completely at random (MCAR), which equals about $4$ post-baseline measurements per patient. A first order transition model was fit to historical data to obtain plausible QoL trajectories. The data were then generated using a latent Brownian Motion model to approximate the trajectories from the previous step, to create three scenarios with a difference in good QoL states of $0$, $1$ week, $2$ weeks, and $3$ weeks over the 26-week period. For each scenario, 1,000 datasets were simulated and analyzed using the proposed Bayesian first-order Markov ordinal transition model. The power is estimated as the proportion of simulations where the posterior probability of any benefit exceeds 0.95. We will not use the posterior to make a dichotomous claim of benefit. However, for the purpose of evaluating the operating characteristics of our analysis plan, we assess power and Type I error under the hypothetical decision rule of requiring a posterior probability of benefit greater than 0.95.
+@tbl-oper-char-qol shows frequentist operating characteristics of the transition model for QoL. The data-generating mechanism assumes a sample size of $N = 216$, as we assume that $20\%$ of initially $270$ patients would die before 6 months. $85\%$ of post-baseline observations are missing completely at random (MCAR), which equals about $4$ post-baseline measurements per patient. A first order transition model was fit to historical data to obtain plausible QoL trajectories. The simulated data were then generated using a latent Brownian Motion model to approximate the trajectories from the previous step to avoid a perfect match of the data generating model and analysis model. We simulated three scenarios with a difference in good QoL states of $0$, $1$ week, $2$ weeks, and $3$ weeks over the 26-week period. For each scenario, 1,000 datasets were simulated and analyzed using the Bayesian first-order Markov ordinal transition model (without covariates). The power is estimated as the proportion of simulations where the posterior probability of any benefit exceeds 0.95. In LIQPLAT we will not use the posterior to make a dichotomous claim of benefit. However, for the purpose of evaluating the operating characteristics of our analysis plan, we assess power and Type I error under the hypothetical decision rule of requiring a posterior probability of benefit greater than 0.95.
 
 ```{r}
 #| label: tbl-oper-char-qol
-#| tbl-cap: Bayesian Power and Type I error when $P(\text{benefit}) > 0.95$ is chosen as a cut-off for an assertion of benefit.
+#| tbl-cap: Probability of assertion of benefit when $P(\text{benefit}) > 0.95$ is chosen as a cut-off.
 #| echo: false
 sim_summary <- read_parquet("./1-qol/output/bayesian-power-sim/operating_characteristics_markov.parquet")
 
 summary_table <- sim_summary |>
   mutate(
-    effect_size_formatted = sprintf("%.1f", effect_size),
-    power_formatted = sprintf("%.1f%% (%.1f%%)", power * 100, power_mcse * 196),
+    effect_size_formatted = sprintf("%.1f weeks", effect_size),
+    power_formatted = sprintf("%.1f%% (%.1f%% - %.1f%%)", power * 100, power * 100 - power_mcse * 196, power * 100 + power_mcse * 196),
     estimate_formatted = sprintf("%.3f (SD: %.3f)", mean_estimate, sd_estimate)
   ) |>
   select(
@@ -828,9 +838,9 @@ summary_table |>
   knitr::kable(digits = 1)
 ```
 
-## Time Out of Hospital (TAOOH)
+## Time Out of Hospital
 
-### Estimand Definition (TAOOH)
+### Estimand Definition
 
 The estimand definition for Time Alive and Out of Hospital is summarized in @tbl-taooh-estimand.
 
@@ -838,11 +848,11 @@ The estimand definition for Time Alive and Out of Hospital is summarized in @tbl
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
 | Attribute               | Definition                                                                                                                                   |
 +:========================+:=============================================================================================================================================+
-| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started anti-cancer therapy.                                        |
+| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first-line anti-cancer therapy.                             |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
 | **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                  |
 |                         |                                                                                                                                              |
-|                         | (A=0): No selection for invitation (External Control Group / SoC).                                                                           |
+|                         | (A=0): No selection for invitation (External Comparator). \|                                                                                 |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
 | **Variable**            | Weekly health state: 1=Alive/Out-of-Hospital, 2=Alive/In-Hospital(Planned), 3=Alive/In-Hospital(ER), 4=Alive/In-Hospital(Unplanned), 5=Dead. |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
@@ -856,7 +866,7 @@ The estimand definition for Time Alive and Out of Hospital is summarized in @tbl
 : Estimand definition for Time Alive and Out of Hospital. {#tbl-taooh-estimand}
 :::
 
-#### Formal Definition (TAOOH)
+#### Formal Definition
 
 Let $Y_{it}^a$ be the potential health state (1-5) for individual $i$ at week $t$ under treatment assignment $a \in \{0, 1\}$. State 1 represents "Alive and Out of Hospital".
 
@@ -872,43 +882,65 @@ $$
 \tau_{TAOOH} = \mathbb{E}[W_i^1] - \mathbb{E}[W_i^0]
 $$
 
-$\tau_{TAOOH}$ represents the population-average difference in weeks spent alive and out of the hospital over 26 weeks, comparing the group selected for invitation versus the external control group.
+$\tau_{TAOOH}$ represents the population-average difference in weeks spent alive and out of the hospital over 26 weeks.
 
-### Handling of Intercurrent Events (TAOOH)
+### Handling of Intercurrent Events
 
-Death is explicitly modeled as the absorbing state (State 5) within the transition model. Other intercurrent events follow the Treatment Policy approach as outlined for OS (@sec-os-intercurrent-events).
+Death is part of the outcome definition and explicitly modeled (see @sec-taooh-analysis). Other intercurrent events follow the Treatment Policy approach as outlined for OS (@sec-os-intercurrent-events).
 
-### Analysis Method (TAOOH)
+### Analysis Method {#sec-taooh-analysis}
 
-#### Rationale for Ordinal Longitudinal Modeling
+#### Longitudinal Ordinal Outcome
 
-We define a patient's state weekly based on their location and vital status: 1=Alive and Out of Hospital, 2=Alive and In Hospital (Planned Admission), 3=Alive and In Hospital (ER), 4=Alive and In Hospice (Unplanned Admission), 5=Dead. This creates a longitudinal ordinal outcome (with state 5 being absorbing).
+We define a patient's state weekly based on their location and vital status: 1=alive and out of hospital, 2=alive and in hospital (planned admission), 3=alive and in hospital (emergency room), 4=alive and in hospital (unplanned admission), 5=dead. This creates a longitudinal ordinal outcome (with state 5 being absorbing).
 
 #### Statistical Model
 
-We use a Bayesian second-order Markov ordinal transition model with patient-level random effects. This model analyzes the probability of transitioning between health states from one week to the next, conditional on the states at the previous two weeks. The second-order specification captures the empirical finding in historic data that both the immediate prior state and the state two weeks earlier contain predictive information about the current health status.
+We use a Bayesian second-order Markov ordinal transition model with patient-level random effects. This model analyzes the probability of transitioning between health states from one week to the next, conditional on the states at the previous two weeks. The second-order specification captures the empirical finding in historic data that both the immediate prior state and the state two weeks earlier contain predictive information about the current health status.[^15]
 
-Let $y_{it}$ be the ordinal health state (1-5) for patient $i$ at week $t$. Let $y_{i, t-1}$ and $y_{i, t-2}$ be the states at the previous two weeks. The model is a cumulative logit model:
+[^15]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+
+Let $y_{it}$ be the ordinal health state (1-5) for patient $i$ at week $t$, and let $y_{i, t-1}$ and $y_{i, t-2}$ be the states at the previous two weeks. The model is a cumulative logit model:
 
 $$
-\begin{align*}
-\operatorname{logit}\left( P(y_{it} \ge j \mid y_{i, t-1}, y_{i, t-2}, t, \mathbf{x}_i, \text{tx}_i) \right) & = \alpha_j + \eta_{it} + \gamma_{0i} \\
-& \quad \text{for }j = 2, \dots, 5\\
-\eta_{it} & = \beta_{\text{tx}} \cdot \text{tx}_i + f(t) \\
-& \qquad + \sum_{k=2}^{4} \beta_{\text{yprev1}, k} \cdot \mathbb{I}(y_{i, t-1} = k) + \sum_{l=2}^{4} \beta_{\text{yprev2}, l} \cdot \mathbb{I}(y_{i, t-2} = l) \\
-& \qquad + \sum_{k=2}^{4} \beta_{t \times yprev1, k} \cdot t \cdot \mathbb{I}(y_{i, t-1} = k) + \sum_{l=2}^{4} \beta_{t \times yprev2, l} \cdot t \cdot \mathbb{I}(y_{i, t-2} = l) \\
-& \qquad + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} + f_1(\text{albumin}_i) + f_2(\text{crp}_i)
-\end{align*}
+\operatorname{logit}\left( P(y_{it} \ge j \mid y_{i, t-1}, y_{i, t-2}, t, \mathbf{X}_i, \text{tx}_i) \right) = \alpha_j + \eta_{it} + \gamma_{0i}, \quad \text{for } j = 2, \dots, 5
 $$
+
+The category-specific intercepts $\alpha_j$ define the baseline cumulative probabilities. The linear predictor $\eta_{it}$ captures the systematic effects:
 
 $$
 \begin{aligned}
-\text{where}: \\
-f(t) &= \sum_{p=1}^{3} \beta_{time, p} \cdot B_p(t) \\
-f_1(\text{albumin}_i) &= \sum_{m=1}^{2} \beta_{alb, m} \cdot B_{m, \text{alb}}(\text{albumin}_i) \\
-f_2(\text{crp}_i) &= \sum_{n=1}^{2} \beta_{crp, n} \cdot B_{n, \text{crp}}(\text{crp}_i) \\
+\eta_{it} & = \beta_{\text{tx}} \cdot \text{tx}_i + f_0(t) \\
+& \qquad + \sum_{k=2}^{4} \beta_{\text{yprev1}, k} \cdot \mathbb{I}(y_{i, t-1} = k) + \sum_{l=2}^{4} \beta_{\text{yprev2}, l} \cdot \mathbb{I}(y_{i, t-2} = l) \\
+& \qquad + \sum_{k=2}^{4} \beta_{t \times yprev1, k} \cdot t \cdot \mathbb{I}(y_{i, t-1} = k) + \sum_{l=2}^{4} \beta_{t \times yprev2, l} \cdot t \cdot \mathbb{I}(y_{i, t-2} = l) \\
+& \qquad + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} + f_1(\text{albumin}_i) + f_2(\text{crp}_i)
 \end{aligned}
 $$
+
+where $\beta_{\text{tx}}$ is the main effect of treatment selection (A=1 vs A=0), and categorical predictors ($\text{ecog}$, $\text{diag}$) are represented by sums over their dummy variables. We model time flexibly using a restricted cubic spline with 4 knots, generating 3 basis functions:
+
+$$
+f_0(t) = \sum_{p=1}^{3} \beta_{time, p} \cdot B_p(t)
+$$
+
+The effects of the previous two states ($\beta_{\text{yprev1}, k}$ and $\beta_{\text{yprev2}, l}$, with state 1 as reference) capture the second-order Markov dependency. The summation stops at 4 because state 5 (death) is absorbing. We include interaction terms allowing the effect of each previous state to change linearly over time. Model comparisons on historical weekly state data showed that including these interactions produced large improvements in fit and captures clinically plausible time-varying effects of recent hospital state.
+
+The continuous baseline covariates albumin and CRP are modeled flexibly using restricted cubic splines with 3 knots (2 basis functions each):
+
+$$
+\begin{aligned}
+f_1(\text{albumin}_i) &= \sum_{m=1}^{2} \beta_{alb, m} \cdot B_{m, \text{alb}}(\text{albumin}_i) \\
+f_2(\text{crp}_i) &= \sum_{n=1}^{2} \beta_{crp, n} \cdot B_{n, \text{crp}}(\text{crp}_i)
+\end{aligned}
+$$
+
+The term $\gamma_{0i}$ is a patient-specific random intercept to account for within-patient correlation beyond the Markov dependency. Longitudinal data such as weekly states are characterized by within-patient correlation. The second-order Markov model accounts for a portion of this correlation by conditioning on the previous two states, but residual correlation may remain due to unobserved patient-level heterogeneity. Our own simulation studies indicate that such unmodelled correlation can inflate the frequentist Type I error rate. The random intercept captures this residual patient-level correlation, aiming to maintain correct Type I error control.
+
+#### Prior Specifications
+
+We assign a regularizing prior of $\mathcal{N}(0, 0.541)$ to the treatment effect $\beta_{\text{tx}}$. We used prior predictive simulation to select this prior, which implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that this prior places 80% of its mass on $\beta_{\text{tx}}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which maps to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately 6 weeks fewer (harm) to 3 weeks more (benefit) spent alive and out of hospital.
+
+The intercepts $\alpha_j$ have priors induced by a Dirichlet distribution with a concentration parameter of 0.392 on the baseline cell probabilities. All fixed-effect regression coefficients---including the time spline coefficients, previous state effects, their interactions, and baseline covariate effects---are assigned weakly informative $\mathcal{N}(0, 100)$ priors (the default in `rmsb`). The standard deviation of the random intercepts $\sigma_{\gamma}$ is given a Half-t prior with 4 degrees of freedom and scale 1 (the default in `rmsb`).
 
 $$
 \begin{aligned}
@@ -928,40 +960,13 @@ $$
 \end{aligned}
 $$
 
-Where:
-
--   $\alpha_j$: Category-specific intercepts (cutpoints).
--   $\eta_{it}$: Linear predictor.
-    -   $\beta_{\text{tx}}$: Main effect of treatment selection (A=1 vs A=0).
-    -   $f(t)$: A flexible function of study time, modeled as a restricted cubic spline with 4 knots. This generates 3 basis functions ($B_p(t)$).
-    -   $\beta_{\text{yprev1, k}}$, $\beta_{\text{yprev2, l}}$: Effects of the state at week $t-1$ and $t-2$ (categorical, state 1 reference). The summation stops at 4, as 5 is an absorbing state.
-    -   $\beta_{t \times yprev1}$, $\beta_{t \times \text{yprev2}}$: Interaction terms allowing the effect of each previous state to change linearly over time.
-    -   Baseline covariates: Effects of baseline ECOG, diagnosis, albumin, and C-reactive protein. The continuous covariates albumin and CRP are modeled flexibly using restricted cubic splines with 3 knots (2 basis functions each).
--   $\gamma_{0i}$: A patient-specific random intercept to account for within-patient correlation beyond the Markov dependency.
-
-#### Prior Specifications
-
-We assign a regularizing prior of $\mathcal{N}(0, 0.541)$ to the treatment effect $\beta_{tx}$. We used prior predictive simulation to select this prior, which implies a clinically plausible distribution for our estimand $\tau_{TAOOH}$. Our simulation, based on historical data, suggested that this prior on the log odds scale produces a prior distribution for $\tau_{TAOOH}$ with a median at 0 weeks (no difference), with 80% of its mass on $\beta_{tx}$ between $\log(0.5) \approx -0.693$ and $\log(2.0) \approx +0.693$, which our simulations mapped to an asymmetric 80% prior belief interval for $\tau_{TAOOH}$ of approximately $[-6.0, +3.0]$ weeks.
-
-The intercepts $\alpha_j$ have priors induced by a Dirichlet(0.392) distribution on the baseline cell probabilities, as recommended by the `rmsb` package for 5 outcome levels. All fixed-effect regression coefficients are assigned weakly informative $\mathcal{N}(0, 100)$ priors (default in `rmsb`). The standard deviation of the random intercepts is given a Half-Normal(0, 1) prior (default in `rmsb`)
-
-#### Rationale for selecting the second‑order model and interactions
-
-Model comparisons on historical weekly state data showed that a second‑order Markov specification meaningfully improved fit (substantial AIC reduction) compared with first‑order models, indicating that the state two weeks prior contains additional predictive information. Including interactions between the previous states (yprev, ypprev) and the linear component of time produced further large improvements in fit and captures clinically plausible time‑varying effects of recent hospital state. A linearly constrained non‑proportional odds for time offered little additional gain while causing convergence problems. For these reasons we adopted a second‑order cumulative logit model with yprev and ypprev interactions with the linear week term, retaining a full proportional‑odds structure. [^15]
-
-[^15]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
-
-#### Rationale for Random Intercepts
-
-Longitudinal data, such as the weekly states, are characterized by within-patient correlation. The second-order Markov model accounts for a portion of this correlation by conditioning on the previous two states. However, residual correlation may remain due to unobserved patient-level heterogeneity or the misspecification of covariate effects (e.g., omission of a predictive covariate or modeling a non-linear effect as linear). Our own (unpublished) simulation studies indicate that such unmodelled correlation can inflate the frequentist Type I error rate, even when using Bayesian methods with common decision thresholds (e.g., P(benefit)\>0.95). While frequentist analyses might address this with cluster-robust standard errors, the analogous approach in our Bayesian framework is to include a patient-specific random intercept. Therefore, the TAOOH model includes a random intercept (γ0i​) to capture this residual patient-level correlation, aiming to maintain correct Type I error control and provide more robust inference.
-
 #### Implementation
 
-The model will be fitted using the `blrm` function from the `rmsb` package, including the `cluster(id)` term for random effects. MCMC settings as per OS analysis. Example implementation code is provided in @sec-appendix-taooh-code.
+The model will be fitted using the `blrm` function from the `rmsb` package, including the `cluster(id)` term for random effects. Example implementation code is provided in @sec-appendix-taooh-code.
 
 #### Obtaining the Estimand
 
-Using the fitted model, we generate posterior draws of the marginalized State Occupancy Probabilities (SOPs) under each treatment ($a=0$ and $a=1$) over the 26-week follow-up period. For each posterior draw, we calculate $\widehat{P}(Y_{t}^a = j)$ for each week $t=1, \dots, 26$, state $j=1, \dots, 5$, and treatment. This requires a recursive calculation accounting for the second-order dependency and marginalizing over baseline covariates, baseline state pairs ($y_{-1}, y_0$), and random effects. Details can be found in \[placeholder\].
+Using the fitted model, we generate posterior draws of the marginalized State Occupancy Probabilities (SOPs) under each treatment ($a=0$ and $a=1$) over the 26-week follow-up period. For each posterior draw, we calculate $\widehat{P}(Y_{t}^a = j)$ for each week $t=1, \dots, 26$, state $j=1, \dots, 5$, and treatment. This requires a recursive calculation accounting for the second-order dependency and marginalizing over baseline covariates, baseline state pairs ($y_{-1}, y_0$), and random effects. Details can be found in @sec-appendix-taaoh.
 
 For each posterior draw, we then calculate the expected number of weeks in State 1 (Alive and Out of Hospital) for each treatment arm by summing the SOPs for State 1 over the 26 weeks:
 
@@ -973,7 +978,7 @@ We then compute the difference $\widehat{\tau}_{TAOOH, \text{draw}} = \widehat{\
 
 #### Model Diagnostics: Assessment of Correlation Structure
 
-To validate that our model adequately captures the complex longitudinal dependency in the TAOOH data, we will perform graphical checks. We will compare the empirical correlation structure of the observed weekly states against the correlation structure of data simulated from the fitted model. This comparison will be visualized using Spearman correlation heatmaps (@fig-corr-heat-comp) and variograms (@fig-var-heat-comp). This diagnostic check is possible for the TAOOH outcome because it is measured as a complete weekly series; a similar check is not feasible for the QoL endpoint due to its sparse and irregular data collection. The code used for the diagnostics can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/6-model-correlation-plots.pdf).
+To validate that our model adequately captures the complex longitudinal dependency in the TAOOH data, we will perform graphical checks. We will compare the empirical correlation structure of the observed weekly states against the correlation structure of data simulated from the fitted model. This comparison will be visualized using Spearman correlation heatmaps (@fig-corr-heat-comp) and variograms (@fig-var-heat-comp). This diagnostic check is possible for the TAOOH outcome because it is measured as a complete weekly series; a similar check is not feasible for the QoL endpoint due to its sparse and irregular data collection.
 
 ![Panel (A) shows the Spearman correlation between outcomes on each par of study weeks using historical data. The correlation is high for nearby weeks, but quickly decays during the first 9 weeks. Panel (B) uses simulated data from the fitted model, resampling baseline covariates. We observe a decent match, indicating that our model is able to capture the correlation structure.](img/fig-sim-cor-heat-comparison.svg){#fig-corr-heat-comp}
 
@@ -981,13 +986,13 @@ To validate that our model adequately captures the complex longitudinal dependen
 
 #### Visualization of Estimate
 
-We will visualize the SOPs and $\tau_{TAOOH}$ as shown below.
+We will visualize the SOPs and $\tau_{TAOOH}$ as shown in @fig-taooh-sops and @fig-taooh-tau.
 
-![The left plot shows the empirical state occupancy probabilities (SOP) based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). The right plot shows the marginalized SOPs derived from the fitted model with 95 per cent credible bands.](img/taooh_sop_comp.svg){#fig-taooh-sops}
+![The left plot shows the empirical state occupancy probabilities (SOP) based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{TAOOH} \approx 1.2$ weeks). The right plot shows the marginalized SOPs derived from the fitted model with 95 per cent credible bands.](img/taooh_sop_comp.svg){#fig-taooh-sops}
 
-![Posterior distribution of the primary estimand, difference in weeks alive and out of hospital ($\tau_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the SAT.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
+![Posterior distribution of the primary estimand, the expected difference in weeks alive and out of hospital ($\hat{\tau}_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the SAT.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
 
-#### Simulated Power
+#### Operating Characteristics
 
 ```{r}
 #| echo: false
@@ -996,28 +1001,46 @@ summary_h0 <- readRDS("./2-hosp/output/sim-summary_h0.rds")
 summary_ha <- readRDS("./2-hosp/output/sim-summary_ha.rds")
 ```
 
-Using models fit on historical data, we generated datasets with known treatment effects, $OR \in \{0.0, 0.7, 0.8, 0.9\}$. In our historical data, this approximately equaled the following differences in the weeks spent at home and alive over 26 weeks $\tau_{TAOOH} \in \{0, 0.6, 1.2, 1.8\}$. More information on the data generation can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/5-sim-datasets.pdf).
+@tbl-oper-char-toh-ha shows frequentist operating characteristics of the second-order transition model for TAOOH. To generate plausible trajectories, we fit a second-order markov model on historical data, and used its parameters to generated datasets with known treatment effects; $OR \in \{0.0, 0.7, 0.8, 0.9\}$. In our historical data, this approximately equaled the following differences in the weeks spent at home and alive over 26 weeks $\tau_{TAOOH} \in \{0, 0.6, 1.2, 1.8\}$. More information on the data generation can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/5-sim-datasets.pdf). For each scenario, 1,000 datasets were simulated and analyzed using the second-order transition model (without covariates). The power is estimated as the proportion of simulations where the posterior probability of any benefit exceeds 0.95.
 
 ```{r}
 #| echo: false
 #| label: tbl-oper-char-toh-ha
-#| tbl-cap: Bayesian Power when $P(\text{benefit}) > 0.95$ is chosen as a cut-off for benefit under different true odds ratios (Monte Carlo SE in parenthesis).
-summary_ha |> 
-  mutate(OR = case_when(
-    `True OR` == "or_07" ~ 0.7,
-    `True OR` == "or_08" ~ 0.8,
-    `True OR` == "or_09" ~ 0.9,
-    TRUE ~ NA_real_
-  )) |> 
-  rename(
-    `True $\\tau$` = `Clinical Effect`,
-    Power = `Rejection Rate`
+#| tbl-cap: Probability of assertion of benefit when $P(\text{benefit}) > 0.95$ is chosen as a cut-off for.
+h0 <- summary_h0 |> 
+  mutate(
+    OR = 1.0,
+    `$\\tau_{TAOOH}$` = "0 weeks",
+    `Assertion Probability (95% CI)` = sprintf("%.1f%% (%.1f%% - %.1f%%)", prob_rejection * 100, prob_rejection * 100 - 196 * mcse_prob_rejection, prob_rejection * 100 + 196 * mcse_prob_rejection)
   ) |> 
-  select(2, 9, 4) |> 
+  select(15, 14, 16) |> 
+  slice(1)
+
+summary_ha |> 
+  mutate(
+    OR = case_when(
+      `True OR` == "or_07" ~ 0.7,
+      `True OR` == "or_08" ~ 0.8,
+      `True OR` == "or_09" ~ 0.9,
+      TRUE ~ NA_real_
+    ),
+    prob_rejection = as.numeric(stringr::str_extract(`Rejection Rate`, "^[0-9.]+")),
+    mcse_rejection = as.numeric(stringr::str_extract(`Rejection Rate`, "(?<=\\().+?(?=\\))")),
+    `Assertion Probability (95% CI)` = sprintf(
+      "%.1f%% (%.1f%% - %.1f%%)",
+      prob_rejection * 100,
+      prob_rejection * 100 - 196 * mcse_rejection,
+      prob_rejection * 100 + 196 * mcse_rejection
+    )
+  ) |> 
+  rename(`$\\tau_{TAOOH}$` = `Clinical Effect`) |> 
+  select(`$\\tau_{TAOOH}$`, OR, `Assertion Probability (95% CI)`) |> 
+  bind_rows(h0) |>
+  arrange(desc(OR)) |> 
   knitr::kable()
 ```
 
-We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for the purpose of evaluating operating characteristics. It will not be used as a formal, dichotomous decision rule in the final analysis. Instead, the primary reporting will focus on presenting and interpreting the full posterior distribution for the estimand, $\tau_{TAOOH}$​. The power figures in @tbl-oper-char-toh-ha are intended to provide a conventional benchmark to illustrate which effect sizes the study can reasonably detect given our sample size and modeling approach.
+We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for the purpose of evaluating operating characteristics. It will not be used as a formal, dichotomous decision rule in the final analysis. Instead, the primary reporting will focus on presenting and interpreting the full posterior distribution of $\hat{\tau}_{TAOOH}$​. The estimates in @tbl-oper-char-toh-ha are intended to provide a conventional benchmark to illustrate which effect sizes the study can reasonably detect given our sample size and modeling approach.
 
 # Sensitivity Analyses
 
@@ -1033,32 +1056,37 @@ As a sensitivity analysis for TAOOH, we will fit a first-order Markov model (con
 
 ## Quality of Life
 
-A sensitivity analysis for the QoL outcome has not yet been finalized. Potential approaches under consideration include varying the definition of "Good" QoL states (e.g., including only states 1-2 rather than 1-3) or exploring alternative handling of missing data mechanisms. This section will be updated prior to database lock.
+We will conduct two sensitivity analyses for the Quality of Life endpoint to assess the robustness of our results to the Principal Stratum assumption and the handling of death.
+
+### Landmark Analysis
+
+The first sensitivity analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model.
+
+### Longitudinal Ordinal Model with Death
+
+The second sensitivity analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored, we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
 
 # Limitations
 
 ## QoL Analysis Limitations {#sec-qol-limitations}
 
-### **Principal Stratum Assumption:**
+### Principal Stratum Assumption:
 
-The primary QoL analysis relies on the strong, untestable assumption that selection for invitation has no effect on 6-month survival. If this assumption is violated, the analysis results apply only to the specific subgroup who would survive regardless, but this subgroup is not fully identifiable, and the estimate may be biased for the broader ITT population.
+The primary QoL analysis relies on the strong, untestable assumption that selection for invitation has no effect on 6-month survival. If this assumption is violated, the analysis results apply only to the specific subgroup who would survive regardless, but this subgroup is not fully identifiable, and the estimate may be biased for the broader ITT population. Consequently, we will compare QoL using the principal stratum approach only if there is little evidence of a survival difference between groups at 6 months.
 
-### **Informative Missingness**
+### Informative Missingness
 
-A primary limitation arises because the treatment strategy is expected to influence post-randomization clinical decisions, which in turn affect whether the QoL outcome is observed (see @fig-dag-qol-error). These decisions affect both future QoL and the probability that QoL is measured, since data is collected during routine care appointments. For instance, a decision to switch a patient to best supportive care (BSC) may lead to fewer clinic visits, resulting in the cessation of QoL data collection.
+A primary limitation arises because the treatment strategy is expected to influence post-randomization clinical decisions, which in turn affect whether the QoL outcome is observed. These decisions affect both future QoL and the probability that QoL is measured, since data is collected during routine care appointments. For instance, a decision to switch a patient to best supportive care (BSC) may lead to fewer clinic visits, resulting in the cessation of QoL data collection.
 
-As a simple illustrative example, assume ctDNA guided management only improves QoL through an early switch to BSC of an ineffective treatment. Let's also assume that all the patients who are switched to BSC have no more follow-up visits, and their improved QoL is not recorded. Logically, this results in an inability to show the true treatment effect.
+As a simple illustrative example, assume ctDNA guided management mainly improves QoL through an early switch to BSC of an ineffective treatment. Let's also assume that all the patients who are switched to BSC have no more follow-up visits, and their improved QoL is not recorded. Logically, this results in an inability to show the true treatment effect. @fig-dag-qol-error shows this graphically: $M_Y$ denotes the missingness indicator for the quality of life outcome $Y$. $A$ represents the selection for invitation to the trial (treatment), and $X$ represents measured baseline covariates. $W$ is a vector of unmeasured causes of missingness ($M_Y$). The variable $L$ represents post-randomization events (e.g., early switch to BSC) that are influenced by the treatment $A$ and subsequently affect both the outcome $Y$ and its missingness $M_Y$. The direct path $A \rightarrow Y$ captures effects of the intervention on quality of life that do not operate through mechanisms affecting missingness, although we anticipate such effects to be rare.
+
+In LIQPLAT this problem will not be as severe, because the University Hospital does not have a separate unit for BSC. This means that many patients who are switched to BSC still have appointments and will be offered the QoL questionnaire.
 
 ![A missingness DAG (m-DAG) depicting assumptions regarding missingness in the quality of life outcome ($Y$). $M_Y$ is the missingness indicator for $Y$. $W$ is the vector of unmeasured causes of $M_Y$. $A$ represents the selection for invitation to LIQPLAT (treatment indicator), $X$ represents measured baseline covariates, $L$ represents effects of $A$ which affect both follow-up and thus missingness ($M_Y$) and QoL ($Y$), such as early switch to best supportive care. $A \rightarrow Y$ represent effects of $A$ on $Y$ which do not affect missingness, though we expect these to be rare. Realistically, ctDNA sampling would mostly affect $Y$ through changes in the treatment regimen, which also affects missingness.](img/dag-qol-error.svg){#fig-dag-qol-error}
 
-## General Limitations
-
--   **Single Center**
--   **Intervention Complexity:** The "treatment" is selection for invitation to a complex intervention (ctDNA testing influencing care). Isolating the specific effect of ctDNA itself versus other aspects of trial participation is difficult.
-
 # Reporting
 
-Results will be reported according to CONSORT guidelines where applicable, adapted for the SAT design. Analyses will follow the ITT principle (based on selection status). Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% CrI). \[Details TBD\].
+Results will be reported according to CONSORT guidelines where applicable, adapted to the SAT design. Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% CrI).
 
 {{< pagebreak >}}
 
@@ -1262,7 +1290,7 @@ The predictor matrix is configured to:
 
 ```{r}
 #| output: false
-#| echo: false
+#| echo: true
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -1596,7 +1624,7 @@ The predictor matrix is configured to:
 
 ```{r}
 #| echo: false
-#| output: false
+#| output: true
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -1608,7 +1636,6 @@ pred_matrix[, "pat_id"] <- -2
 pred_matrix["pat_id", ] <- 0
 
 # Exclude raw death/survival variables from predictions (we use na_est instead)
-# This avoids aggregation artefacts when collapsing longitudinal data to cluster means
 pred_matrix[, "death"] <- 0
 pred_matrix["death", ] <- 0
 pred_matrix[, "died"] <- 0
@@ -1622,7 +1649,7 @@ baseline_vars <- c("tx", "age", "gender", "diagnosis", "ecog_fstcnt", "albumin",
 
 pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
 
-# treatment, gender, age, and week are be missing
+# treatment, gender, age, and week are never missing
 meth["tx"] <- ""
 meth["gender"] <- ""
 meth["age"] <- ""
@@ -1632,7 +1659,6 @@ meth["week_nl2"] <- ""
 
 
 # use mean matching at the cluster level for baseline observations
-# this ensures only one ecog per patient per imputation
 meth["diagnosis"] <- "2lonly.pmm"
 meth["ecog_fstcnt"] <- "2lonly.pmm"
 meth["albumin"] <- "2lonly.pmm"
@@ -1908,7 +1934,7 @@ The predictor matrix is configured to:
 -   Allow all other variables to predict each other
 
 ```{r}
-#| echo: false
+#| echo: true
 #| output: false
 md.pattern(df)
 
@@ -2198,6 +2224,346 @@ model_taooh <- blrm(
     data = data_toh,
     iter = 4000, chains = 4, seed = 68818,
 )
+```
+
+### Deriving State Occupancy Probabilities
+
+#### Predictions conditional on random effects
+
+The predict function from rmsb ignores random effects.
+
+```{r}
+#| eval: FALSE 
+#| echo: TRUE
+predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
+  if (!is.data.frame(newdata)) {
+    stop("`newdata` must be a data frame.")
+  }
+  if (include_re && !"id" %in% colnames(newdata)) {
+    stop("`newdata` must contain a 'id' column when include_re=TRUE")
+  }
+  
+  N_new <- nrow(newdata)
+
+  # --- 1) Get the design matrix for the new data ---
+  X <- rms::predictrms(fit, newdata = newdata, type = 'x')
+
+  # --- 2) Extract posterior draws and model information ---
+  draws <- fit$draws
+  ndraws <- nrow(draws)
+  ns <- fit$non.slopes
+  K <- ns + 1
+  
+  intercept_draws <- draws[, 1:ns, drop = FALSE]
+  beta_draws <- draws[, (ns + 1):ncol(draws), drop = FALSE]
+
+  # --- 3) Calculate the fixed-effect linear predictor (eta_fixed) ---
+  eta_fixed <- beta_draws %*% t(X)
+
+  # --- 4) Get the random effect draws (u_draws) if requested ---
+  u_draws <- matrix(0, nrow = ndraws, ncol = N_new)
+  
+  if (include_re) {
+    if (length(unique(newdata$id)) > 1) {
+      stop("`newdata` contains multiple unique patient IDs. This version is restricted to one at a time.")
+    }
+    if (!requireNamespace("posterior", quietly = TRUE)) {
+      stop("The 'posterior' package is required to extract random effect draws.")
+    }
+    sf <- rmsb::stanGet(fit)
+    all_gamma_draws <- posterior::as_draws_matrix(sf$draws(variables = "gamma"))
+    patient_ids <- newdata$id
+    u_draws <- all_gamma_draws[, patient_ids, drop = FALSE]
+  }
+
+  # --- 5) Calculate the total linear predictor (eta) ---
+  stopifnot(all(dim(eta_fixed) == dim(u_draws)))
+  eta <- eta_fixed + u_draws
+
+  # --- 6) Calculate probabilities for each observation and each draw ---
+  p_cat_draws_list <- vector("list", N_new) 
+  
+  for (i in 1:N_new) {
+    eta_i <- eta[, i]
+    s_ge <- plogis(sweep(intercept_draws, 1, eta_i, "+"))
+    
+    p_cat_draws <- matrix(NA_real_, nrow = ndraws, ncol = K)
+    p_cat_draws[, 1] <- 1 - s_ge[, 1]
+    if (K > 2) {
+      for (kk in 2:(K - 1)) {
+        p_cat_draws[, kk] <- s_ge[, kk - 1] - s_ge[, kk]
+      }
+    }
+    p_cat_draws[, K] <- s_ge[, K - 1]
+    colnames(p_cat_draws) <- paste0("y=", 1:K)
+    
+    p_cat_draws_list[[i]] <- p_cat_draws
+  }
+
+  # --- 7) Reshape draws into a single 3D array ---
+  draws_array <- array(
+    data = NA_real_,
+    dim = c(ndraws, N_new, K)
+  )
+
+  for (i in 1:N_new) {
+    draws_array[, i, ] <- p_cat_draws_list[[i]]
+  }
+
+  dimnames(draws_array) <- list(
+    NULL,
+    rownames(newdata),
+    colnames(p_cat_draws_list[[1]])
+  )
+
+  return(draws_array)
+}
+```
+
+#### Unconditionalizing Predictions
+
+```{r}
+#| eval: FALSE 
+#| echo: TRUE
+#' Calculate Second-Order State Occupation Probabilities
+#'
+#' This function calculates the unconditional state occupation probabilities for a
+#' second-order Markov model.
+#'
+#' @param model_fit The fitted model object (rmsb or brms)
+#' @param baseline_data A single-row data frame containing the initial states and
+#'   all baseline predictor values required by the model.
+#' @param col_yprev A string with the column name for the state at t-1 (e.g., "yprev").
+#' @param col_ypprev A string with the column name for the state at t-2 (e.g., "ypprev").
+#' @param col_time A string with the column name that represents time in the model (e.g., "week").
+#' @param times A numeric vector specifying the time points for calculation (e.g., `1:26`).
+#' @param n_states An integer for the number of levels in the ordinal outcome.
+#' @param absorbing_states A numeric vector listing the absorbing states.
+#'
+#' @return A list containing two arrays:
+#'   \item{unconditional}{A 3D array `(draws, states, time)` with the unconditional state probabilities.}
+#' @export
+
+sop_markov_second_order <- function(model_fit,
+                                    baseline_data,
+                                    col_yprev,
+                                    col_ypprev,
+                                    col_time,
+                                    times,
+                                    n_states,
+                                    absorbing_states,
+                                    include_re = FALSE) {
+
+  # --- Detect model type and get number of draws ---
+  if (inherits(model_fit, "brmsfit")) {
+    detected_type <- "brms"
+    if (!requireNamespace("marginaleffects", quietly = TRUE) || !requireNamespace("posterior", quietly = TRUE)) {
+      stop("Packages 'marginaleffects' and 'posterior' are required for brms models.")
+    }
+    n_draws <- posterior::ndraws(model_fit)
+  } else if (inherits(model_fit, "blrm")) {
+    detected_type <- "rmsb"
+    n_draws <- nrow(model_fit$draws)
+  } else {
+    stop("Unsupported model object class. Please provide a model from 'brms' (class 'brmsfit') or 'rmsb' (class 'blrm').")
+  }
+  
+  # --- Parameters ---
+  M <- n_states
+  T_horizon <- max(times)
+
+  # --- Initial Conditions ---
+  initial_state_t_minus_1 <- as.numeric(baseline_data[[col_ypprev]])
+  initial_state_t_0 <- as.numeric(baseline_data[[col_yprev]])
+
+  # --- Data Structures to Store Results ---
+  P_joint_bayes <- array(0, dim = c(n_draws, M, M, T_horizon + 1),
+                         dimnames = list(paste0("draw_", 1:n_draws),
+                                         paste0("t-1=", 1:M),
+                                         paste0("t=", 1:M),
+                                         paste0("time=", 0:T_horizon)))
+
+  P_uncond_bayes <- array(0, dim = c(n_draws, M, T_horizon + 1),
+                          dimnames = list(paste0("draw_", 1:n_draws),
+                                          paste0("State_", 1:M),
+                                          paste0("t=", 0:T_horizon)))
+
+  # Set the known probability at t=0
+  P_joint_bayes[, initial_state_t_minus_1, initial_state_t_0, 1] <- 1.0
+  P_uncond_bayes[, initial_state_t_0, 1] <- 1.0
+
+  # --- Create the static grid for batch predictions ---
+  history_grid <- expand.grid(
+    h = factor(1:M, levels = 1:M), # X_{t-2}
+    j = factor(1:M, levels = 1:M)  # X_{t-1}
+  )
+  names(history_grid) <- c(col_ypprev, col_yprev)
+
+  # --- Dynamically create the full prediction dataset ---
+  # Identify static covariates by excluding time-varying/history columns
+  cols_to_exclude <- c(col_yprev, col_ypprev, col_time)
+  static_covariate_names <- setdiff(names(baseline_data), cols_to_exclude)
+  static_covariates <- baseline_data[, static_covariate_names, drop = FALSE]
+
+  # Combine static covariates with the grid of all possible histories
+  prediction_data <- cbind(static_covariates, history_grid)
+
+  # --- Main Iteration Loop ---
+  for (t in times) {
+    # Identify predictable histories
+    predictable_idx <- which(
+      !(prediction_data[[col_ypprev]] %in% absorbing_states) &
+      !(prediction_data[[col_yprev]] %in% absorbing_states)
+    )
+    n_predictable <- length(predictable_idx)
+
+    # Subset the data for prediction and set the current time
+    prediction_data_subset <- prediction_data[predictable_idx, ]
+    prediction_data_subset[[col_time]] <- t
+
+
+    pred_array_3d <- NULL
+
+    if (detected_type == "brms") {
+      # refactor previous states to remove absorbing states
+      prediction_data_subset[[col_yprev]] <- factor(prediction_data_subset[[col_yprev]], levels = c(1:M)[-absorbing_states])
+      prediction_data_subset[[col_ypprev]] <- factor(prediction_data_subset[[col_ypprev]], levels = c(1:M)[-absorbing_states])  
+      re_arg <- if (include_re) NULL else NA
+      brms_pred_long <- marginaleffects::predictions(model_fit, 
+                                                     newdata = prediction_data_subset, 
+                                                     type = "response", 
+                                                     re_formula = re_arg) |>
+                        marginaleffects::posterior_draws()
+      
+      pred_array_3d <- array(0, dim = c(n_draws, n_predictable, M))
+      indices <- cbind(brms_pred_long$drawid, 
+                       brms_pred_long$rowid, 
+                       as.numeric(brms_pred_long$group))
+      pred_array_3d[indices] <- brms_pred_long$draw
+      
+    } else { # detected_type == "rmsb"
+    # dimension 1 = 4000 draws
+    # dimension 2 = X_{t-1} and X_{t-2} combinations (rows from prediction_data_subset)
+    # dimension 3 = cumulative probabilities (e.g., 4 columns for 5 states)
+      pred_array_3d <- predict_blrm_manual(model_fit, prediction_data_subset, include_re = include_re)
+    }
+
+    state_probs_all_draws <- do.call(rbind, lapply(1:dim(pred_array_3d)[1], function(d) pred_array_3d[d, , ]))
+
+    # --- Assemble transition probabilities for each draw ---
+    # Create a 4D array to hold all transition probabilities: P(X_t=l | X_{t-2}=h, X_{t-1}=j)
+    # Dims: (draw, h, j, l)
+    # So [, 1, 1, 1] give all draws for P(l = 1 | h = 1, j = 1)
+    # [, 1, 1, ] for all draws for P(l | h = 1, j = 1) (rows must sum to 1)
+    cond_probs_4d_array <- array(0, dim = c(n_draws, M, M, M))
+
+    for (d in 1:n_draws) {
+      # Create a placeholder matrix for this specific draw
+      # each row is combination of (h, j), each column is l (rows must sum to 1)
+      # this is for one draw only
+      cond_probs_matrix_d <- matrix(0, nrow = M * M, ncol = M)
+      
+      # Handle absorbing states (P(j->j) = 1 if j is absorbing)
+      absorbing_idx <- which(prediction_data[[col_yprev]] %in% absorbing_states)
+      if (length(absorbing_idx) > 0) {
+        absorbing_state <- as.numeric(as.character(prediction_data[[col_yprev]][absorbing_idx]))
+        rows_and_cols <- cbind(absorbing_idx, absorbing_state)
+        cond_probs_matrix_d[rows_and_cols] <- 1.0
+      }
+      
+      # Get state probabilities for the current draw
+      start_row <- (d - 1) * n_predictable + 1
+      end_row <- d * n_predictable
+      draw_d_probs <- state_probs_all_draws[start_row:end_row, ]
+      
+      # Place them into the correct rows
+      cond_probs_matrix_d[predictable_idx, ] <- draw_d_probs
+      
+      # Reshape and store in the final 4D array
+      cond_probs_4d_array[d, , , ] <- array(cond_probs_matrix_d, dim = c(M, M, M))
+    }
+
+    # --- Update Probabilities ---
+    # Get joint probabilities from the previous step for all draws: P(X_{t-2}, X_{t-1})
+    prev_P_joint_all_draws <- P_joint_bayes[, , , t]
+    current_P_joint_all_draws <- array(0, dim = c(n_draws, M, M))
+
+    for (d in 1:n_draws) {
+      # This is P(X_{t-2}=h, X_{t-1}=j) for draw d
+      prev_P_joint_d <- prev_P_joint_all_draws[d, , ]
+      # P(X_t = l | X_{t-1} = j, X_{t-2} = h) for this draw
+      cond_probs_d <- cond_probs_4d_array[d, , , ]
+      
+      # Law of Total Probability: P(X_t=l|h,j) * P(h,j)
+      # weighted_probs <- cond_probs_d * array(prev_P_joint_d, dim = dim(cond_probs_d))
+      weighted_probs <- sweep(cond_probs_d, c(1, 2), prev_P_joint_d, "*")
+      # Marginalize over the t-2 state (h) to get P(X_{t-1}, X_t)
+      # = Summation over h (the state at t-2), resulting in P(X_{t-1}=j, X_t=l)
+      current_P_joint_d <- apply(weighted_probs, c(2, 3), sum)
+      
+      current_P_joint_all_draws[d, , ] <- current_P_joint_d
+      
+      # Marginalize over the t-1 state (j) to get P(X_t)
+      uncond_probs_t <- colSums(current_P_joint_d)
+      # Consider normalizing  to prevent floating point error accumulation (not doing this for now)
+      P_uncond_bayes[d, , t + 1] <- uncond_probs_t
+      # P_uncond_bayes[d, , t + 1] <- uncond_probs_t / sum(uncond_probs_t)
+    }
+    
+    P_joint_bayes[, , , t + 1] <- current_P_joint_all_draws
+  }
+
+  return(P_uncond_bayes)
+}
+```
+
+### Marginalization
+
+```{r}
+#| eval: FALSE 
+#| echo: TRUE
+write_SOP <- function(i, tx, baseline_df, path, model){
+  
+  row <- baseline_df[i, ]
+  
+  sops <-
+  sop_markov_second_order(
+    model_fit = model,
+    baseline_data = data.frame(id = row$id, tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, albumin = row$albumin,  c_reactive_protein = row$c_reactive_protein, yprev = row$yprev, ypprev = row$ypprev),
+    col_yprev = "yprev",
+    col_ypprev = "ypprev",
+    col_time = "week",
+    times = 1:26,
+    n_states = 5,
+    absorbing_states = c(5),
+    include_re = TRUE
+  )
+  
+  sops <- reshape2::melt(sops, 
+                   varnames = c("draw", "state", "time"), 
+                   value.name = "probability")
+  sops <- sops |> 
+    mutate(
+        time  = as.integer(sub("t=", "", time)),
+        draw  = as.integer(sub("draw_", "", draw)),
+        state = as.factor(sub("State_", "", state)),
+        tx    = tx,
+        i     = i ) |> 
+    filter(time > 0)
+  
+  folder <- file.path(path, glue::glue("/marginalized_sop_{tx}"), glue::glue("/msop_{i}.parquet"))
+
+  # Create the directory if it doesn't exist
+  dir_to_create <- dirname(folder)
+  if (!dir.exists(dir_to_create)) {
+    dir.create(dir_to_create, recursive = TRUE)
+  }
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
 ```
 
 {{< pagebreak >}}
