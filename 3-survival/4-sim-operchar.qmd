@@ -1,0 +1,505 @@
+---
+title: "Bayesian Power Simulation Pipeline - Survival Analysis"
+---
+
+This document implements a Bayesian power simulation for survival outcomes using 
+`rstanarm::stan_surv()` with M-spline baseline hazard.
+
+**Analyses:**
+
+1. **RMST (full)**: Marginalized RMST difference via posterior survival curves (slower)
+2. **Treatment coefficient**: Posterior draws of the treatment log-HR only (faster)
+
+**Scenarios:**
+
+- **H0**: OR = 1.0 (null hypothesis, treatment rerandomized, RMST diff ≈ 0 days)
+- **HA_09**: OR = 0.9 (RMST diff ≈ 3 days)
+- **HA_08**: OR = 0.8 (RMST diff ≈ 6 days)
+- **HA_07**: OR = 0.7 (RMST diff ≈ 9 days)
+- **HA_06**: OR = 0.6 (RMST diff ≈ 12 days)
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+library(here)
+library(arrow)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(purrr)
+library(furrr)
+library(fs)
+library(glue)
+library(data.table)
+library(rstanarm)
+library(markov.misc)
+
+# Configuration
+N_SIMULATIONS <- 1000
+SAMPLE_SIZE <- 270              # Total patients: 180 tx + 90 soc
+ALLOCATION_RATIO <- 2/3         # Proportion allocated to treatment (2:1 ratio)
+N_CORES <- 7
+SEED <- 456
+DECISION_THRESHOLD <- 0.95      # P(benefit) threshold for declaring success
+
+# Paths
+DATA_PATH <- here("3-survival", "sim-data")
+OUTPUT_PATH <- here("3-survival", "output", "bayesian-power-sim")
+
+# Create output directory if needed
+if (!dir.exists(OUTPUT_PATH)) dir.create(OUTPUT_PATH, recursive = TRUE)
+
+
+```
+
+## Load All Datasets and Calculate True RMST Differences
+
+```{r load-datasets}
+# Load all simulation datasets
+h0_data <- read_parquet(file.path(DATA_PATH, "h0_forward.parquet"))
+ha_09_data <- read_parquet(file.path(DATA_PATH, "ha_09_forward.parquet"))
+ha_08_data <- read_parquet(file.path(DATA_PATH, "ha_08_forward.parquet"))
+ha_07_data <- read_parquet(file.path(DATA_PATH, "ha_07_forward.parquet"))
+ha_06_data <- read_parquet(file.path(DATA_PATH, "ha_06_forward.parquet"))
+
+# Calculate true RMST differences for each dataset
+# Target states 1:4 (alive states), excluding 5 (death)
+true_rmst_h0 <- h0_data |>
+  select(id, time = day, y, tx) |>
+  calc_time_in_state_diff(target_state = 1:4) |> 
+  pull(true_effect)
+
+true_rmst_09 <- ha_09_data |>
+  select(id, time = day, y, tx) |>
+  calc_time_in_state_diff(target_state = 1:4) |> 
+  pull(true_effect)
+
+true_rmst_08 <- ha_08_data |>
+  select(id, time = day, y, tx) |>
+  calc_time_in_state_diff(target_state = 1:4) |> 
+  pull(true_effect)
+
+true_rmst_07 <- ha_07_data |>
+  select(id, time = day, y, tx) |>
+  calc_time_in_state_diff(target_state = 1:4) |> 
+  pull(true_effect)
+
+true_rmst_06 <- ha_06_data |>
+  select(id, time = day, y, tx) |>
+  calc_time_in_state_diff(target_state = 1:4) |> 
+  pull(true_effect)
+
+# Display true RMST differences
+cat("True RMST differences (days):\n")
+cat(sprintf("H0 (OR=1.0): %.2f\n", true_rmst_h0))
+cat(sprintf("HA (OR=0.9): %.2f\n", true_rmst_09))
+cat(sprintf("HA (OR=0.8): %.2f\n", true_rmst_08))
+cat(sprintf("HA (OR=0.7): %.2f\n", true_rmst_07))
+cat(sprintf("HA (OR=0.6): %.2f\n", true_rmst_06))
+
+rm(h0_data, ha_09_data, ha_08_data, ha_07_data, ha_06_data)
+```
+
+## Step 1: Identify Scenarios
+
+We define four scenarios based on the available superpopulation files.
+
+```{r identify-scenarios}
+# Define scenarios using calculated true RMST differences
+scenarios <- tibble(
+  scenario_type = c("H0", "HA", "HA", "HA", "HA"),
+  effect_label = c("OR_1.0", "OR_0.9", "OR_0.8", "OR_0.7", "OR_0.6"),
+  rmst_diff_true = c(0, true_rmst_09, true_rmst_08, true_rmst_07, true_rmst_06),  # True RMST difference from data
+  data_file = c("h0.parquet", "ha_09.parquet", "ha_08.parquet", "ha_07.parquet", "ha_06.parquet"),
+  rerandomize = c(TRUE, FALSE, FALSE, FALSE, FALSE)
+) |>
+  mutate(
+    data_path = file.path(DATA_PATH, data_file),
+    scenario_label = glue("{scenario_type}_{effect_label}"),
+    output_path = file.path(OUTPUT_PATH, scenario_label)
+  )
+
+scenarios
+```
+
+## Step 2: Data Preparation Function
+
+```{r data-prep-function}
+#' Prepare survival data from raw simulation data
+#' 
+#' @param df Full dataset from superpopulation
+#' @return Data ready for stan_surv() model
+prepare_survival_data <- function(df) {
+  df |>
+    filter(y == 5 | day == 182) |>
+    group_by(id) |>
+    arrange(desc(y)) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    mutate(death = ifelse(y == 5, 1, 0)) |>
+    select(id, tx, day, death)
+}
+```
+
+## Step 3: Define Bayesian Fitting Functions
+
+Each function fits a Bayesian model and returns results in the format expected 
+by `assess_operating_characteristics()`: a list where the first element is a 
+summary tibble with required columns, and subsequent elements contain details.
+
+For Bayesian models, we use:
+- `estimate`: posterior median
+- `std_error`: posterior SD
+- `conf_low`, `conf_high`: 95% credible interval
+- `p_benefit`: stored in details list for power/type I error calculations
+
+```{r fitting-functions}
+#' Fit survival model and extract treatment coefficient only (fast)
+#' 
+#' @param data Sampled data from superpopulation
+#' @param iter Iteration number
+#' @return List with summary tibble and posterior draws
+fit_surv_coef <- function(data, iter) {
+  # Prepare survival data
+  surv_data <- prepare_survival_data(data)
+
+  prior <- normal(
+    location = 0,
+    scale = 0.55  
+  )
+ 
+  model <- tryCatch({
+    stan_surv(
+      formula = Surv(day, death) ~ tx,
+      data = surv_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = prior,
+      chains = 4,
+      cores = 1,
+      seed = 1234,
+      iter = 2000,
+      refresh = 0
+    )
+  }, error = function(e) {
+    message(glue("ERROR in surv_coef iteration {iter}: {e$message}"))
+    return(NULL)
+  })
+  
+  if (is.null(model)) {
+    return(list(
+      tibble(
+        iter = iter,
+        analysis = "surv_coef",
+        se_type = "bayesian",
+        term = "tx",
+        estimate = NA_real_,
+        std_error = NA_real_,
+        conf_low = NA_real_,
+        conf_high = NA_real_
+      )
+    ))
+  }
+  
+  # Extract tx posterior draws (log-HR scale)
+  draws_df <- as.data.frame(model)
+  tx_draws <- draws_df$tx
+  
+  # Calculate P(benefit): negative log-HR means treatment reduces hazard
+  p_benefit <- mean(tx_draws < 0)
+  
+  # Extract diagnostics
+  model_summary <- summary(model)
+  rhat_values <- model_summary[, "Rhat"]
+  n_eff_values <- model_summary[, "n_eff"]
+  
+  # Create summary in required format
+  summary_tbl <- tibble(
+    iter = iter,
+    analysis = "surv_coef",
+    se_type = "bayesian",
+    term = "tx",
+    estimate = median(tx_draws),
+    std_error = sd(tx_draws),
+    conf_low = quantile(tx_draws, 0.025),
+    conf_high = quantile(tx_draws, 0.975)
+  )
+  
+  # Return list: summary + details
+  list(
+    summary_tbl,
+    list(
+      posterior_draws = tibble(
+        iter = iter,
+        analysis = "surv_coef",
+        draw_id = seq_along(tx_draws),
+        tx_effect = tx_draws
+      ),
+      p_benefit = p_benefit,
+      rhat = as.list(rhat_values),
+      n_eff = as.list(n_eff_values)
+    )
+  )
+}
+
+#' Fit survival model and calculate marginalized RMST difference (slow)
+#' 
+#' @param data Sampled data from superpopulation
+#' @param iter Iteration number
+#' @return List with summary tibble and posterior draws including RMST
+fit_surv_rmst <- function(data, iter) {
+  # Prepare survival data
+  surv_data <- prepare_survival_data(data)
+  
+  prior <- normal(
+    location = 0,
+    scale = 0.55  
+  )
+ 
+  model <- tryCatch({
+    stan_surv(
+      formula = Surv(day, death) ~ tx,
+      data = surv_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = prior,
+      chains = 4,
+      cores = 1,
+      seed = 1234,
+      iter = 2000,
+      refresh = 0
+    )
+  }, error = function(e) {
+    message(glue("ERROR in surv_rmst iteration {iter}: {e$message}"))
+    return(NULL)
+  })
+  
+  if (is.null(model)) {
+    return(list(
+      tibble(
+        iter = iter,
+        analysis = "surv_rmst",
+        se_type = "bayesian",
+        term = "rmst_diff",
+        estimate = NA_real_,
+        std_error = NA_real_,
+        conf_low = NA_real_,
+        conf_high = NA_real_
+      )
+    ))
+  }
+  
+  # Extract tx posterior draws (log-HR scale)
+  draws_df <- as.data.frame(model)
+  tx_draws <- draws_df$tx
+  
+  # Extract diagnostics
+  model_summary <- summary(model)
+  rhat_values <- model_summary[, "Rhat"]
+  n_eff_values <- model_summary[, "n_eff"]
+  
+  # Calculate marginalized RMST via posterior survival curves
+  rmst_result <- tryCatch({
+    # Get posterior survival curves for tx=0
+    ps_0_list <- posterior_survfit(
+      model,
+      newdata = surv_data |> mutate(tx = 0),
+      times = 0,
+      extrapolate = TRUE,
+      standardise = TRUE,
+      control = list(edist = 182, epoints = 200),
+      return_matrix = TRUE,
+      draws = 4000
+    )
+    std_surv_matrix_0 <- do.call(cbind, ps_0_list)
+    time_points <- sapply(ps_0_list, attr, "times")
+    
+    # Get posterior survival curves for tx=1
+    ps_1_list <- posterior_survfit(
+      model,
+      newdata = surv_data |> mutate(tx = 1),
+      times = 0,
+      extrapolate = TRUE,
+      standardise = TRUE,
+      control = list(edist = 182, epoints = 200),
+      return_matrix = TRUE,
+      draws = 4000
+    )
+    std_surv_matrix_1 <- do.call(cbind, ps_1_list)
+    
+    # Calculate RMST for tx=0 using trapezoidal rule
+    delta_t <- diff(time_points)
+    s_t1_0 <- std_surv_matrix_0[, -ncol(std_surv_matrix_0)]
+    s_t2_0 <- std_surv_matrix_0[, -1]
+    trapezoid_areas_0 <- 0.5 * (s_t1_0 + s_t2_0) * matrix(delta_t, nrow = nrow(s_t1_0), ncol = length(delta_t), byrow = TRUE)
+    rmst_0 <- rowSums(trapezoid_areas_0)
+    
+    # Calculate RMST for tx=1
+    s_t1_1 <- std_surv_matrix_1[, -ncol(std_surv_matrix_1)]
+    s_t2_1 <- std_surv_matrix_1[, -1]
+    trapezoid_areas_1 <- 0.5 * (s_t1_1 + s_t2_1) * matrix(delta_t, nrow = nrow(s_t1_1), ncol = length(delta_t), byrow = TRUE)
+    rmst_1 <- rowSums(trapezoid_areas_1)
+    
+    # Calculate the difference
+    rmst_diff <- rmst_1 - rmst_0
+    
+    list(rmst_0 = rmst_0, rmst_1 = rmst_1, rmst_diff = rmst_diff)
+  }, error = function(e) {
+    message(glue("ERROR calculating RMST in iteration {iter}: {e$message}"))
+    return(NULL)
+  })
+  
+  if (is.null(rmst_result)) {
+    return(list(
+      tibble(
+        iter = iter,
+        analysis = "surv_rmst",
+        se_type = "bayesian",
+        term = "rmst_diff",
+        estimate = NA_real_,
+        std_error = NA_real_,
+        conf_low = NA_real_,
+        conf_high = NA_real_
+      )
+    ))
+  }
+  
+  rmst_diff <- rmst_result$rmst_diff
+  
+  # Calculate P(benefit): positive RMST diff means treatment extends survival
+
+  p_benefit <- mean(rmst_diff > 0)
+  
+  # Create summary in required format
+  summary_tbl <- tibble(
+    iter = iter,
+    analysis = "surv_rmst",
+    se_type = "bayesian",
+    term = "rmst_diff",
+    estimate = median(rmst_diff),
+    std_error = sd(rmst_diff),
+    conf_low = quantile(rmst_diff, 0.025),
+    conf_high = quantile(rmst_diff, 0.975)
+  )
+  
+  # Return list: summary + details
+  list(
+    summary_tbl,
+    list(
+      posterior_draws = tibble(
+        iter = iter,
+        analysis = "surv_rmst",
+        draw_id = seq_along(rmst_diff),
+        rmst_diff = rmst_diff,
+        rmst_0 = rmst_result$rmst_0,
+        rmst_1 = rmst_result$rmst_1
+      ),
+      tx_draws = tibble(
+        iter = iter,
+        draw_id = seq_along(tx_draws),
+        tx_effect = tx_draws
+      ),
+      p_benefit = p_benefit,
+      rhat = as.list(rhat_values),
+      n_eff = as.list(n_eff_values)
+    )
+  )
+}
+```
+
+## Step 4: Run Simulations for All Scenarios
+
+```{r run-simulations}
+# Define fit functions list
+fit_functions <- list(
+  surv_coef = fit_surv_coef
+#   surv_rmst = fit_surv_rmst
+)
+
+# Run simulations for each scenario
+for (i in seq_len(nrow(scenarios))) {
+  scenario <- scenarios[i, ]
+
+
+  message(glue("\n=== Running scenario: {scenario$scenario_label} ==="))
+  message(glue("True RMST difference: {round(scenario$rmst_diff_true, 2)} days"))
+  
+  # Create output directory
+  if (!dir.exists(scenario$output_path)) {
+    dir.create(scenario$output_path, recursive = TRUE)
+  }
+  
+  # Data paths for all analyses (same file for both)
+  data_paths <- list(
+    surv_coef = scenario$data_path
+    # surv_rmst = scenario$data_path
+  )
+  
+  # Check for completed iterations
+  summary_dir <- file.path(scenario$output_path, "summary")
+  if (dir.exists(summary_dir)) {
+    completed_files <- list.files(summary_dir, pattern = "_iter_\\d+\\.rds",
+                                   recursive = TRUE, full.names = TRUE)
+    completed_iters <- as.integer(
+      unique(gsub(".*_iter_(\\d+)\\.rds", "\\1", completed_files))
+    )
+  } else {
+    completed_iters <- integer(0)
+  }
+  
+  iters_to_run <- setdiff(1:N_SIMULATIONS, completed_iters)
+  n_to_run <- length(iters_to_run)
+  n_completed <- length(completed_iters)
+  
+  message(glue("{n_completed} of {N_SIMULATIONS} iterations already complete."))
+  
+  if (n_to_run > 0) {
+    message(glue("Starting {n_to_run} new simulations on {N_CORES} cores..."))
+    
+    t1 <- Sys.time()
+    future::plan(future.callr::callr, workers = N_CORES)
+    
+    furrr::future_map(
+      .x = iters_to_run,
+      .f = ~ markov.misc::assess_operating_characteristics(
+        iter_num = .x,
+        data_paths = data_paths,
+        output_path = scenario$output_path,
+        fit_functions = fit_functions,
+        sample_size = SAMPLE_SIZE,
+        allocation_ratio = ALLOCATION_RATIO,
+        seed = SEED,
+        rerandomize = scenario$rerandomize
+      ),
+      .options = furrr_options(
+        seed = TRUE,
+        globals = c(
+          # --- Helper Functions ---
+          "prepare_survival_data",
+          
+          # --- Configuration Constants ---
+          "SEED",
+          "SAMPLE_SIZE",
+          "ALLOCATION_RATIO",
+          "fit_functions",
+          
+          # --- Loop-Specific Variables ---
+          "scenario",
+          "data_paths"
+        ),
+        packages = c("rstanarm", "dplyr", "tibble", "glue", "markov.misc")
+      ),
+      .progress = TRUE
+    )
+    
+    future::plan("sequential")
+    t2 <- Sys.time()
+    message(glue("Finished {n_to_run} simulations for {scenario$scenario_label}."))
+    message(glue("Duration: {round(difftime(t2, t1, units = 'mins'), 1)} minutes"))
+  } else {
+    message("All simulations already complete.")
+  }
+}
+
+message("\n=== All scenarios completed ===")
+```
