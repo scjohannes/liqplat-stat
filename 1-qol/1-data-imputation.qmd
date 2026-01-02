@@ -100,6 +100,14 @@ df <- df |>
   left_join(baseline_qol, by = "pat_id") |> 
   filter(week > 0) |> 
   relocate(baseline_q30, ecog_fstcnt, diagnosis, plan_fstcnt_coded, .after = pat_id)
+  # group_by(pat_id) |>
+  # mutate(
+  #   yprev = lag(q30, n = 1L, order_by = week)) |> 
+  # fill(yprev, .direction = "down") |>
+  # mutate(
+  #   yprev = if_else(is.na(yprev), baseline_q30, yprev)
+  #   ) |> 
+  # ungroup() 
 
 # Model non-linear time effects using restricted cubic splines with 4 knots
 basis_rcs <- rms::rcs(df$week, 4)
@@ -194,6 +202,7 @@ pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl
 # Longitudinal variables: multilevel PMM
 meth["q30"] <- "2l.pmm"
 meth["distress"] <- "2l.pmm"
+# meth["yprev"] <- ""
 
 # Baseline variables: cluster-level PMM
 meth["ecog_fstcnt"] <- "2lonly.pmm"
