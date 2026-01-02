@@ -70,8 +70,8 @@ The estimand, $\tau$, represents the population-average difference in weeks spen
 dd <- datadist(df)
 options(datadist = "dd")
 pcontrast_arg <- list(
-  c1 = list(tx = 1),    # <-- Numeric 1 for the treatment group
-  c2 = list(tx = 0),    # <-- Numeric 0 for the reference group
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
   contrast = expression(c1 - c2),
   mu = 0,
   sd = 0.541
@@ -575,7 +575,7 @@ We can se that some empirical lines cross, but we KNOW that the treatment effect
 #| fig-width: 10
 #| fig-height: 5
 plot_empirical + plot_model
-ggsave(filename = here("img", "taooh_sop_comp.png"), width = 10, height = 5)
+ggsave(filename = here("img", "taooh_sop_comp.svg"), width = 10, height = 5)
 ```
 
 ## Primary Estimand
@@ -602,7 +602,7 @@ estimand_df |>
   labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - SoC)",
        y = "Density")
 
-ggsave(filename = here("img", "taooh_primary_estimand_conservative-prior.png"), width = 8, height = 5)
+ggsave(filename = here("img", "taooh_primary_estimand_conservative-prior.svg"), width = 8, height = 5)
 ```
 
 ## Checks
