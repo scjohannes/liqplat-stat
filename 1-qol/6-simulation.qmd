@@ -38,10 +38,10 @@ library(brms)
 library(markov.misc)
 
 # Configuration
-N_SIMULATIONS <- 96
+N_SIMULATIONS <- 1000
 SAMPLE_SIZE <- 270 * 0.8       # Total patients to sample per iteration (20% die)
 ALLOCATION_RATIO <- 2/3        # Proportion allocated to treatment (2:1 ratio)
-N_CORES <- 6
+N_CORES <- 8
 SEED <- 123456
 DECISION_THRESHOLD <- 0.95    # P(benefit) threshold for declaring success
 
@@ -482,8 +482,8 @@ fit_cfb_brms <- function(data, iter) {
 # Define fit functions list - all use the same data path since they're 
 # applied to the same sampled dataset
 fit_functions <- list(
-  markov_blrm = fit_markov_blrm,
-  ordinal_6m_blrm = fit_6m_ordinal_blrm,
+  # markov_blrm = fit_markov_blrm,
+  # ordinal_6m_blrm = fit_6m_ordinal_blrm,
   cfb_brms = fit_cfb_brms
 )
 
@@ -500,8 +500,8 @@ for (i in seq_len(nrow(scenarios))) {
   
   # Data paths for all analyses (same file)
   data_paths <- list(
-    markov_blrm = scenario$data_path,
-    ordinal_6m_blrm = scenario$data_path,
+    # markov_blrm = scenario$data_path,
+    # ordinal_6m_blrm = scenario$data_path,
     cfb_brms = scenario$data_path
   )
   
