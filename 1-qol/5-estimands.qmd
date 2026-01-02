@@ -108,15 +108,15 @@ ggsave(filename = here::here("img", "fig-sparse-tile.svg"), width = 12, height =
 ## Fit the model
 
 ```{r}
-brm_m <- brm(
-  formula = bf(
-    y ~ tx + s(time, bs = "cr") + yprev + (1 + tx | id)),
-  data = data_for_model,
-  family = cumulative(link = "logit"),
-  chains = 4, 
-  cores = 1,
-  iter = 1000
-)
+# brm_m <- brm(
+#   formula = bf(
+#     y ~ tx + s(time, bs = "cr") + yprev + (1 + tx | id)),
+#   data = data_for_model,
+#   family = cumulative(link = "logit"),
+#   chains = 4, 
+#   cores = 1,
+#   iter = 1000
+# )
 ```
 
 ```{r}
@@ -330,6 +330,8 @@ fig_marginalized_grouped <- sop_df |>
    subtitle = "Marginalized state occupancy probabilities",
    fill = "State",
    linetype = "Treatment")
+
+ggsave(plot = fig_marginalized_grouped, here::here("img", "qol-primary-estimand-sop-line-grouped.svg"), width = 10, height = 6)
 
 p_empirical + fig_marginalized + plot_layout(guides = "collect")
 ```
