@@ -229,7 +229,7 @@ Based on past-data of the Division of Medical Oncology, around 240-300 patients 
 2.  Patients with primary resectable disease, and
 3.  Patients with prior treatment for advanced or metastatic disease.
 
-### Random Invitation to the SAT
+### Random Invitation to the Single-Arm Trial
 
 #### Screening list
 
@@ -271,7 +271,7 @@ This SAP focuses on the three primary endpoints for the randomized comparison be
 2.  **Quality of Life (QoL):** Patient-reported global quality of life measured longitudinally using EORTC questionnaires during routine care up to 6 months after random selection.
 3.  **Time Alive and Out of Hospital (TAOOH):** Time spent alive and out of hospital up to 6 months after random selection.
 
-Secondary endpoints as described in the protocol (e.g., PFS, number of imaging exams) will be analyzed but are considered exploratory and are thus no pre-specified in more detail.
+Secondary endpoints as described in the protocol (e.g., Progression-Free Survival [PFS], number of imaging exams) will be analyzed but are considered exploratory and are thus no pre-specified in more detail.
 
 ## Analysis Populations
 
@@ -304,7 +304,7 @@ For QoL (details in @sec-appendix-qol-mi) and TAOOH (details in @sec-appendix-ta
 
 **Level 2 (Patient-Level Imputation)**
 
-Baseline variables (e.g., functional status at baseline \[ECOG\], baseline laboratory values), will be imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster (patient) mean. A linear regression model is fitted to the collapsed data.
+Baseline variables (e.g., functional status at baseline [Eastern Cooperative Oncology Group {ECOG}], baseline laboratory values), will be imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster (patient) mean. A linear regression model is fitted to the collapsed data.
 
 $$
 Y_j = \beta_0 + \mathbf{X}_j\boldsymbol{\beta_1}  + \bar{\mathbf{Z}}_j\boldsymbol{\beta_2} + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
@@ -607,9 +607,9 @@ In LIQPLAT, QoL questionnaires are completed at clinical appointments, which occ
 
 ### General Approach
 
-We propose to make use of the irregular, near-random follow-up of usual care and its QoL measurements to reconstruct the quality of life trajectories for the entire duration of follow-up (see @fig-qol-concept).
+We propose to make use of the irregular, near-random follow-up of usual care and its QoL measurements to reconstruct the QoL trajectories for the entire duration of follow-up (see @fig-qol-concept).
 
-![Conceptual overview of the statistical approach for reconstructing Quality of Life (QoL) trajectories. The analysis bridges the gap between the hypothetical, complete QoL data (far left), from which empirical state occupancy probabilities (SOPs) could be directly calculated, and the actual observed data, which is sparse and irregularly spaced (second from left). A statistical model (third from left) is fitted to these sparse observations to generate complete, model-derived SOPs for the entire follow-up period (far right), reconstructing the full QoL trajectory for the population and providing associated uncertainty estimates.](img/qol-sap-fit-1.svg){#fig-qol-concept}
+![Conceptual overview of the statistical approach for reconstructing Quality of Life trajectories. The analysis bridges the gap between the hypothetical, complete QoL data (far left), from which empirical state occupancy probabilities could be directly calculated, and the actual observed data, which is sparse and irregularly spaced (second from left). A statistical model (third from left) is fitted to these sparse observations to generate complete, model-derived SOPs for the entire follow-up period (far right), reconstructing the full QoL trajectory for the population and providing associated uncertainty estimates.](img/qol-sap-fit-1.svg){#fig-qol-concept}
 
 ### Estimand Definition
 
@@ -806,7 +806,7 @@ Given these assumptions, especially assumptions six to eight, we have **low conf
 
 We will visualize the SOPs and $\tau_{QoL}$ as shown below.
 
-![Marginal state occupancy probabilities (SOP) with 95% credible bands based the model fitted to a sample ($n=216$) from simulated data with a true difference in good or better QoL of $2$ weeks. SOPs have been grouped for illustrative purposes. States 1 to 3 are categorized as 'Good', state 4 as 'Average', and states 5-7 as 'Bad' QoL.](img/qol-primary-estimand-sop-line-grouped.svg){#fig-qol-sops}
+![Marginal state occupancy probabilities with 95% credible bands based the model fitted to a sample ($n=216$) from simulated data with a true difference in good or better Quality of Life of $2$ weeks. State occupancy probabilities have been grouped for illustrative purposes. States 1 to 3 are categorized as 'Good', state 4 as 'Average', and states 5-7 as 'Bad' Quality of Life.](img/qol-primary-estimand-sop-line-grouped.svg){#fig-qol-sops}
 
 ![Posterior distribution of the estimated difference in weeks with good or better quality of life ($\hat{\tau}_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=216$) of simulated data with a true underlying difference of two weeks. Larger values favour the group selected for invitation to the SAT.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
 
@@ -990,7 +990,7 @@ We will visualize the SOPs and $\tau_{TAOOH}$ as shown in @fig-taooh-sops and @f
 
 ![The left plot shows the empirical state occupancy probabilities (SOP) based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{TAOOH} \approx 1.2$ weeks). The right plot shows the marginalized SOPs derived from the fitted model with 95 per cent credible bands.](img/taooh_sop_comp.svg){#fig-taooh-sops}
 
-![Posterior distribution of the primary estimand, the expected difference in weeks alive and out of hospital ($\hat{\tau}_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the SAT.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
+![Posterior distribution of the primary estimand, the expected difference in weeks alive and out of hospital ($\hat{\tau}_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the single-arm trial.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
 
 #### Operating Characteristics
 
@@ -1082,7 +1082,7 @@ As a simple illustrative example, assume ctDNA guided management mainly improves
 
 In LIQPLAT this problem will not be as severe, because the University Hospital does not have a separate unit for BSC. This means that many patients who are switched to BSC still have appointments and will be offered the QoL questionnaire.
 
-![A missingness DAG (m-DAG) depicting assumptions regarding missingness in the quality of life outcome ($Y$). $M_Y$ is the missingness indicator for $Y$. $W$ is the vector of unmeasured causes of $M_Y$. $A$ represents the selection for invitation to LIQPLAT (treatment indicator), $X$ represents measured baseline covariates, $L$ represents effects of $A$ which affect both follow-up and thus missingness ($M_Y$) and QoL ($Y$), such as early switch to best supportive care. $A \rightarrow Y$ represent effects of $A$ on $Y$ which do not affect missingness, though we expect these to be rare. Realistically, ctDNA sampling would mostly affect $Y$ through changes in the treatment regimen, which also affects missingness.](img/dag-qol-error.svg){#fig-dag-qol-error}
+![A missingness Directed Acyclic Graph (m-DAG) depicting assumptions regarding missingness in the quality of life outcome ($Y$). $M_Y$ is the missingness indicator for $Y$. $W$ is the vector of unmeasured causes of $M_Y$. $A$ represents the selection for invitation to LIQPLAT (treatment indicator), $X$ represents measured baseline covariates, $L$ represents effects of $A$ which affect both follow-up and thus missingness ($M_Y$) and QoL ($Y$), such as early switch to best supportive care. $A \rightarrow Y$ represent effects of $A$ on $Y$ which do not affect missingness, though we expect these to be rare. Realistically, ctDNA sampling would mostly affect $Y$ through changes in the treatment regimen, which also affects missingness.](img/dag-qol-error.svg){#fig-dag-qol-error}
 
 # Reporting
 
