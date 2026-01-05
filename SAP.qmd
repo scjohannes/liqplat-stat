@@ -71,6 +71,8 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **CHIP**      | Clonal Hematopoiesis of Indeterminate Potential            |
 +---------------+------------------------------------------------------------+
+| **CrI**       | Credible Interval                                          |
++---------------+------------------------------------------------------------+
 | **ctDNA**     | Circulating Tumor DNA                                      |
 +---------------+------------------------------------------------------------+
 | **DAG**       | Directed Acyclic Graph                                     |
@@ -139,7 +141,7 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **SOP**       | State Occupancy Probability                                |
 +---------------+------------------------------------------------------------+
-| **TAOOH**     | Time Out of Hospital                                       |
+| **TAOOH**     | Time Alive and Out of Hospital                             |
 +---------------+------------------------------------------------------------+
 
 {{< pagebreak >}}
@@ -271,7 +273,7 @@ This SAP focuses on the three primary endpoints for the randomized comparison be
 2.  **Quality of Life (QoL):** Patient-reported global quality of life measured longitudinally using EORTC questionnaires during routine care up to 6 months after random selection.
 3.  **Time Alive and Out of Hospital (TAOOH):** Time spent alive and out of hospital up to 6 months after random selection.
 
-Secondary endpoints as described in the protocol (e.g., Progression-Free Survival [PFS], number of imaging exams) will be analyzed but are considered exploratory and are thus no pre-specified in more detail.
+Secondary endpoints as described in the protocol (e.g., Progression-Free Survival \[PFS\], number of imaging exams) will be analyzed but are considered exploratory and are thus no pre-specified in more detail.
 
 ## Analysis Populations
 
@@ -304,7 +306,7 @@ For QoL (details in @sec-appendix-qol-mi) and TAOOH (details in @sec-appendix-ta
 
 **Level 2 (Patient-Level Imputation)**
 
-Baseline variables (e.g., functional status at baseline [Eastern Cooperative Oncology Group {ECOG}], baseline laboratory values), will be imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster (patient) mean. A linear regression model is fitted to the collapsed data.
+Baseline variables (e.g., functional status at baseline \[Eastern Cooperative Oncology Group {ECOG}\], baseline laboratory values), will be imputed using `2lonly.pmm`. This method aggregates longitudinal (Level 1) information, such as daily hospitalization status or QoL by taking the cluster (patient) mean. A linear regression model is fitted to the collapsed data.
 
 $$
 Y_j = \beta_0 + \mathbf{X}_j\boldsymbol{\beta_1}  + \bar{\mathbf{Z}}_j\boldsymbol{\beta_2} + \epsilon_j, \quad \epsilon_j \sim N(0, \sigma^2_\epsilon)
@@ -548,6 +550,15 @@ rmst_sim |>
   ) |>
   knitr::kable(digits = 1)
 ```
+
+#### Visualization of Estimate
+
+We will visualize the survival curves and $\tau_{OS}$ as shown in @fig-os-survcurves and @fig-os-tau.
+
+![This figure shows the model derived marginal survival curves, with the Kaplan-Meier curves overlaid as dashed lines. The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days).](img/fig-os-survcurves.svg){#fig-os-survcurves}
+
+![Posterior distribution of the primary estimand, the expected difference the restricted mean survival time ($\hat{\tau}_{OS}$). The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days).](img/fig-os-tau.svg){#fig-os-tau width="500"}
+
 
 ## Quality of Life
 
@@ -1086,7 +1097,7 @@ In LIQPLAT this problem will not be as severe, because the University Hospital d
 
 # Reporting
 
-Results will be reported according to CONSORT guidelines where applicable, adapted to the SAT design. Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% CrI).
+Results will be reported according to CONSORT guidelines where applicable, adapted to the SAT design. Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% credible interval \[CrI\]).
 
 {{< pagebreak >}}
 
@@ -1148,7 +1159,8 @@ tx <- sample(unique(df_raw$pat_id), size = 0.5 * length(unique(df_raw$pat_id)), 
 ```
 
 ```{r}
-#| echo: false
+#| echo: true
+#| output: false
 imputation_vars <- c(
   "pat_id",
   "tx",
@@ -1415,6 +1427,7 @@ The following code uses historical data from the Division of Medical Oncology at
 
 ```{r}
 #| echo: false
+#| output: false
 set.seed(1234)
 df_raw <- read_parquet(here("data", "long_data.parquet"))
 # Create random treatment allocation for historical data
@@ -1429,7 +1442,8 @@ df_raw <- df_raw |>
 #### Variable Selection and Transformations
 
 ```{r}
-#| echo: false
+#| echo: true
+#| output: false
 imputation_vars <- c(
   "pat_id",
   "tx",
@@ -1497,14 +1511,11 @@ df$week_nl2 <- as.vector(basis_rcs[, 3])
 
 #### Nelson-Aalen Cumulative Hazard Estimate
 
-We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor for baseline variable imputation rather than using the `death` indicator directly. When imputing baseline variables using `2lonly.pmm`, longitudinal predictors are aggregated to patient-level means. We opted for the Nelson-Aalen cumulative hazard estimate:
-
-\[justification\]
-
-1.  Is the recommended approach for including survival information in imputation models [@van-Buuren2021-pc, chapter 9.2]
+We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor for baseline variable imputation rather than using the `death` indicator directly. When imputing baseline variables using `2lonly.pmm`, longitudinal predictors are aggregated to patient-level means. A death indicator would thus turn into the inverse of the survival time, conditional of the event occuring, creating a very skewed predictor. We thus use the Nelson-Aalen estimate, which is a smoother representation of the cumulative hazard over time.
 
 ```{r}
-#| echo: false
+#| echo: true
+#| output: false
 na_df <- df |> 
     select(pat_id, survival_time, died) |> 
     unique()
@@ -1623,8 +1634,8 @@ The predictor matrix is configured to:
 -   Prevent time variables from predicting static baseline variables
 
 ```{r}
-#| echo: false
-#| output: true
+#| echo: true
+#| output: false
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -2194,6 +2205,90 @@ model_qol <- blrm(
   cppo = function(y) y,    # Constraint: non-proportionality linear in y
   iter = 4000, chains = 4, seed = 68818
 )
+```
+
+### Deriving State Occupancy Probabilities
+
+```{r}
+#| eval: FALSE
+#| echo: TRUE
+baseline_df <- data_for_model |> 
+    group_by(id) |> 
+    arrange(time) |> 
+    slice_head(n = 1) |> 
+    ungroup() |> 
+    mutate(
+        time = 1,
+        gap = 1,
+        y = NA) |> 
+    as.data.table()
+```
+
+```{r}
+#| eval: FALSE
+#| echo: TRUE
+write_SOP <- function(i, tx, baseline_df, path){
+  
+  row <- baseline_df[i]
+  
+  sops <-
+  soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, yprev=row$yprev, gap = row$gap),
+    times = 1:26,
+    ylevels = 1:7,
+    absorb = NULL,
+    tvarname = "time",
+    pvarname = "yprev"
+  )
+  sops <- sops[1:2000,,]
+  
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "time", "state", "sop"))
+  
+  sops$time <- as.integer(sops$time)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+  
+  folder <- file.path(path, glue::glue("marginalized_sop_{tx}"), glue::glue("msop_{i}.parquet"))
+
+  # Create the directory if it doesn't exist
+  dir_to_create <- dirname(folder)
+  if (!dir.exists(dir_to_create)) {
+    dir.create(dir_to_create, recursive = TRUE)
+  }
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+```{r}
+#| eval: FALSE
+#| echo: TRUE
+path <- here::here("1-qol", "output", "primary-estimand")
+future::plan(future::multisession, workers=6)
+
+
+# Control
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df, path),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+# Treatment
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df, path),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
 ```
 
 {{< pagebreak >}}
