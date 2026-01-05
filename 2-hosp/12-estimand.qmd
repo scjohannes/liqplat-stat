@@ -602,7 +602,7 @@ estimand_df |>
   labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - SoC)",
        y = "Density")
 
-ggsave(filename = here("img", "taooh_primary_estimand_conservative-prior.svg"), width = 8, height = 5)
+ggsave(filename = here("img", "fig-taooh-tau.svg"), width = 8, height = 5)
 ```
 
 ## Checks
