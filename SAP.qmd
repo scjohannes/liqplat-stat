@@ -69,8 +69,6 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **CDWH**      | Clinical Data Warehouse                                    |
 +---------------+------------------------------------------------------------+
-| **CHIP**      | Clonal Hematopoiesis of Indeterminate Potential            |
-+---------------+------------------------------------------------------------+
 | **CrI**       | Credible Interval                                          |
 +---------------+------------------------------------------------------------+
 | **ctDNA**     | Circulating Tumor DNA                                      |
@@ -85,15 +83,9 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **HR**        | Hazard Ratio                                               |
 +---------------+------------------------------------------------------------+
-| **IE**        | Intercurrent Event                                         |
-+---------------+------------------------------------------------------------+
-| **IQR**       | Interquartile Range                                        |
-+---------------+------------------------------------------------------------+
 | **ITT**       | Intention-to-Treat                                         |
 +---------------+------------------------------------------------------------+
 | **KM**        | Kaplan-Meier                                               |
-+---------------+------------------------------------------------------------+
-| **LOO-CV**    | Leave-One-Out Cross-Validation                             |
 +---------------+------------------------------------------------------------+
 | **MAR**       | Missing At Random                                          |
 +---------------+------------------------------------------------------------+
@@ -102,8 +94,6 @@ library(arrow)
 | **MCMC**      | Markov Chain Monte Carlo                                   |
 +---------------+------------------------------------------------------------+
 | **MICE**      | Multiple Imputation by Chained Equations                   |
-+---------------+------------------------------------------------------------+
-| **NA**        | Not Applicable / Nelson-Aalen                              |
 +---------------+------------------------------------------------------------+
 | **OR**        | Odds Ratio                                                 |
 +---------------+------------------------------------------------------------+
@@ -125,8 +115,6 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **QoL**       | Quality of Life                                            |
 +---------------+------------------------------------------------------------+
-| **rcs**       | Restricted Cubic Splines                                   |
-+---------------+------------------------------------------------------------+
 | **RCT**       | Randomized Controlled Trial                                |
 +---------------+------------------------------------------------------------+
 | **RMST**      | Restricted Mean Survival Time                              |
@@ -134,10 +122,6 @@ library(arrow)
 | **SAP**       | Statistical Analysis Plan                                  |
 +---------------+------------------------------------------------------------+
 | **SAT**       | Single-Arm Trial                                           |
-+---------------+------------------------------------------------------------+
-| **SE**        | Standard Error                                             |
-+---------------+------------------------------------------------------------+
-| **SoC**       | Standard of Care                                           |
 +---------------+------------------------------------------------------------+
 | **SOP**       | State Occupancy Probability                                |
 +---------------+------------------------------------------------------------+
@@ -249,7 +233,7 @@ Randomly inviting patients from a prospective research registry to the SAT enabl
 
 As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT ($A$) is not random and likely to be influenced by factors ($U$) which also cause the outcome. If we restricted the analysis to patients who have accepted the invitation (as represented by a box around $S$), we would be conditioning on the child of a mediator, leading to collider bias. In other words, patients who were selected for invitation to the SAT and patients who could have been selected but were not are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
 
-Even though LIQPLAT is not strictly speaking a randomized controlled trial (RCT), when considering selection for invitation to the trial as treatment, it can be analyzed analogously to an RCT. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment. An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands.
+Even though LIQPLAT is not strictly speaking a randomized controlled trial (RCT), when considering selection for invitation to the trial as treatment, it can be analyzed analogously to an RCT. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment. An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
 
 ::: {#fig-dags layout-ncol="2"}
 ![Dag 1](img/dag-1.b-simplified.svg){#fig-dag1}
@@ -294,7 +278,7 @@ The primary analysis for the QoL endpoint will be conducted on the Principal Str
 
 ## Framework
 
-All primary analyses will be conducted within a Bayesian framework. The inferential goal is to estimate the full posterior distribution for the primary estimand for each outcome. This allows for direct probabilistic statements about the plausible magnitude and direction of the treatment effects. We will report key summaries of the posterior distributions (e.g., median, 95% credible interval) and relevant probabilities (e.g., probability of benefit, $P(\tau > 0)$ or $P(\tau < 0)$ depending on endpoint direction). We will not pre-specify thresholds for dichotomous claims of success or failure based on these probabilities.
+All primary analyses will be conducted within a Bayesian framework. The inferential goal is to estimate the full posterior distribution for the primary estimand for each outcome. This allows for direct probabilistic statements about the plausible magnitude and direction of the treatment effects. We will report key summaries of the posterior distributions (e.g., median, 95% credible interval \[CrI\]) and relevant probabilities (e.g., probability of benefit, $P(\tau > 0)$ or $P(\tau < 0)$ depending on endpoint direction). We will not pre-specify thresholds for dichotomous claims of success or failure based on these probabilities.
 
 ## Missing Data Handling {#sec-missing-data}
 
@@ -366,7 +350,7 @@ The primary estimand for all outcomes is the effect of the treatment policy, whi
 
 The simulations (e.g., for TAOOH, @tbl-oper-char-toh-ha) do not explicitly model this non-uptake mechanism. Instead, the true effect sizes used in the simulations (e.g., a true OR of $0.7$) are assumed to represent this already-diluted ITT effect. In other words, a simulated OR of 0.7 reflects the average effect of the invitation strategy across all 180 invited patients (including non-acceptors), compared to the $90$ non-invited patients.
 
-# Analysis
+# Co-Primary Outcomes
 
 ## Overall Survival
 
@@ -557,9 +541,9 @@ rmst_sim |>
 
 We will visualize the survival curves and $\tau_{OS}$ as shown in @fig-os-survcurves and @fig-os-tau.
 
-![This figure shows the model derived marginal survival curves, with the Kaplan-Meier curves overlaid as dashed lines. The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days).](img/fig-os-survcurves.svg){#fig-os-survcurves}
+![This figure shows the model derived marginal survival curves, with the Kaplan-Meier curves overlaid as dashed lines. The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days). Abbreviations: SAT; single-arm trial, SoC; standard of care.](img/fig-os-survcurves.svg){#fig-os-survcurves width="500"}
 
-![Posterior distribution of the primary estimand, the expected difference the restricted mean survival time ($\hat{\tau}_{OS}$). The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days).](img/fig-os-tau.svg){#fig-os-tau width="500"}
+![Posterior distribution of the primary estimand, the expected difference the restricted mean survival time ($\hat{\tau}_{OS}$). The sample ($n=270$) is from simulated data with a true underlying odds ratio of $0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days). The 66% and 95% credible interval are shown. Abbreviations: SAT; single-arm trial, SoC; standard of care.](img/fig-os-tau.svg){#fig-os-tau width="500"}
 
 ## Quality of Life
 
@@ -673,9 +657,9 @@ Identification of $\tau_{QoL}^{\text{psATE}}$ by analyzing only those patients *
 
 Modeling the QoL trajectory while incorporating the absorbing state of death proved problematic with sparse intermediate QoL measurements common in routine care. Our simulations indicated that interval-censoring approaches for missing QoL states led to biased estimates, particularly overestimating the probability of death (@sec-appendix-qol-censoring). Assuming no treatment effect on 6-month survival allows us to focus the QoL analysis on the stratum of patients who survive this period regardless of treatment, providing a potentially less biased estimate of the QoL effect *for this subgroup*.
 
-We will formally assess the assumption of no survival difference using the results from the Overall Survival analysis. If the 90% Credible Interval (CrI) for the difference in Restricted Mean Survival Time (RMST) at 6 months, $\tau_{OS}$, is contained within a Region of Practical Equivalence (ROPE) of $\pm 7$ days (i.e., $[-7, 7]$ days), we will consider the assumption of no survival difference to be practically met and proceed with the Principal Stratum estimand as the primary analysis.
+We will formally assess the assumption of no survival difference using the results from the Overall Survival analysis. If the 66% CrI for the difference in Restricted Mean Survival Time (RMST) at 6 months, $\tau_{OS}$, is contained within a Region of Practical Equivalence (ROPE) of $\pm 7$ days (i.e., $[-7, 7]$ days), we will consider the assumption of no survival difference to be practically met and proceed with the Principal Stratum estimand as the primary analysis.
 
-If the 90% CrI for $\tau_{OS}$ is not contained within the ROPE, implying we cannot rule out a clinically meaningful survival difference, we will switch the primary analysis to the **ordinal QoL state at 6 months**, adjusted for death. In this case, death will be assigned the worst possible QoL score (state 8), and the outcome will be analyzed using a Bayesian proportional odds model (see @sec-sec-sensitivity-analyses). Additionally, we will report the results of the longitudinal ordinal transition model that includes death as an absorbing state (see @sec-sec-sensitivity-analyses) to describe the treatment effect on the combined outcome of survival and quality of life over time.
+If the 66% CrI for $\tau_{OS}$ is not contained within the ROPE we will switch the primary analysis to the ordinal QoL state at 6 months, adjusted for death. In this case, death will be assigned the worst possible QoL score (state 8), and the outcome will be analyzed using a Bayesian proportional odds model (see @sec-sec-sensitivity-analyses). Additionally, we will report the results of the longitudinal ordinal transition model that includes death as an absorbing state (see @sec-sec-sensitivity-analyses) to describe the treatment effect on the combined outcome of survival and quality of life over time.
 
 ### Handling of Intercurrent Events {#sec-qol-intercurrent-events}
 
@@ -1076,11 +1060,15 @@ We will conduct two sensitivity analyses for the Quality of Life endpoint to ass
 
 ### Landmark Analysis
 
-The first sensitivity analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model. 
+The first sensitivity analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model.
 
 ### Longitudinal Ordinal Model with Death
 
 The second sensitivity analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored (see @sec-appendix-qol-censoring), we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
+
+# Secondary Outcomes
+
+
 
 # Long-term Follow-up Analyses
 
@@ -1111,7 +1099,7 @@ In LIQPLAT this problem will not be as severe, because the University Hospital d
 
 # Reporting
 
-Results will be reported according to CONSORT guidelines where applicable, adapted to the SAT design. Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% credible interval \[CrI\]).
+Results will be reported according to CONSORT guidelines where applicable, adapted to the SAT design. Posterior distributions for primary estimands will be visualized (e.g., density plots) and summarized (median, 95% CrI).
 
 {{< pagebreak >}}
 
