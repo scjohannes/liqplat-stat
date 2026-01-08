@@ -1068,11 +1068,168 @@ The second sensitivity analysis aims to fit a longitudinal ordinal model similar
 
 # Secondary Outcomes
 
+The following secondary outcomes are considered exploratory and focus on the implementation and feasibility of ctDNA-guided care, as well as downstream clinical processes. All analyses will be conducted within a Bayesian framework using default or weakly informative priors from `brms` [@brms-2017] and `rstanarm` [@RStanARM]. We will report posterior medians and 95% credible intervals.
 
+## Implementation Outcomes
+
+### Patient Eligibility
+
+We estimate the proportion of screened patients who were eligible for LIQPLAT using a Bayesian multilevel logistic regression:
+
+$$
+\begin{align*}
+\text{Eligible}_{ij} &\sim \text{Bernoulli}(p_{ij})\\
+\text{logit}(p_{ij}) &= \beta_0 + \beta_1 \text{age}_{ij} + \beta_2 \text{sex}_{ij} + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+ \end{align*}
+$$
+
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept that provides regularization through partial pooling.
+
+**Derived Quantities:** We will report the marginal (population-average) probability of eligibility. Exploratory analyses will evaluate whether eligibility differs by diagnosis, sex, or age group.
+
+### Invitation Offered by Physician
+
+Among patients selected for invitation, we estimate the proportion who were offered participation by their physician using a Bayesian multilevel logistic regression:
+
+$$
+\begin{align*}
+\text{Offered}_{ij} &\sim \text{Bernoulli}(p_{ij})\\
+\text{logit}(p_{ij}) &= \beta_0 + \beta_1 \text{age}_{ij} + \beta_2 \text{sex}_{ij} + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+ \end{align*}
+$$
+
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+
+**Derived Quantities:** We will report the marginal probability of being offered participation. Exploratory analyses will assess differences by sex and age group.
+
+### Patient Acceptance of Invitation
+
+Among patients who were offered participation, we estimate the proportion who provided informed consent using a Bayesian multilevel logistic regression:
+
+$$
+\begin{align*}
+\text{Accepted}_{ij} &\sim \text{Bernoulli}(p_{ij})\\
+\text{logit}(p_{ij}) &= \beta_0 + \beta_1 \text{age}_{ij} + \beta_2 \text{sex}_{ij} + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+ \end{align*}
+$$
+
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+
+**Derived Quantities:** We will report the marginal probability of acceptance. Exploratory subgroup analyses will assess differences by sex and age.
+
+### Technical Feasibility of ctDNA Analysis
+
+We assess three aspects of technical feasibility among SAT participants:
+
+#### Proportion of Samples Without Error
+
+$$
+\begin{align*}
+\text{Error}_{ij} &\sim \text{Bernoulli}(p_{ij}) \\
+\text{logit}(p_{ij}) &= \beta_0 + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+ \end{align*}
+$$
+
+where $i$ indexes samples and $j$ indexes patients, and $u_{0j}$ is a patient-specific random intercept.
+
+**Derived Quantities:** We will report the marginal probability of samples without errors.
+
+#### Proportion with ctDNA Detected at Baseline
+
+$$
+\begin{align*}
+\text{Detected}_{ij} &\sim \text{Bernoulli}(p_{ij}) \\
+\text{logit}(p_{ij}) &= \beta_0 + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+ \end{align*}
+$$
+
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories and $u_{0j}$ is a diagnosis-specific random intercept.
+
+**Derived Quantities:** We will report the marginal probability of ctDNA detection at baseline. Exploratory analyses will evaluate differences by cancer diagnosis.
+
+#### Proportion of Variants Suspected of CHIP 
+
+Using a multilevel logistic regression with random intercepts for patients and genes, adjusting for age:
+
+$$
+\begin{align*}
+\text{CHIP}_{ijk} &\sim \text{Bernoulli}(p_{ijk}) \\ 
+\text{logit}(p_{ijk}) &= \beta_0 + f(\text{age}_j) + u_{0j} + v_{0k} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u) \\
+v_{0k} &\sim \mathcal{N}(0, \sigma^2_v)
+\end{align*}
+$$
+
+where $i$ indexes variants, $j$ indexes patients, $k$ indexes genes, $f(\cdot)$ is a natural cubic spline with 3 knots for age, $u_{0j}$ is a patient-level random intercept, and $v_{0k}$ is a gene-level random intercept.
+
+**Derived Quantities:** We will report the marginal probability of variants being suspected CHIP. Exploratory analyses assess whether CHIP prevalence increases with age. We will also examine the gene-level random effects to identify genes with substantially higher or lower CHIP probabilities.
+
+### Actionable Alterations
+
+We estimate the proportion of SAT participants with at least one actionable alteration identified via ctDNA by cancer type:
+
+$$
+\begin{align*}
+\text{Actionable}_{ij} &\sim \text{Bernoulli}(p_{ij}) \\
+\text{logit}(p_{ij}) &= \beta_0 + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+ \end{align*}
+$$
+
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+
+**Derived Quantities:** We will report the marginal probability of having at least one actionable alteration, with exploratory analyses by cancer diagnosis category.
+
+## Comparative Outcomes (SAT vs. External Control)
+
+### Time to Treatment Switch, Stop, or Death
+
+We compare the time from treatment initiation to the composite endpoint of treatment switch, stop, or death using the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the hazard ratio, posterior survival curves by group, and derived estimates of risk differences and risk ratios at 6 months.
+
+### Time to Palliative Care
+
+We compare the time from first-line treatment to the composite endpoint of switch to best supportive care or death using the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the hazard ratio, posterior survival curves by group, and derived estimates of risk differences and risk ratios at 6 months.
+
+### Targeted Therapy Use
+
+We compare the probability of receiving targeted therapy between groups using a Bayesian multilevel logistic regression, adjusting for age with a random intercept for cancer type:
+
+$$
+\begin{align*}
+\text{Targeted}_{ij} &\sim \text{Bernoulli}(p_{ij}) \\
+\text{logit}(p_{ij}) &= \beta_0 + \beta_{\text{grp}} \cdot \text{grp}_{ij} + \beta_{\text{age}} \cdot \text{age}_{ij} + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+\end{align*}
+$$
+
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+
+**Derived Quantities:** We report the marginal probability of receiving targeted therapy in each group and the risk difference.
+
+### Blood Product Transfusions
+
+We compare the rate of blood product transfusions (red blood cells or platelets) using a Bayesian multilevel negative binomial regression with an exposure offset for follow-up time:
+
+$$
+\begin{align*}
+Y_{ij} &\sim \text{NegBinom}(\mu_{ij}, \phi) \\
+\log(\mu_{ij}) &= \log(t_{ij}) + \beta_0 + \beta_{\text{grp}} \cdot \text{grp}_{ij} + \beta_{\text{age}} \cdot \text{age}_{ij} + \sum_{k=2}^{3} \beta_{\text{ecog}, k} \cdot \text{ecog}_{ijk} + u_{0j} \\
+u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+\end{align*}
+$$
+
+where $Y_{ij}$ is the count of transfusions for patient $i$ with cancer diagnosis $j$, $t_{ij}$ is the follow-up time, $\phi$ is the overdispersion parameter, and $u_{0j}$ is a diagnosis-specific random intercept.
+
+**Derived Quantities:** The marginal difference in the rate of transfusions between groups will be reported.
 
 # Long-term Follow-up Analyses
 
-We will repeat all primary analyses described above for follow-up periods of 12 months and 24 months. The estimands remain the same, extending the time horizon $t_{max}$ to 365 days (12 months) and 730 days (24 months), respectively.
+We will repeat all analyses described above for follow-up periods of 12 months and 24 months. The estimands remain the same, extending the time horizon $t_{max}$ to 365 days (12 months) and 730 days (24 months), respectively.
 
 The statistical models will remain the same as specified for the primary 6-month analysis, with adjustments to the flexibility of the time-modeling components to account for the longer follow-up duration:
 
