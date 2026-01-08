@@ -669,7 +669,11 @@ Identification of $\tau_{QoL}^{\text{psATE}}$ by analyzing only those patients *
 
 #### Rationale for Principal Stratum {#sec-qol-rationale-ps}
 
-Modeling the QoL trajectory while incorporating the absorbing state of death proved problematic with sparse intermediate QoL measurements common in routine care. Our simulations indicated that interval-censoring approaches for missing QoL states led to biased estimates, particularly overestimating the probability of death (@sec-appendix-qol-censoring). Assuming no treatment effect on 6-month survival allows us to focus the QoL analysis on the stratum of patients who survive this period regardless of treatment, providing a potentially less biased estimate of the QoL effect *for this subgroup*, conditional on the validity of the no-survival-effect assumption. We will check the plausibility of this assumption by comparing 6-month survival between treatment groups in the ITT population. If there is substantial evidence of differences, we will discuss the implications for interpreting the QoL estimand.
+Modeling the QoL trajectory while incorporating the absorbing state of death proved problematic with sparse intermediate QoL measurements common in routine care. Our simulations indicated that interval-censoring approaches for missing QoL states led to biased estimates, particularly overestimating the probability of death (@sec-appendix-qol-censoring). Assuming no treatment effect on 6-month survival allows us to focus the QoL analysis on the stratum of patients who survive this period regardless of treatment, providing a potentially less biased estimate of the QoL effect *for this subgroup*.
+
+We will formally assess the assumption of no survival difference using the results from the Overall Survival analysis. If the 90% Credible Interval (CrI) for the difference in Restricted Mean Survival Time (RMST) at 6 months, $\tau_{OS}$, is contained within a Region of Practical Equivalence (ROPE) of $\pm 7$ days (i.e., $[-7, 7]$ days), we will consider the assumption of no survival difference to be practically met and proceed with the Principal Stratum estimand as the primary analysis.
+
+If the 90% CrI for $\tau_{OS}$ is not contained within the ROPE, implying we cannot rule out a clinically meaningful survival difference, we will switch the primary analysis to the **ordinal QoL state at 6 months**, adjusted for death. In this case, death will be assigned the worst possible QoL score (state 8), and the outcome will be analyzed using a Bayesian proportional odds model (see @sec-sec-sensitivity-analyses). Additionally, we will report the results of the longitudinal ordinal transition model that includes death as an absorbing state (see @sec-sec-sensitivity-analyses) to describe the treatment effect on the combined outcome of survival and quality of life over time.
 
 ### Handling of Intercurrent Events {#sec-qol-intercurrent-events}
 
@@ -1052,7 +1056,7 @@ summary_ha |>
 
 We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for the purpose of evaluating operating characteristics. It will not be used as a formal, dichotomous decision rule in the final analysis. Instead, the primary reporting will focus on presenting and interpreting the full posterior distribution of $\hat{\tau}_{TAOOH}$​. The estimates in @tbl-oper-char-toh-ha are intended to provide a conventional benchmark to illustrate which effect sizes the study can reasonably detect given our sample size and modeling approach.
 
-# Sensitivity Analyses
+# Sensitivity Analyses @sec-sec-sensitivity-analyses
 
 We will conduct sensitivity analyses for each of the three primary outcomes to assess the robustness of our findings to key modeling assumptions. These analyses are pre-specified but considered secondary to the primary analyses.
 
@@ -1070,15 +1074,15 @@ We will conduct two sensitivity analyses for the Quality of Life endpoint to ass
 
 ### Landmark Analysis
 
-The first sensitivity analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model.
+The first sensitivity analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model. 
 
 ### Longitudinal Ordinal Model with Death
 
-The second sensitivity analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored, we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
+The second sensitivity analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored (see @sec-appendix-qol-censoring), we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
 
 # Long-term Follow-up Analyses
 
-We will repeat all primary analyses described above for follow-up periods of 12 months and 24 months. The estimands remain the same, extending the time horizon $t_{max}$ to 365 days (12 months) and 730 days (24 months), │ respectively.
+We will repeat all primary analyses described above for follow-up periods of 12 months and 24 months. The estimands remain the same, extending the time horizon $t_{max}$ to 365 days (12 months) and 730 days (24 months), respectively.
 
 The statistical models will remain the same as specified for the primary 6-month analysis, with adjustments to the flexibility of the time-modeling components to account for the longer follow-up duration:
 
@@ -1091,7 +1095,7 @@ The statistical models will remain the same as specified for the primary 6-month
 
 ### Principal Stratum Assumption:
 
-The primary QoL analysis relies on the strong, untestable assumption that selection for invitation has no effect on 6-month survival. If this assumption is violated, the analysis results apply only to the specific subgroup who would survive regardless, but this subgroup is not fully identifiable, and the estimate may be biased for the broader ITT population. Consequently, we will compare QoL using the principal stratum approach only if there is little evidence of a survival difference between groups at 6 months.
+The primary QoL analysis relies on the strong, untestable assumption that selection for invitation has no effect on 6-month survival. If this assumption is violated, the analysis results apply only to the specific subgroup who would survive regardless, but this subgroup is not fully identifiable, and the estimate may be biased for the broader ITT population. Consequently, we will compare QoL using the principal stratum approach only if there is little evidence of a survival difference between groups at 6 months and pivot to the alternative analyses described above if the assumption seems implausible, given the data.
 
 ### Informative Missingness
 
