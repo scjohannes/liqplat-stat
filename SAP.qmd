@@ -1070,6 +1070,16 @@ The second sensitivity analysis aims to fit a longitudinal ordinal model similar
 
 The following secondary outcomes are considered exploratory and focus on the implementation and feasibility of ctDNA-guided care, as well as downstream clinical processes. All analyses will be conducted within a Bayesian framework using default or weakly informative priors from `brms` [@brms-2017] and `rstanarm` [@RStanARM]. We will report posterior medians and 95% credible intervals.
 
+-   \[Para on why we use hierarchical models here.\]
+
+-   Consider removing random effects from invitation and acceptance, because binary outcome and only 150 patients
+
+-   change ctDNA detected at baseline to histological subtype and remove random effect (only 150 pateints)
+
+-   remove age from targeted therapy use because it doesn't make any sense. Just keep diagnosis as random effect
+
+-   reconsider random intercept for negative binomial model (is it important in explaining toxicity)?
+
 ## Implementation Outcomes
 
 ### Patient Eligibility
@@ -1084,7 +1094,7 @@ u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
  \end{align*}
 $$
 
-where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept that provides regularization through partial pooling.
+where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
 
 **Derived Quantities:** We will report the marginal (population-average) probability of eligibility. Exploratory analyses will evaluate whether eligibility differs by diagnosis, sex, or age group.
 
@@ -1152,7 +1162,7 @@ where $i$ indexes patients, $j$ indexes cancer diagnosis categories and $u_{0j}$
 
 **Derived Quantities:** We will report the marginal probability of ctDNA detection at baseline. Exploratory analyses will evaluate differences by cancer diagnosis.
 
-#### Proportion of Variants Suspected of CHIP 
+#### Proportion of Variants Suspected of CHIP
 
 Using a multilevel logistic regression with random intercepts for patients and genes, adjusting for age:
 
