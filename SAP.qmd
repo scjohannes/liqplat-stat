@@ -501,6 +501,8 @@ The model will be fitted using the `stan_surv` function from the `rstanarm` pack
 
 Using the fitted model we generate posterior draws of the marginalized survival curves for under each treatment ($a=0$ and $a=1$) up to $t_{max}=182$ days. For each posterior draw, we calculate the RMST under both treatments ($\widehat{\text{RMST}}^0$ and $\widehat{\text{RMST}}^1$) by integrating the respective survival curves from $t=0$ to $t_{max}=182$ days. We will approximate the integral using the trapezoidal rule on 200 discrete time points. We then compute the difference $\widehat{\tau}_{OS, \text{draw}} = \widehat{\text{RMST}}^1_{\text{draw}} - \widehat{\text{RMST}}^0_{\text{draw}}$. The collection of $\widehat{\tau}_{OS, \text{draw}}$ values forms the posterior distribution of the primary estimand. Example code for obtaining the RMST difference is provided in @sec-appendix-os-code.
 
+Besides the RMST, we will also derive risk differences and risk ratios at 6 months from the same model. These will be calculated for each posterior draw by comparing the marginal survival probabilities at $t=182$.
+
 #### Operating Characteristics
 
 We evaluated the operating characteristics OS endpoint through a simulation study based on historical patient data.
