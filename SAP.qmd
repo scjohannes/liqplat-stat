@@ -559,7 +559,6 @@ We will visualize the survival curves and $\tau_{OS}$ as shown in @fig-os-survcu
 
 ![Posterior distribution of the primary estimand, the expected difference the restricted mean survival time ($\hat{\tau}_{OS}$). The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days).](img/fig-os-tau.svg){#fig-os-tau width="500"}
 
-
 ## Quality of Life
 
 ### Data
@@ -1076,6 +1075,15 @@ The first sensitivity analysis is a landmark analysis of Quality of Life up to 6
 ### Longitudinal Ordinal Model with Death
 
 The second sensitivity analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored, we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
+
+# Long-term Follow-up Analyses
+
+We will repeat all primary analyses described above for follow-up periods of 12 months and 24 months. The estimands remain the same, extending the time horizon $t_{max}$ to 365 days (12 months) and 730 days (24 months), │ respectively.
+
+The statistical models will remain the same as specified for the primary 6-month analysis, with adjustments to the flexibility of the time-modeling components to account for the longer follow-up duration:
+
+-   **Overall Survival:** The degrees of freedom for the M-splines modeling the baseline hazard will be increased by one for the 12-month analysis (6 df) and by two for the 24-month analysis (7 df).\
+-   **Quality of Life & Time Alive and Out of Hospital:** The restricted cubic splines modeling the effect of time in the transition models will use one additional knot for the 12-month analysis (5 knots) and two additional knots for the 24-month analysis (6 knots).
 
 # Limitations
 
