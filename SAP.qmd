@@ -65,8 +65,6 @@ library(arrow)
 +:==============+:===========================================================+
 | **ATE**       | Average Treatment Effect                                   |
 +---------------+------------------------------------------------------------+
-| **BSC**       | Best Supportive Care                                       |
-+---------------+------------------------------------------------------------+
 | **CDWH**      | Clinical Data Warehouse                                    |
 +---------------+------------------------------------------------------------+
 | **CrI**       | Credible Interval                                          |
@@ -103,19 +101,11 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **PMM**       | Predictive Mean Matching                                   |
 +---------------+------------------------------------------------------------+
-| **PO**        | Proportional Odds                                          |
-+---------------+------------------------------------------------------------+
 | **PROMs**     | Patient Reported Outcome Measures                          |
 +---------------+------------------------------------------------------------+
 | **psATE**     | Principal Stratum Average Treatment Effect                 |
 +---------------+------------------------------------------------------------+
-| **QLQ-C15**   | Quality of Life Questionnaire - Core 15                    |
-+---------------+------------------------------------------------------------+
-| **QLQ-C30**   | Quality of Life Questionnaire - Core 30                    |
-+---------------+------------------------------------------------------------+
 | **QoL**       | Quality of Life                                            |
-+---------------+------------------------------------------------------------+
-| **RCT**       | Randomized Controlled Trial                                |
 +---------------+------------------------------------------------------------+
 | **RMST**      | Restricted Mean Survival Time                              |
 +---------------+------------------------------------------------------------+
@@ -233,7 +223,7 @@ Randomly inviting patients from a prospective research registry to the SAT enabl
 
 As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT ($A$) is not random and likely to be influenced by factors ($U$) which also cause the outcome. If we restricted the analysis to patients who have accepted the invitation (as represented by a box around $S$), we would be conditioning on the child of a mediator, leading to collider bias. In other words, patients who were selected for invitation to the SAT and patients who could have been selected but were not are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
 
-Even though LIQPLAT is not strictly speaking a randomized controlled trial (RCT), when considering selection for invitation to the trial as treatment, it can be analyzed analogously to an RCT. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment. An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
+Even though LIQPLAT is not strictly speaking a randomized controlled trial, when considering selection for invitation to the trial as treatment, it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment. An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
 
 ::: {#fig-dags layout-ncol="2"}
 ![Dag 1](img/dag-1.b-simplified.svg){#fig-dag1}
@@ -691,7 +681,7 @@ The handling of intercurrent events for the QoL analysis is described in @tbl-qo
 :::
 
 ::: callout-warning
-**Informative Missingness due to Routine Care Data Collection**: A design limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to best supportive care (BSC), different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. To assess the potential for differential informative missingness, we will compare the cumulative incidence of switching to BSC between the two trial arms. If the rates and timing of switching to BSC are similar between groups, it reduces the concern that missingness driven by palliative care transitions biases the treatment comparison.
+**Informative Missingness due to Routine Care Data Collection**: A design limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to best supportive care , different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. To assess the potential for differential informative missingness, we will compare the cumulative incidence of switching to best supportive care between the two trial arms. If the rates and timing of switching to best supportive care are similar between groups, it reduces the concern that missingness driven by palliative care transitions biases the treatment comparison.
 :::
 
 ### Analysis Method
@@ -1179,7 +1169,7 @@ We utilize the same Bayesian proportional hazards model specified for Overall Su
 
 ### Time to Best Supportive Care
 
-We evaluate the time from first-line treatment initiation to the switch to BSC. To specifically assess the timing of the decision to transition to palliative care (as a proxy for recognizing ineffective therapy) conditional on the patient being alive, we estimate the cause-specific hazard. In this analysis, patients who die without having switched to BSC are censored at the date of death.
+We evaluate the time from first-line treatment initiation to the switch to best supportive care. To specifically assess the timing of the decision to transition to palliative care (as a proxy for recognizing ineffective therapy) conditional on the patient being alive, we estimate the cause-specific hazard. In this analysis, patients who die without having switched to best supportive care are censored at the date of death.
 
 We utilize the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the cause-specific hazard ratio.
 
@@ -1200,8 +1190,7 @@ where $i$ indexes patients. We do not add covariates to this model due to the sm
 
 ### Blood Product Transfusions
 
-We compare the rate of blood product transfusions (red blood cells or platelets) using a Bayesian negative binomial regression with an exposure offset for follow-up time. 
-
+We compare the rate of blood product transfusions (red blood cells or platelets) using a Bayesian negative binomial regression with an exposure offset for follow-up time.
 
 $$
 \begin{aligned}
@@ -1234,11 +1223,11 @@ The primary QoL analysis relies on the strong, untestable assumption that select
 
 ### Informative Missingness
 
-A primary limitation arises because the treatment strategy is expected to influence post-randomization clinical decisions, which in turn affect whether the QoL outcome is observed. These decisions affect both future QoL and the probability that QoL is measured, since data is collected during routine care appointments. For instance, a decision to switch a patient to best supportive care (BSC) may lead to fewer clinic visits, resulting in the cessation of QoL data collection.
+A primary limitation arises because the treatment strategy is expected to influence post-randomization clinical decisions, which in turn affect whether the QoL outcome is observed. These decisions affect both future QoL and the probability that QoL is measured, since data is collected during routine care appointments. For instance, a decision to switch a patient to best supportive care may lead to fewer clinic visits, resulting in the cessation of QoL data collection.
 
-As a simple illustrative example, assume ctDNA guided management mainly improves QoL through an early switch to BSC of an ineffective treatment. Let's also assume that all the patients who are switched to BSC have no more follow-up visits, and their improved QoL is not recorded. Logically, this results in an inability to show the true treatment effect. @fig-dag-qol-error shows this graphically: $M_Y$ denotes the missingness indicator for the quality of life outcome $Y$. $A$ represents the selection for invitation to the trial (treatment), and $X$ represents measured baseline covariates. $W$ is a vector of unmeasured causes of missingness ($M_Y$). The variable $L$ represents post-randomization events (e.g., early switch to BSC) that are influenced by the treatment $A$ and subsequently affect both the outcome $Y$ and its missingness $M_Y$. The direct path $A \rightarrow Y$ captures effects of the intervention on quality of life that do not operate through mechanisms affecting missingness, although we anticipate such effects to be rare.
+As a simple illustrative example, assume ctDNA guided management mainly improves QoL through an early switch to best supportive care of an ineffective treatment. Let's also assume that all the patients who are switched to best supportive care have no more follow-up visits, and their improved QoL is not recorded. Logically, this results in an inability to show the true treatment effect. @fig-dag-qol-error shows this graphically: $M_Y$ denotes the missingness indicator for the quality of life outcome $Y$. $A$ represents the selection for invitation to the trial (treatment), and $X$ represents measured baseline covariates. $W$ is a vector of unmeasured causes of missingness ($M_Y$). The variable $L$ represents post-randomization events (e.g., early switch to best supportive care) that are influenced by the treatment $A$ and subsequently affect both the outcome $Y$ and its missingness $M_Y$. The direct path $A \rightarrow Y$ captures effects of the intervention on quality of life that do not operate through mechanisms affecting missingness, although we anticipate such effects to be rare.
 
-In LIQPLAT this problem will not be as severe, because the University Hospital does not have a separate unit for BSC. This means that many patients who are switched to BSC still have appointments and will be offered the QoL questionnaire.
+In LIQPLAT this problem will not be as severe, because the University Hospital does not have a separate unit for best supportive care. This means that many patients who are switched to best supportive care still have appointments and will be offered the QoL questionnaire.
 
 ![A missingness Directed Acyclic Graph (m-DAG) depicting assumptions regarding missingness in the quality of life outcome ($Y$). $M_Y$ is the missingness indicator for $Y$. $W$ is the vector of unmeasured causes of $M_Y$. $A$ represents the selection for invitation to LIQPLAT (treatment indicator), $X$ represents measured baseline covariates, $L$ represents effects of $A$ which affect both follow-up and thus missingness ($M_Y$) and QoL ($Y$), such as early switch to best supportive care. $A \rightarrow Y$ represent effects of $A$ on $Y$ which do not affect missingness, though we expect these to be rare. Realistically, ctDNA sampling would mostly affect $Y$ through changes in the treatment regimen, which also affects missingness.](img/dag-qol-error.svg){#fig-dag-qol-error}
 
