@@ -336,6 +336,10 @@ Following imputation, each analysis model (OS, QoL, TAOOH) will be fitted to eac
 
 Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesian models will be fitted using Stan via the `rstanarm` [@RStanARM] and `rmsb` [@rmsb] packages. Multiple imputation will use the `mice` [@mice_2011] and `miceadds` [@miceadds_3.17-44] packages. For data wrangling and plotting we use the `tidyverse` [@tidyverse]. To assess the convergence of the Markov Chain Monte Carlo (MCMC), we will check $\hat{R}$ for all parameters, with a target value \< 1.01, and inspect trace plots to confirm adequate mixing of the chains.
 
+## Model Fitting Strategy
+
+For each analysis model, we will first fit the model without the treatment indicator to assess convergence and evaluate whether model simplification is necessary based on the observed data. Following successful convergence of the reduced model, we will add the treatment indicator and fit the full analysis model.
+
 # Sample Size
 
 The trial aims to enroll $150$ participants who accept the invitation to the single-arm trial (SAT). This target sample size is driven by feasibility, including logistical constraints (such as a maximum of three invitations per week) and the capacity of the Department of Pathology. Based on estimates of patient acceptance, we anticipate needing to invite approximately $180$ eligible patients to achieve this target (an acceptance rate of $\approx 83 \%$).
@@ -441,27 +445,27 @@ $$
 h_0(t) = \sum_{k=1}^{5} \gamma_k M_k(t), \quad \text{subject to } \sum_{k=1}^5 \gamma_k = 1, \gamma_k > 0
 $$
 
-The linear predictor $\eta_i$ is defined as:
+Given the expected number of events (approximately 50) in the ITT population of $N=270$ within 6 months, we simplify some predictive covariates. The linear predictor $\eta_i$ is defined as:
 
 $$
 \begin{aligned}        
-\eta_i &= \beta_0 + \beta_{tx} \cdot \text{tx}_i + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} \\
-&\quad +f_1(\text{crp}_i) + f_2(\text{albumin}_i) \\
+\eta_i &= \beta_0 + \beta_{tx} \cdot \text{tx}_i + \beta_{ecog} \cdot \text{ecog}_{i} + \beta_{stage} \cdot \text{stage}_i \\
+&\quad + \sum_{j=1}^{2} \beta_{mGPS, j} \cdot \text{mGPS}_{ij}
 \end{aligned}
 $$
 
-where $\beta_{tx}$ is the effect of treatment, and categorical predictors ($\text{ecog}$, $\text{diag}$) are represented by sums over their dummy variables. The continuous baseline variables ($\text{crp}$, $\text{albumin}$), are modeled using restricted cubic splines:
+where:
 
-$$
-\begin{aligned} 
-f_1 &= \sum_{m=1}^2 \beta_{crp, m} \cdot \text{B}_{m, crp}(\text{crp}_i) \\
-f_2 &= \sum_{n=1}^2 \beta_{alb, n} \cdot \text{B}_{n, alb}(\text{albumin}_i) \\
-\end{aligned}
-$$
+-   $\beta_{tx}$ is the effect of treatment (selection for invitation to the SAT),
+-   $\text{ecog}_i$ is a binary indicator for ECOG performance status ($0$ if ECOG 0-1, $1$ if ECOG $\geq 2$),
+-   $\text{stage}_i$ is a binary indicator for disease stage ($0$ if locally advanced non-operable, $1$ if metastatic),
+-   $\text{mGPS}_{ij}$ represents the modified Glasgow Prognostic Score (mGPS) categories, coded as dummy variables for $j \in \{1, 2\}$ (with mGPS=0 as reference).
 
-The splines use B-spline basis functions with three knots (min, median, max). This generates two basis functions ($B_m$ and $B_n$) for each covariate.[^3] In historical data this approach led to more precise estimates of the baseline hazards than a simple log-transformation.
+The modified Glasgow Prognostic Score (mGPS) [@Proctor2011-tc] is a validated prognostic tool based on serum CRP and albumin levels:
 
-[^3]: We will `ns()`, from the R `splines` package. The truncated power basis implementation as used in `rcs()` from the R `Hmisc` package created convergence issues.
+-   **mGPS = 0:** CRP $\leq 10$ mg/L (regardless of albumin)
+-   **mGPS = 1:** CRP $> 10$ mg/L and albumin $\geq 35$ g/L
+-   **mGPS = 2:** CRP $> 10$ mg/L and albumin $< 35$ g/L
 
 We assign a regularizing prior of $\mathcal{N}(0, 0.55)$ to the treatment effect $\beta_{tx}$. This places approximately 80% of the probability mass on hazard ratios between 0.5 and 2.0, reflecting our belief that the intervention is unlikely to more than halve or double the hazard rate. Remaining regression coefficients are assigned default `rstanarm`, weakly informative priors, and the baseline hazard coefficients $\gamma$ follow a symmetric Dirichlet distribution:
 
@@ -469,17 +473,16 @@ $$
 \begin{aligned} 
 \beta_0 &\sim \mathcal{N}(0, 20) \\     
 \beta_{tx} &\sim \mathcal{N}(0, 0.55) \\     
-\beta_{\text{ecog},j \in 2,3} &\sim \mathcal{N}(0, 2.5) \\
-\beta_{\text{diag},k \in 2..5} &\sim \mathcal{N}(0, 2.5) \\ 
-\beta_{crp, m \in 1,2} &\sim \mathcal{N}(0, 2.5) \\
-\beta_{alb, n \in 1,2} &\sim \mathcal{N}(0, 2.5) \\    
+\beta_{\text{ecog}} &\sim \mathcal{N}(0, 2.5) \\
+\beta_{\text{stage}} &\sim \mathcal{N}(0, 2.5) \\ 
+\beta_{\text{mGPS}, j \in 1,2} &\sim \mathcal{N}(0, 2.5) \\
 \gamma &\sim \text{Dirichlet}(\mathbf{1}_5) 
 \end{aligned}
 $$
 
 #### Implementation
 
-The model will be fitted using the `stan_surv` function from the `rstanarm` package in R. Convergence will be assessed using $\hat{R}$ and trace plots. Example implementation code is provided in @sec-appendix-os-code.
+The model will be fitted using the `stan_surv` function from the `rstanarm` package in R. Convergence will be assessed using $\hat{R}$ and trace plots. Example impleme1000ntation code is provided in @sec-appendix-os-code.
 
 #### Obtaining the Estimand
 
@@ -549,9 +552,9 @@ We will visualize the survival curves and $\tau_{OS}$ as shown in @fig-os-survcu
 
 ### Data
 
-In LIQPLAT QoL, measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^4] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
+In LIQPLAT QoL, measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^3] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
 
-[^4]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
+[^3]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
 
 > How would you rate your overall [quality of life]{.underline} during the past week?
 
@@ -573,9 +576,9 @@ eortc_table |>
   tt(width = 1)
 ```
 
-For modeling purposes, we invert the scale. We will also assume that the categories that are not labeled according to EORTC can be labeled as follows:[^5]
+For modeling purposes, we invert the scale. We will also assume that the categories that are not labeled according to EORTC can be labeled as follows:[^4]
 
-[^5]: We acknowledge that not everyone would assign precisely these labels, but believe them to be agreeable to the majority of patients. The labels will serve for easier communication of results.
+[^4]: We acknowledge that not everyone would assign precisely these labels, but believe them to be agreeable to the majority of patients. The labels will serve for easier communication of results.
 
 ```{r}
 #| echo: false
@@ -713,25 +716,25 @@ $$
 \end{aligned}
 $$
 
-where $\beta_{\text{tx}}$ is the main effect of treatment selection (A=1 vs A=0),[^6] and categorical predictors ($\text{ecog}$, $\text{diag}$) are represented by sums over their dummy variables. We model time flexibly[^7] using a restricted cubic spline with 4 knots,[^8] which generates 3 basis functions:
+where $\beta_{\text{tx}}$ is the main effect of treatment selection (A=1 vs A=0),[^5] and categorical predictors ($\text{ecog}$, $\text{diag}$) are represented by sums over their dummy variables. We model time flexibly[^6] using a restricted cubic spline with 4 knots,[^7] which generates 3 basis functions:
 
-[^6]: A treatment effect, if present, is unlikely to be constant over time. CtDNA analysis can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
+[^5]: A treatment effect, if present, is unlikely to be constant over time. CtDNA analysis can take weeks and is less likely to change first-line than second-line therapy of participants. An effect in the first weeks after baseline is thus very unlikely. However, given our sample size, we are likely not able to identify time-varying treatment effects reliably and choose a constant treatment effect for slightly smaller variance in our estimator.
 
-[^7]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 transitions vs. 182 transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
+[^6]: The analysis discretizes time into weekly intervals rather than daily intervals for several pragmatic and methodological reasons. First, in the EORTC questionnaire patients are specifically asked about their quality of life in the last week. Second, given the high proportion of missing data inherent to routine care follow-up, daily estimates could imply a level of precision that is not supported by the data. Third, in LIQPLAT, it is highly unlikely that patients complete more than one questionnaire within a single week, making the week a natural and minimal unit of observation. Finally, this choice significantly reduces the computational burden of the simulation study and the primary analysis (e.g., 26 transitions vs. 182 transitions per patient), enhancing the feasibility of the project without a substantial loss of relevant information. The impact of this aggregation on the final estimand is expected to be minimal.
 
-[^8]: This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
+[^7]: This model uses the `rmsb` package, which implements restricted cubic splines using a truncated power basis. This basis is parameterized for convenient interpretation: for $K=4$ knots, it generates $K−1=3$ basis functions ($B_p​(t)$). The first basis function ($B_1​(t)$) is the linear term $t$ itself. The subsequent functions ($B_2​(t)$,$B_3​(t)$) are the nonlinear components derived from truncated cubic functions. Therefore, the coefficients $\beta_{t,1}$, $\beta_{t,2}$​, $\beta_{t,3}$ are the weights for the linear component and the two nonlinear components, respectively.
 
 $$
 f(t) = \sum_{p=1}^3 \beta_{t, p} \cdot B_p(t)
 $$
 
-The effect of the previous QoL state ($\beta_{\text{yprev}=k}$, with state 1 as reference)[^9] and its interaction with the time gap ($\beta_{\text{yprev}=k \times \text{gap}}$) capture how the current state depends on the previous measurement and the time elapsed since then.[^10] The baseline covariates $\mathbf{X}_i\boldsymbol{\beta}_x$ include ECOG performance status and diagnosis category.[^11]
+The effect of the previous QoL state ($\beta_{\text{yprev}=k}$, with state 1 as reference)[^8] and its interaction with the time gap ($\beta_{\text{yprev}=k \times \text{gap}}$) capture how the current state depends on the previous measurement and the time elapsed since then.[^9] The baseline covariates $\mathbf{X}_i\boldsymbol{\beta}_x$ include ECOG performance status and diagnosis category.[^10]
 
-[^9]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, estimating an interaction of the six-level categorical variable `yprev` with flexibly modeled time would not be feasible given our sample size.
+[^8]: It is unlikely that the effect of the previous state is constant over time. Very poor QoL at the beginning of the study might predict regression to the mean, whereas a very low-quality of life during later stages of the disease might not. However, estimating an interaction of the six-level categorical variable `yprev` with flexibly modeled time would not be feasible given our sample size.
 
-[^10]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
+[^9]: The effect of the previous state is unlikely to decay linearly over time. However, most questionnaires will be repeated after at least some weeks. Even if the decay shortly after a previous answer is non-linear, we anticipate the decay in the expected range of gaps to be approximately linear.
 
-[^11]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
+[^10]: Both the functional status (ECOG) at baseline and the cancer diagnosis category are likely to be predictive of quality of life based on our clinical experience and prior research, and are thus included to explain more variation in the outcome. If we observe fewer than five patients with a functional status (ECOG) of 4, we will merge categories 3 and 4 into '3plus', to avoid divergent transitions of the estimate of the effect of ecog 4 because of too few observations. The diagnosis categories will be refactored into a five level categorical variable, with the four most common diagnoses as distinct categories and the rest of diagnoses lumped together as 'other'.
 
 The term $\gamma_{it,j}$ models deviation from proportional odds for the effect of time, constrained to be linear in the outcome category $j$:
 
@@ -743,15 +746,15 @@ where $\tau$ is the non-proportional odds parameter for time.
 
 #### Prior Specifications
 
-We assign a regularizing prior of $\mathcal{N}(0, 0.5)$ to the treatment effect $\beta_{\text{tx}}$. We used prior predictive simulation to select this prior, which implies a clinically plausible distribution for our estimand $\tau_{QoL}^{\text{psATE}}$. Our simulation, based on historical data, suggests that this prior on the log odds scale[^12] produces a prior distribution for $\tau_{QoL}^{\text{psATE}}$ with a median at 0 weeks (no difference), with approximately 80% of its mass on an increase in weeks with "good" or better QoL by 4 weeks (benefit) to a decrease by 3 weeks (harm).
+We assign a regularizing prior of $\mathcal{N}(0, 0.5)$ to the treatment effect $\beta_{\text{tx}}$. We used prior predictive simulation to select this prior, which implies a clinically plausible distribution for our estimand $\tau_{QoL}^{\text{psATE}}$. Our simulation, based on historical data, suggests that this prior on the log odds scale[^11] produces a prior distribution for $\tau_{QoL}^{\text{psATE}}$ with a median at 0 weeks (no difference), with approximately 80% of its mass on an increase in weeks with "good" or better QoL by 4 weeks (benefit) to a decrease by 3 weeks (harm).
 
-[^12]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.53$ and $1.90$.
+[^11]: In other words, we place 80% of our prior probability mass for the odds ratio of the treatment effect between $0.53$ and $1.90$.
 
-The intercepts $\alpha_j$ have priors induced by a Dirichlet distribution with a concentration parameter of 0.308[^13] on the baseline cell probabilities, which ensures proper ordering ($\alpha_2 < \dots < \alpha_7$).[^14] All other regression coefficients---including the time spline coefficients, previous state effects, gap effects, their interactions, and baseline covariate effects---are assigned weakly informative $\mathcal{N}(0, 100)$ priors (the default in `rmsb`). The non-proportional odds parameter $\tau$ also receives a $\mathcal{N}(0, 100)$ prior.
+The intercepts $\alpha_j$ have priors induced by a Dirichlet distribution with a concentration parameter of 0.308[^12] on the baseline cell probabilities, which ensures proper ordering ($\alpha_2 < \dots < \alpha_7$).[^13] All other regression coefficients---including the time spline coefficients, previous state effects, gap effects, their interactions, and baseline covariate effects---are assigned weakly informative $\mathcal{N}(0, 100)$ priors (the default in `rmsb`). The non-proportional odds parameter $\tau$ also receives a $\mathcal{N}(0, 100)$ prior.
 
-[^13]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$, which evaluates to $0.308$ for a 7-level outcome.
+[^12]: The concentration parameter as calculated by default by the `rmsb` package is $1/(0.8+0.35\cdot \text{max}(k, 3))$, which evaluates to $0.308$ for a 7-level outcome.
 
-[^14]: Unlike the TAOOH model, we do not include a patient-level random intercept. With an anticipated average of only \~4 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data. The Type I error inflation is mitigated by the skeptical prior.
+[^13]: Unlike the TAOOH model, we do not include a patient-level random intercept. With an anticipated average of only \~4 observations per patient for this outcome, estimation of a random intercept variance component is expected to be unstable. While this omission risks Type I error inflation if significant unmodelled correlation exists, it is considered a necessary trade-off given the sparse data. The Type I error inflation is mitigated by the skeptical prior.
 
 $$
 \begin{aligned}
@@ -896,9 +899,9 @@ We define a patient's state weekly based on their location and vital status: 1=a
 
 #### Statistical Model
 
-We use a Bayesian second-order Markov ordinal transition model with patient-level random effects. This model analyzes the probability of transitioning between health states from one week to the next, conditional on the states at the previous two weeks. The second-order specification captures the empirical finding in historic data that both the immediate prior state and the state two weeks earlier contain predictive information about the current health status.[^15]
+We use a Bayesian second-order Markov ordinal transition model with patient-level random effects. This model analyzes the probability of transitioning between health states from one week to the next, conditional on the states at the previous two weeks. The second-order specification captures the empirical finding in historic data that both the immediate prior state and the state two weeks earlier contain predictive information about the current health status.[^14]
 
-[^15]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
+[^14]: Detailed model fits, AIC comparisons and diagnostic notes can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/4-freq-fit-tests.qmd).
 
 Let $y_{it}$ be the ordinal health state (1-5) for patient $i$ at week $t$, and let $y_{i, t-1}$ and $y_{i, t-2}$ be the states at the previous two weeks. The model is a cumulative logit model:
 
@@ -1070,33 +1073,7 @@ The second sensitivity analysis aims to fit a longitudinal ordinal model similar
 
 The following secondary outcomes are considered exploratory and focus on the implementation and feasibility of ctDNA-guided care, as well as downstream clinical processes. All analyses will be conducted within a Bayesian framework using default or weakly informative priors from `brms` [@brms-2017] and `rstanarm` [@RStanARM]. We will report posterior medians and 95% credible intervals.
 
--   \[Para on why we use hierarchical models here.\]
-
--   Consider removing random effects from invitation and acceptance, because binary outcome and only 150 patients
-
--   change ctDNA detected at baseline to histological subtype and remove random effect (only 150 pateints)
-
--   remove age from targeted therapy use because it doesn't make any sense. Just keep diagnosis as random effect
-
--   reconsider random intercept for negative binomial model (is it important in explaining toxicity)?
-
 ## Implementation Outcomes
-
-### Patient Eligibility
-
-We estimate the proportion of screened patients who were eligible for LIQPLAT using a Bayesian multilevel logistic regression:
-
-$$
-\begin{align*}
-\text{Eligible}_{ij} &\sim \text{Bernoulli}(p_{ij})\\
-\text{logit}(p_{ij}) &= \beta_0 + \beta_1 \text{age}_{ij} + \beta_2 \text{sex}_{ij} + u_{0j} \\
-u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
- \end{align*}
-$$
-
-where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
-
-**Derived Quantities:** We will report the marginal (population-average) probability of eligibility. Exploratory analyses will evaluate whether eligibility differs by diagnosis, sex, or age group.
 
 ### Invitation Offered by Physician
 
@@ -1104,13 +1081,12 @@ Among patients selected for invitation, we estimate the proportion who were offe
 
 $$
 \begin{align*}
-\text{Offered}_{ij} &\sim \text{Bernoulli}(p_{ij})\\
-\text{logit}(p_{ij}) &= \beta_0 + \beta_1 \text{age}_{ij} + \beta_2 \text{sex}_{ij} + u_{0j} \\
-u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+\text{Offered}_{i} &\sim \text{Bernoulli}(p_{i})\\
+\text{logit}(p_{i}) &= \beta_0 + \beta_1 \text{age}_{i} + \beta_2 \text{sex}_{i} \\
  \end{align*}
 $$
 
-where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+where $i$ indexes patients.
 
 **Derived Quantities:** We will report the marginal probability of being offered participation. Exploratory analyses will assess differences by sex and age group.
 
@@ -1120,15 +1096,14 @@ Among patients who were offered participation, we estimate the proportion who pr
 
 $$
 \begin{align*}
-\text{Accepted}_{ij} &\sim \text{Bernoulli}(p_{ij})\\
-\text{logit}(p_{ij}) &= \beta_0 + \beta_1 \text{age}_{ij} + \beta_2 \text{sex}_{ij} + u_{0j} \\
-u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+\text{Accepted}_{i} &\sim \text{Bernoulli}(p_{i})\\
+\text{logit}(p_{i}) &= \beta_0 + \beta_1 \text{age}_{i} + \beta_2 \text{sex}_{i} \\
  \end{align*}
 $$
 
-where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+where $i$ indexes patients.
 
-**Derived Quantities:** We will report the marginal probability of acceptance. Exploratory subgroup analyses will assess differences by sex and age.
+**Derived Quantities:** We will report the marginal probability of acceptance. Exploratory analyses will assess differences by sex and age.
 
 ### Technical Feasibility of ctDNA Analysis
 
@@ -1146,21 +1121,20 @@ $$
 
 where $i$ indexes samples and $j$ indexes patients, and $u_{0j}$ is a patient-specific random intercept.
 
-**Derived Quantities:** We will report the marginal probability of samples without errors.
+**Derived Quantities:** We will report the marginal probability of an error errors.
 
 #### Proportion with ctDNA Detected at Baseline
 
 $$
 \begin{align*}
-\text{Detected}_{ij} &\sim \text{Bernoulli}(p_{ij}) \\
-\text{logit}(p_{ij}) &= \beta_0 + u_{0j} \\
-u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
- \end{align*}
+\text{Detected}_{i} &\sim \text{Bernoulli}(p_{i}) \\
+\text{logit}(p_{i}) &= \beta_0 + \mathbf{X}_i\boldsymbol{\beta_1} \\
+\end{align*}
 $$
 
-where $i$ indexes patients, $j$ indexes cancer diagnosis categories and $u_{0j}$ is a diagnosis-specific random intercept.
+where $i$ indexes patients, $\mathbf{X}_i$ represents histological types of the a patient's cancer with coefficients $\boldsymbol{\beta_1}$.
 
-**Derived Quantities:** We will report the marginal probability of ctDNA detection at baseline. Exploratory analyses will evaluate differences by cancer diagnosis.
+**Derived Quantities:** We will report the marginal probability of ctDNA detection at baseline. Exploratory analyses will evaluate differences by histological subtype.
 
 #### Proportion of Variants Suspected of CHIP
 
@@ -1197,45 +1171,49 @@ where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}
 
 ## Comparative Outcomes (SAT vs. External Control)
 
-### Time to Treatment Switch, Stop, or Death
+### Time to Treatment Switch or Stop
 
-We compare the time from treatment initiation to the composite endpoint of treatment switch, stop, or death using the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the hazard ratio, posterior survival curves by group, and derived estimates of risk differences and risk ratios at 6 months.
+We evaluate the time from treatment initiation to the first occurrence of treatment switch or discontinuation. To isolate the effect of treatment assignment we estimate the cause-specific hazard, i.e., we censor patients who die prior to switching or stopping.
 
-### Time to Palliative Care
+We utilize the same Bayesian proportional hazards model specified for Overall Survival (@sec-os-analysis). The primary estimand is the cause-specific hazard ratio.
 
-We compare the time from first-line treatment to the composite endpoint of switch to best supportive care or death using the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the hazard ratio, posterior survival curves by group, and derived estimates of risk differences and risk ratios at 6 months.
+### Time to Best Supportive Care
+
+We evaluate the time from first-line treatment initiation to the switch to BSC. To specifically assess the timing of the decision to transition to palliative care (as a proxy for recognizing ineffective therapy) conditional on the patient being alive, we estimate the cause-specific hazard. In this analysis, patients who die without having switched to BSC are censored at the date of death.
+
+We utilize the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the cause-specific hazard ratio.
 
 ### Targeted Therapy Use
 
-We compare the probability of receiving targeted therapy between groups using a Bayesian multilevel logistic regression, adjusting for age with a random intercept for cancer type:
+We compare the probability of receiving targeted therapy between groups:
 
 $$
 \begin{align*}
-\text{Targeted}_{ij} &\sim \text{Bernoulli}(p_{ij}) \\
-\text{logit}(p_{ij}) &= \beta_0 + \beta_{\text{grp}} \cdot \text{grp}_{ij} + \beta_{\text{age}} \cdot \text{age}_{ij} + u_{0j} \\
-u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
+\text{Targeted}_{i} &\sim \text{Bernoulli}(p_{i}) \\
+\text{logit}(p_{i}) &= \beta_0 + \beta_{\text{grp}} \cdot \text{grp}_{i} \\
 \end{align*}
 $$
 
-where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}$ is a diagnosis-specific random intercept.
+where $i$ indexes patients. We do not add covariates to this model due to the small expected number of events.
 
 **Derived Quantities:** We report the marginal probability of receiving targeted therapy in each group and the risk difference.
 
 ### Blood Product Transfusions
 
-We compare the rate of blood product transfusions (red blood cells or platelets) using a Bayesian multilevel negative binomial regression with an exposure offset for follow-up time:
+We compare the rate of blood product transfusions (red blood cells or platelets) using a Bayesian negative binomial regression with an exposure offset for follow-up time. 
+
 
 $$
-\begin{align*}
-Y_{ij} &\sim \text{NegBinom}(\mu_{ij}, \phi) \\
-\log(\mu_{ij}) &= \log(t_{ij}) + \beta_0 + \beta_{\text{grp}} \cdot \text{grp}_{ij} + \beta_{\text{age}} \cdot \text{age}_{ij} + \sum_{k=2}^{3} \beta_{\text{ecog}, k} \cdot \text{ecog}_{ijk} + u_{0j} \\
-u_{0j} &\sim \mathcal{N}(0, \sigma^2_u)
-\end{align*}
+\begin{aligned}
+Y_{i} &\sim \text{NegBinom}(\mu_{i}, \phi) \\
+\log(\mu_{i}) &= \log(t_{i}) + \beta_0 + \beta_{\text{grp}} \cdot \text{grp}_{i} + f_1(\text{hgb}_{i}) + f_2( \text{plt}_{i}) + \\
+&\qquad f_3(\text{age}_{i}) + f_4(\text{crea}_{i}) + \sum_{k=2}^{3} \beta_{\text{ecog}, k} \cdot \text{ecog}_{ik} 
+\end{aligned}
 $$
 
-where $Y_{ij}$ is the count of transfusions for patient $i$ with cancer diagnosis $j$, $t_{ij}$ is the follow-up time, $\phi$ is the overdispersion parameter, and $u_{0j}$ is a diagnosis-specific random intercept.
+where $Y_{i}$ is the count of transfusions for patient $i$, $t_{i}$ is the follow-up time, $grp_i$ is the treatment group indicator, $hgb_i$ is the hemoglobin concentration at baseline, $plt_i$ is the platelet count at baseline, $age_i$ is the age at baseline, $crea_i$ is creatinine at baseline, and $\phi$ is the overdispersion parameter. The functions $f_1(\cdot)$ to $f_4(\cdot)$ are modeled using restricted cubic splines with 3 knots.
 
-**Derived Quantities:** The marginal difference in the rate of transfusions between groups will be reported.
+**Derived Quantities:** The marginal rate ratio and difference in the rate of transfusions between groups will be reported.
 
 # Long-term Follow-up Analyses
 
@@ -1243,7 +1221,7 @@ We will repeat all analyses described above for follow-up periods of 12 months a
 
 The statistical models will remain the same as specified for the primary 6-month analysis, with adjustments to the flexibility of the time-modeling components to account for the longer follow-up duration:
 
--   **Overall Survival:** The degrees of freedom for the M-splines modeling the baseline hazard will be increased by one for the 12-month analysis (6 df) and by two for the 24-month analysis (7 df).\
+-   **Overall Survival:** The degrees of freedom for the M-splines modeling the baseline hazard will be increased by one for the 12-month analysis (6 df) and by two for the 24-month analysis (7 df).
 -   **Quality of Life & Time Alive and Out of Hospital:** The restricted cubic splines modeling the effect of time in the transition models will use one additional knot for the 12-month analysis (5 knots) and two additional knots for the 24-month analysis (6 knots).
 
 # Limitations
