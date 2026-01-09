@@ -223,7 +223,7 @@ Randomly inviting patients from a prospective research registry to the SAT enabl
 
 As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT ($A$) is not random and likely to be influenced by factors ($U$) which also cause the outcome. If we restricted the analysis to patients who have accepted the invitation (as represented by a box around $S$), we would be conditioning on the child of a mediator, leading to collider bias. In other words, patients who were selected for invitation to the SAT and patients who could have been selected but were not are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
 
-Even though LIQPLAT is not strictly speaking a randomized controlled trial, when considering selection for invitation to the trial as treatment, it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment. An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
+**Even though LIQPLAT is not a randomized controlled trial, when considering selection for invitation to the trial as treatment, it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment.** An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
 
 ::: {#fig-dags layout-ncol="2"}
 ![Dag 1](img/dag-1.b-simplified.svg){#fig-dag1}
@@ -412,7 +412,7 @@ The handling of intercurrent events for the OS analysis is described in @tbl-os-
 : Handling of intercurrent events for Overall Survival analysis. {#tbl-os-ie}
 :::
 
-### Analysis Method
+### Analysis Method {#sec-os-analysis}
 
 #### Statistical Model
 
@@ -652,7 +652,7 @@ Modeling the QoL trajectory while incorporating the absorbing state of death pro
 
 We will formally assess the assumption of no survival difference using the results from the Overall Survival analysis. If the 66% CrI for the difference in Restricted Mean Survival Time (RMST) at 6 months, $\tau_{OS}$, is contained within a Region of Practical Equivalence (ROPE) of $\pm 7$ days (i.e., $[-7, 7]$ days), we will consider the assumption of no survival difference to be practically met and proceed with the Principal Stratum estimand as the primary analysis.
 
-If the 66% CrI for $\tau_{OS}$ is not contained within the ROPE we will switch the primary analysis to the ordinal QoL state at 6 months, adjusted for death. In this case, death will be assigned the worst possible QoL score (state 8), and the outcome will be analyzed using a Bayesian proportional odds model (see @sec-sec-sensitivity-analyses). Additionally, we will report the results of the longitudinal ordinal transition model that includes death as an absorbing state (see @sec-sec-sensitivity-analyses) to describe the treatment effect on the combined outcome of survival and quality of life over time.
+If the 66% CrI for $\tau_{OS}$ is not contained within the ROPE we will switch the primary analysis to the ordinal QoL state at 6 months, adjusted for death. In this case, death will be assigned the worst possible QoL score (state 8), and the outcome will be analyzed using a Bayesian proportional odds model (see @sec-sensitivity-analyses). Additionally, we will report the results of the longitudinal ordinal transition model that includes death as an absorbing state (see @sec-sensitivity-analyses) to describe the treatment effect on the combined outcome of survival and quality of life over time.
 
 ### Handling of Intercurrent Events {#sec-qol-intercurrent-events}
 
@@ -1035,7 +1035,7 @@ summary_ha |>
 
 We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for the purpose of evaluating operating characteristics. It will not be used as a formal, dichotomous decision rule in the final analysis. Instead, the primary reporting will focus on presenting and interpreting the full posterior distribution of $\hat{\tau}_{TAOOH}$​. The estimates in @tbl-oper-char-toh-ha are intended to provide a conventional benchmark to illustrate which effect sizes the study can reasonably detect given our sample size and modeling approach.
 
-# Sensitivity Analyses @sec-sec-sensitivity-analyses
+# Sensitivity Analyses {#sec-sensitivity-analyses}
 
 We will conduct sensitivity analyses for each of the three primary outcomes to assess the robustness of our findings to key modeling assumptions. These analyses are pre-specified but considered secondary to the primary analyses.
 
@@ -1111,7 +1111,7 @@ $$
 
 where $i$ indexes samples and $j$ indexes patients, and $u_{0j}$ is a patient-specific random intercept.
 
-**Derived Quantities:** We will report the marginal probability of an error errors.
+**Derived Quantities:** We will report the marginal probability of a technical error.
 
 #### Proportion with ctDNA Detected at Baseline
 
@@ -1163,15 +1163,15 @@ where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}
 
 ### Time to Treatment Switch or Stop
 
-We evaluate the time from treatment initiation to the first occurrence of treatment switch or discontinuation. To isolate the effect of treatment assignment we estimate the cause-specific hazard, i.e., we censor patients who die prior to switching or stopping.
+We evaluate the time from treatment initiation to the first occurrence of treatment switch or discontinuation. We estimate the cause-specific hazard, i.e., we censor patients who die prior to switching or stopping.
 
-We utilize the same Bayesian proportional hazards model specified for Overall Survival (@sec-os-analysis). The primary estimand is the cause-specific hazard ratio.
+We use the same Bayesian proportional hazards model specified for Overall Survival (@sec-os-analysis). The primary estimand is the cause-specific hazard ratio.
 
 ### Time to Best Supportive Care
 
-We evaluate the time from first-line treatment initiation to the switch to best supportive care. To specifically assess the timing of the decision to transition to palliative care (as a proxy for recognizing ineffective therapy) conditional on the patient being alive, we estimate the cause-specific hazard. In this analysis, patients who die without having switched to best supportive care are censored at the date of death.
+We evaluate the time from first-line treatment initiation to the switch to best supportive care. To specifically assess the timing of the decision to transition to palliative care (as a proxy for recognizing ineffective therapy) conditional on the patient being alive, we estimate the cause-specific hazard, i.e., patients who die without having switched to best supportive care are censored at the date of death.
 
-We utilize the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the cause-specific hazard ratio.
+We use the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the cause-specific hazard ratio.
 
 ### Targeted Therapy Use
 
@@ -1439,6 +1439,8 @@ The predictor matrix is configured to:
 ```{r}
 #| output: false
 #| echo: true
+
+#| Note: q30 is already inverted so that higher values indicate lower QoL
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -1967,7 +1969,7 @@ df_raw <- df_raw |>
 
 #### Variable Transformations
 
-Survival time is censored at 182 days (6 months) for the primary analysis. The death event indicator is derived accordingly. Diagnosis categories are collapsed to the 5 most frequent groups to avoid sparse categories that could cause convergence issues.
+Survival time is censored at 182 days (6 months) for the primary analysis. The death event indicator is derived accordingly.
 
 ```{r}
 #| echo: false
@@ -2012,21 +2014,21 @@ Following @Mathur2025-sl, we restrict the imputation model to variables included
 
 #### Analysis Variables
 
-+----------------------+-------------------------------------------+----------------+
-| Variable             | Description                               | Type           |
-+======================+===========================================+================+
-| `tx`                 | Treatment group allocation                | Binary         |
-+----------------------+-------------------------------------------+----------------+
-| `ecog_fstcnt`        | ECOG performance status at baseline (0–4) | Ordered factor |
-+----------------------+-------------------------------------------+----------------+
-| `diagnosis`          | Primary cancer diagnosis (5 categories)   | Nominal factor |
-+----------------------+-------------------------------------------+----------------+
-| `albumin`            | Serum albumin at baseline (g/L)           | Continuous     |
-+----------------------+-------------------------------------------+----------------+
-| `c_reactive_protein` | C-reactive protein at baseline (mg/L)     | Continuous     |
-+----------------------+-------------------------------------------+----------------+
-| `event_death`        | Death indicator (within 182 days)         | Binary         |
-+----------------------+-------------------------------------------+----------------+
++----------------------+------------------------------------------------+----------------+
+| Variable             | Description                                    | Type           |
++======================+================================================+================+
+| `tx`                 | Treatment group allocation                     | Binary         |
++----------------------+------------------------------------------------+----------------+
+| `ecog_fstcnt`        | ECOG performance status at baseline (0–4)      | Ordered factor |
++----------------------+------------------------------------------------+----------------+
+| `stage`              | Tumor stage (locally advanced vs metastasized) | Binary         |
++----------------------+------------------------------------------------+----------------+
+| `albumin`            | Serum albumin at baseline (g/L)                | Continuous     |
++----------------------+------------------------------------------------+----------------+
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L)          | Continuous     |
++----------------------+------------------------------------------------+----------------+
+| `event_death`        | Death indicator (within 182 days)              | Binary         |
++----------------------+------------------------------------------------+----------------+
 
 : Analysis variables included in the imputation model {#tbl-analysis-vars}
 
@@ -2057,7 +2059,7 @@ Following @Mathur2025-sl, we restrict the imputation model to variables included
 +=========================+==============+===========================================================+
 | `ecog_fstcnt`           | `polr`       | Proportional odds logistic regression for ordered factors |
 +-------------------------+--------------+-----------------------------------------------------------+
-| `diagnosis`             | `polyreg`    | Polytomous logistic regression for unordered factors      |
+| `stage`                 | `logreg`     | Logistic regression for binary variables                  |
 +-------------------------+--------------+-----------------------------------------------------------+
 | `albumin`               | `pmm`        | Predictive mean matching for continuous variables         |
 +-------------------------+--------------+-----------------------------------------------------------+
@@ -2070,7 +2072,7 @@ Following @Mathur2025-sl, we restrict the imputation model to variables included
 
 : Imputation methods by variable {#tbl-methods}
 
-Predictive mean matching (PMM) is used for continuous variables to preserve the marginal distributions and avoid imputing implausible values. We use Type 1 PMM with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapter 3.4]. For ordered categorical variables (ECOG), proportional odds logistic regression (`polr`) maintains the ordinal structure. For unordered categorical variables (diagnosis), polytomous logistic regression (`polyreg`) is used.
+Predictive mean matching (PMM) is used for continuous variables to preserve the marginal distributions and avoid imputing implausible values. We use Type 1 PMM with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapter 3.4]. For ordered categorical variables (ECOG), proportional odds logistic regression (`polr`) maintains the ordinal structure.
 
 #### Predictor Matrix Configuration
 
@@ -2083,6 +2085,8 @@ The predictor matrix is configured to:
 ```{r}
 #| echo: true
 #| output: false
+
+# Note: We don't have stage well defined in historic data, so we will use diagnosis (5 level factor) instead for illustrative purposes
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -2236,14 +2240,14 @@ tx_scale <- 0.55
 default_scale <- 2.5
 
 prior <- normal(
-  location = c(rep(0, 12)),
-  scale = c(tx_scale, rep(default_scale, 11))
+  location = c(rep(0, 5)),
+  scale = c(tx_scale, rep(default_scale, 4))
 )
 
 # Fit the model
 model_os <- stan_surv(
-    formula = Surv(day, death) ~ tx + ecog_fstcnt + diagnosis + 
-              ns(albumin, df = 2) + ns(c_reactive_protein, df = 2),
+    formula = Surv(day, death) ~ tx + ecog_binary + stage_binary + 
+              mgps,
     data = data,
     basehaz = "ms",
     basehaz_ops = list(df = 5),
