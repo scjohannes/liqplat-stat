@@ -69,21 +69,36 @@ The estimand, $\tau$, represents the population-average difference in weeks spen
 #| output: false
 dd <- datadist(df)
 options(datadist = "dd")
-pcontrast_arg <- list(
-  c1 = list(tx = 1),
+# Prior on the proportional odds effect (applies to thresholds 1-3)
+pcontrast_po <- list(
+  c1 = list(tx = 1), 
   c2 = list(tx = 0),
   contrast = expression(c1 - c2),
   mu = 0,
   sd = 0.541
 )
 
+# Prior on the non-proportional effect (threshold 4 only, for transition to state 5)
+# Using a narrower prior here
+# pcontrast_npo <- list(
+#   c1 = list(tx = 1), 
+#   c2 = list(tx = 0),
+#   contrast = expression(c1 - c2),
+#   mu = 0,
+#   sd = 0.3  # Narrower prior for the non-proportional effect
+# )
+
 if(TRUE){
   options(mc.cores = 6)
   model <-       
       blrm(
-              formula = y  ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + albumin + c_reactive_protein + cluster(id),
+              formula = y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + cluster(id),
               data = df,
-              pcontrast = pcontrast_arg,
+              ppo = ~tx,
+              cppo = function(y) y,
+              # cppo = function(y) y == 5, # to relax PO for treatment
+              pcontrast = pcontrast_po,    # Prior for PO effect
+              # cpcontrast = pcontrast_npo,  # Prior for non-PO effect (threshold 4)
               refresh = 5,
               iter = 2000,
               chains = 4,
@@ -94,6 +109,9 @@ if(TRUE){
               sampling.args = list(adapt_delta = 0.95)
           )
 }
+
+# TRUE
+predict(model, newdata = df[1,], type = "fitted.ind")[, "Mean"] == apply(predict_blrm_manual(model, newdata = df[1,], include_re = FALSE), c(2, 3), mean)
 ```
 
 ## Functions
@@ -112,22 +130,43 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
   
   N_new <- nrow(newdata)
 
-  # --- 1) Get the design matrix for the new data ---
+  # --- 1) Get the design matrices for the new data ---
   X <- rms::predictrms(fit, newdata = newdata, type = 'x')
-
+  
   # --- 2) Extract posterior draws and model information ---
   draws <- fit$draws
   ndraws <- nrow(draws)
   ns <- fit$non.slopes
   K <- ns + 1
+  pppo <- fit$pppo
   
   intercept_draws <- draws[, 1:ns, drop = FALSE]
-  beta_draws <- draws[, (ns + 1):ncol(draws), drop = FALSE]
+  
+  # Extract beta coefficients (excluding intercepts and tau parameters)
+  cn <- colnames(draws)
+  tauinfo <- fit$tauInfo
+  betanam <- setdiff(cn, c(cn[1:ns], tauinfo$name))
+  beta_draws <- draws[, betanam, drop = FALSE]
+  
+  # Extract non-proportional odds parameters if they exist
+  has_npo <- pppo > 0
+  if (has_npo) {
+    Z <- rms::predictrms(fit, newdata = newdata, type = 'x', second = TRUE)
+    tau_draws <- draws[, tauinfo$name, drop = FALSE]
+    cppo <- fit$cppo
+    ylevels <- fit$ylevels
+    cppos <- sapply(ylevels[-1], cppo)  # Evaluate cppo for each threshold
+  }
 
   # --- 3) Calculate the fixed-effect linear predictor (eta_fixed) ---
-  eta_fixed <- beta_draws %*% t(X)
+  xb <- beta_draws %*% t(X)
+  
+  # --- 4) Calculate non-proportional odds linear predictor if applicable ---
+  if (has_npo) {
+    zt <- tau_draws %*% t(Z)
+  }
 
-  # --- 4) Get the random effect draws (u_draws) if requested ---
+  # --- 5) Get the random effect draws (u_draws) if requested ---
   u_draws <- matrix(0, nrow = ndraws, ncol = N_new)
   
   if (include_re) {
@@ -143,25 +182,34 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
     u_draws <- all_gamma_draws[, patient_ids, drop = FALSE]
   }
 
-  # --- 5) Calculate the total linear predictor (eta) ---
-  stopifnot(all(dim(eta_fixed) == dim(u_draws)))
-  eta <- eta_fixed + u_draws
-
   # --- 6) Calculate probabilities for each observation and each draw ---
   p_cat_draws_list <- vector("list", N_new) 
   
   for (i in 1:N_new) {
-    eta_i <- eta[, i]
-    s_ge <- plogis(sweep(intercept_draws, 1, eta_i, "+"))
+    # Compute cumulative probabilities P(Y >= k) for each threshold k
+    cum_probs <- matrix(NA_real_, nrow = ndraws, ncol = ns)
     
+    for (k in 1:ns) {
+      # Linear predictor for threshold k: alpha[k] + X*beta + cppo(ylevels[k+1])*Z*tau + u
+      ep <- intercept_draws[, k] + xb[, i] + u_draws[, i]
+      
+      # Add non-proportional odds effect (scaled by cppo value) for this threshold
+      if (has_npo) {
+        ep <- ep + cppos[k] * zt[, i]
+      }
+      
+      cum_probs[, k] <- plogis(ep)
+    }
+    
+    # Convert cumulative probabilities to category probabilities
     p_cat_draws <- matrix(NA_real_, nrow = ndraws, ncol = K)
-    p_cat_draws[, 1] <- 1 - s_ge[, 1]
+    p_cat_draws[, 1] <- 1 - cum_probs[, 1]
     if (K > 2) {
       for (kk in 2:(K - 1)) {
-        p_cat_draws[, kk] <- s_ge[, kk - 1] - s_ge[, kk]
+        p_cat_draws[, kk] <- cum_probs[, kk - 1] - cum_probs[, kk]
       }
     }
-    p_cat_draws[, K] <- s_ge[, K - 1]
+    p_cat_draws[, K] <- cum_probs[, K - 1]
     colnames(p_cat_draws) <- paste0("y=", 1:K)
     
     p_cat_draws_list[[i]] <- p_cat_draws
@@ -524,7 +572,6 @@ plot_model <- marg_df |>
                           linewidth = 0.6,
                           alpha = 0.5,
                           .width = c(0.95)) +
-  scale_color_brewer(palette = "Dark2", guide="none") +
   scale_fill_brewer(palette = "Dark2") +
   scale_x_continuous(breaks = seq(1, 26, by=4)) +
   scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
@@ -533,7 +580,10 @@ plot_model <- marg_df |>
    y = "SOP",
    subtitle = "Marginalized state occupancy probabilities",
    fill = "State",
-   linetype = "Treatment")
+   linetype = "Selected for Invitation to SAT") +
+  theme(
+    legend.position = "bottom"
+  )
 ```
 
 ### Empirical SOPs
@@ -556,7 +606,8 @@ plot_empirical <- empirical_sop |>
   ggplot() +
   aes(x = week, y = sop) +
   geom_line(aes(color = state, linetype = tx), linewidth = 1) +
-  scale_color_brewer(palette = "Dark2") +
+  scale_color_brewer(palette = "Dark2", guide = "none") +
+  scale_linetype_discrete(guide = "none") +
   scale_x_continuous(breaks = seq(1, 26, by=4)) +
   scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
   coord_cartesian(ylim = c(0, 1)) +
@@ -564,8 +615,7 @@ plot_empirical <- empirical_sop |>
        y = "SOP",
        subtitle = "Empirical state occupancy probabilities",
        color = "State",
-       linetype = "Treatment") +
-  theme(legend.position = "")
+       linetype = "Selected for Invitation to SAT")
 ```
 
 We can se that some empirical lines cross, but we KNOW that the treatment effect is constant and proportional, so this is just noise.
@@ -574,7 +624,9 @@ We can se that some empirical lines cross, but we KNOW that the treatment effect
 #| echo: false
 #| fig-width: 10
 #| fig-height: 5
-plot_empirical + plot_model
+plot_empirical + plot_model + 
+  plot_layout(guides = 'collect') & theme(legend.position = 'bottom')
+
 ggsave(filename = here("img", "taooh_sop_comp.svg"), width = 10, height = 5)
 ```
 
@@ -599,7 +651,7 @@ estimand_df |>
   ggdist::stat_dots(side = "bottom") +
   ggdist::stat_halfeye() +
   geom_vline(xintercept = 0, linetype = "dashed") +
-  labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - SoC)",
+  labs(x = "Difference in mean weeks spent out of hospital and alive (SAT - UC)",
        y = "Density")
 
 ggsave(filename = here("img", "fig-taooh-tau.svg"), width = 8, height = 5)
