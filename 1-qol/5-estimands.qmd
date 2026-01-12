@@ -329,7 +329,10 @@ fig_marginalized_grouped <- sop_df |>
    y = "SOP",
    subtitle = "Marginalized state occupancy probabilities",
    fill = "State",
-   linetype = "Treatment")
+   linetype = "Selected for Invitation to SAT") +
+  theme(
+    legend.position = "bottom"
+  )
 
 ggsave(plot = fig_marginalized_grouped, here::here("img", "qol-primary-estimand-sop-line-grouped.svg"), width = 10, height = 6)
 
@@ -363,7 +366,7 @@ plot_posterior <- posterior |>
   ggdist::stat_halfeye() +
   geom_vline(xintercept = 0, linetype = "dashed") +
   labs(
-  x = bquote(paste("Treatment Difference in Weeks spent with ", "" >= "", " Good Quality of Life (SAT - SoC)")),
+  x = bquote(paste("Treatment Difference in Weeks spent with ", "" >= "", " Good Quality of Life (SAT - UC)")),
   y = "Density"
 )
 
