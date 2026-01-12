@@ -65,30 +65,7 @@ The estimand is identified by calculating the marginal survival curve under each
 
 ## Mathematical Model Notation
 
-The model is defined by the hazard rate $h_i(t)$ for each individual $i$ at time $t$.
-
-$$
-\begin{aligned}
-    \text{day}_i, \text{death}_i &\sim \text{Survival}(h_i(t)) \\
-    h_i(t) &= h_0(t) \cdot \exp(\eta_i) \\
-    \eta_i &= \beta_0 + \beta_1 \cdot \text{tx}_i + \sum_{j=2}^{3} \beta_{ecog, j} \cdot \text{ecog}_{ij} + \sum_{k=2}^{5} \beta_{diag, k} \cdot \text{diag}_{ik} \\
-    h_0(t) &= \sum_{k=1}^{5} \gamma_k \cdot M_k(t) \\
-\\
-    \beta_0 &\sim \text{Normal}(0, 20) \\
-    \beta_1 &\sim \text{Normal}(0, 0.55) \\
-    \beta_{\text{ecog},j \in 2,3} &\sim \text{Normal}(0, 2.5) \\
-    \beta_{\text{diag},k \in 2..5} &\sim \text{Normal}(0, 2.5) \\
-    \gamma &\sim \text{Dirichlet}(\mathbf{1}_5)
-\end{aligned}
-$$
-
-This is a **proportional hazards survival model**. We assume the observed data for individual $i$, which consists of a time-to-event indicator ($\text{day}$), and an event indicator ($\text{death}$) follows a survival process which is defined by the hazard function $h_i(t)$.
-
-The hazard rate $h_i(t)$ for an individual is the product of a flexible **baseline hazard**, $h_0(t)$, and the exponentiated effect of their covariates, $\exp(\eta_i)$.
-
--   **Baseline Hazard**: $h_0(t)$ is modeled using **M-splines** with 5 degrees of freedom. $M_k(t)$ are non-negative M-spline basis functions.
--   **Linear Predictor**: $\eta_i$ contains the intercept ($\beta_0$), the effect of treatment ($\beta_1 \cdot \text{tx}_i$), and the effects of the categorical predictions, which are represented by sums over their dummy variables.
--   **Priors**: The model specifies Normal priors for the regression coefficients ($\beta_1, \beta_{ecog, j}, \beta_{diag, k}$). A Dirichlet prior is used for the M-spline coefficients, $\gamma$. The Dirichlet prior is used because the spline coefficients are constrained by `rstanarm` to be positive and sum to 1 for identification.
+See the statistical analysis plan for the most up to date model notation. 
 
 ## Fit the model
 
@@ -187,7 +164,7 @@ ggplot(rmst_results, (aes(x = rmst_diff))) +
     ggdist::stat_halfeye() +
     labs(
         title = "",
-        x = "Difference in the restricted mean survival time (SAT - SoC) [Days]",
+        x = "Difference in the restricted mean survival time (SAT - UC) [Days]",
         y = "Density"
     )
 
@@ -209,7 +186,7 @@ long_data_0 <- std_surv_matrix_0 |>
     values_to = "survival",
     names_transform = as.numeric
   ) |>
-  mutate(treatment = "SoC")
+  mutate(treatment = "UC")
 
 long_data_1 <- std_surv_matrix_1 |>
   as_tibble(.name_repair = ~ as.character(time_points)) |>
@@ -230,7 +207,7 @@ km_data <- data.frame(
   strata = rep(names(km_fit$strata), km_fit$strata)
 ) |>
   mutate(
-    treatment = ifelse(strata == "tx=0", "SoC", "SAT")
+    treatment = ifelse(strata == "tx=0", "UC", "SAT")
   )
 
 # plot
