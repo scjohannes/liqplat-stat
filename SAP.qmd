@@ -117,6 +117,8 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **TAOOH**     | Time Alive and Out of Hospital                             |
 +---------------+------------------------------------------------------------+
+| **sta**       | Usual Care                                                 |
++---------------+------------------------------------------------------------+
 
 {{< pagebreak >}}
 
@@ -219,11 +221,11 @@ Once three patients have been randomly selected for an invitation to the trial, 
 
 ### Randomized comparison with external comparator
 
-Randomly inviting patients from a prospective research registry to the SAT enables a randomized comparison with patients who were not invited to the trial, as the data on outcomes for the latter can be obtained from routine data. In @fig-dags $Z$ is the indicator for selection for invitation to the SAT, $A$ indicates whether a patient was invited to the study *and* accepted, $S$ indicates the selection into the population who accepted the invitation, $Y$ denotes the outcome of a patient, and $U$ denotes a set of unmeasured causes $A$ and $Y$. Selection for nvitation to the trial ($Z$) and the outcomes of interest ($Y$) have no common causes, because the decision to select a patient for invitation to the SAT was made at random.
+Randomly inviting patients from a prospective research registry to the SAT enables a randomized comparison with patients who were not invited to the trial, as the data on outcomes for the latter can be obtained from routine data. In @fig-dags $Z$ is the indicator for selection for invitation to the SAT, $A$ indicates whether a patient was invited to the study *and* accepted, $S$ indicates the selection into the population who accepted the invitation, $Y$ denotes the outcome of a patient, and $U$ denotes a set of unmeasured causes $A$ and $Y$. Selection for invitation to the trial ($Z$) and the outcomes of interest ($Y$) have no common causes, because the decision to select a patient for invitation to the SAT was made at random.
 
 As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT ($A$) is not random and likely to be influenced by factors ($U$) which also cause the outcome. If we restricted the analysis to patients who have accepted the invitation (as represented by a box around $S$), we would be conditioning on the child of a mediator, leading to collider bias. In other words, patients who were selected for invitation to the SAT and patients who could have been selected but were not are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
 
-**Even though LIQPLAT is not a randomized controlled trial, when considering selection for invitation to the trial as treatment, it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where we consider invitation to the SAT as the treatment.** An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
+**Even though LIQPLAT is not a randomized controlled trial, when considering selection for invitation to the trial as treatment, it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where [we consider invitation to the SAT as the "treatment"]{.underline}.** An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
 
 ::: {#fig-dags layout-ncol="2"}
 ![Dag 1](img/dag-1.b-simplified.svg){#fig-dag1}
@@ -253,7 +255,7 @@ Secondary endpoints as described in the protocol (e.g., Progression-Free Surviva
 
 ### Intention-to-Treat (ITT) Population
 
-The ITT population includes all patients from the prospective research registry who were eligible for LIQPLAT according to the criteria in @sec-eligibility and were considered for random invitation. It comprises two groups defined by the random selection process:
+The ITT population includes all patients from the prospective research registry who were eligible for LIQPLAT according to the criteria in @sec-eligibility and were considered for random selection for invitation. It comprises two groups defined by the random selection process:
 
 1.  **SAT Group (Selected for Invitation):** All eligible patients randomly selected for invitation to participate in the LIQPLAT SAT.
 2.  **External Comparator (Not Selected for Invitation):** All eligible patients who were considered for invitation but not randomly selected during the same recruitment period.
@@ -334,13 +336,13 @@ For each analysis model, we will first fit the model without the treatment indic
 
 The trial aims to enroll $150$ participants who accept the invitation to the single-arm trial (SAT). This target sample size is driven by feasibility, including logistical constraints (such as a maximum of three invitations per week) and the capacity of the Department of Pathology. Based on estimates of patient acceptance, we anticipate needing to invite approximately $180$ eligible patients to achieve this target (an acceptance rate of $\approx 83 \%$).
 
-The random invitation process, as described in @sec-eligibility, uses a $2:1$ allocation ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected external comparator (not selected for invitation) of approximately $90$ patients.
+The random invitation process, as described in @sec-eligibility, uses a $2:1$ ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected external comparator (not selected for invitation) of approximately $90$ patients.
 
 Therefore, the ITT population for the randomized comparison is expected to be $N = 270$. All simulation studies for power and operating characteristics are based on this total sample size of $N = 270$.
 
 This trial is not formally powered for a single primary endpoint using a frequentist framework, as the sample size is fixed by feasibility. Instead, the Bayesian analyses will provide posterior distributions and probabilities of benefit for the three primary endpoints. The operating characteristics presented in the analysis sections provide an indication of the study's ability to detect various plausible effect sizes given this fixed sample size.
 
-The primary estimand for all outcomes is the effect of the treatment policy, which compares the group selected for invitation to the group not selected for invitation. This treatment policy estimand is inherently diluted by non-adherence (i.e., the $\approx 30$ patients in the $A=1$ group who are expected to decline participation).
+The primary estimand for all outcomes is the effect of the treatment policy, which compares the group selected for invitation to the group not selected for invitation. This treatment policy estimand is inherently diluted by non-adherence (i.e., the $\approx 30$ patients in the group selection for invitation to the SAT who are expected to decline participation).
 
 The simulations (e.g., for TAOOH, @tbl-oper-char-toh-ha) do not explicitly model this non-uptake mechanism. Instead, the true effect sizes used in the simulations (e.g., a true OR of $0.7$) are assumed to represent this already-diluted ITT effect. In other words, a simulated OR of 0.7 reflects the average effect of the invitation strategy across all 180 invited patients (including non-acceptors), compared to the $90$ non-invited patients.
 
@@ -357,9 +359,9 @@ The estimand definition for Overall Survival is summarized in @tbl-os-estimand.
 +:========================+:=====================================================================================================+
 | **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first line therapy. |
 +-------------------------+------------------------------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to the SAT. \|                                                       |
+| **Treatment Arms**      | (A=1): Selection for invitation to the SAT.                                                          |
 |                         |                                                                                                      |
-|                         | (A=0): No selection for invitation. \|                                                               |
+|                         | (A=0): No selection for invitation.                                                                  |
 +-------------------------+------------------------------------------------------------------------------------------------------+
 | **Variable**            | Time-to-event: Time (in days) from random selection to death from any cause.                         |
 +-------------------------+------------------------------------------------------------------------------------------------------+
@@ -374,7 +376,7 @@ The estimand definition for Overall Survival is summarized in @tbl-os-estimand.
 
 #### Formal Definition
 
-We use the potential outcomes framework [@Rubin2005-wc]. Let $T_i^a$ be the potential time-to-death for individual $i$ under treatment assignment $a \in \{0, 1\}$. The survival function under treatment $a$ is $S^a(t) = P(T^a > t)$.
+We use the potential outcomes framework [@Rubin2005-wc]. Let $T_i^a$ be the potential time-to-death for individual $i$ under treatment assignment $a \in \{0, 1\}$, where $1$ stands for selection for invitation to the SAT and $0$ stands for for not having been selected for invitation. The survival function under treatment $a$ is $S^a(t) = P(T^a > t)$.
 
 The Restricted Mean Survival Time (RMST) under treatment $a$ up to the time horizon $t_{max}=182$ days is the area under the survival curve:
 
@@ -440,18 +442,19 @@ Given the expected number of events (approximately 50) in the ITT population of 
 $$
 \begin{aligned}        
 \eta_i &= \beta_0 + \beta_{tx} \cdot \text{tx}_i + \beta_{ecog} \cdot \text{ecog}_{i} + \beta_{stage} \cdot \text{stage}_i \\
-&\quad + \sum_{j=1}^{2} \beta_{mGPS, j} \cdot \text{mGPS}_{ij}
+&\quad + \beta_{lung} \cdot \text{lung}_i + \sum_{j=1}^{2} \beta_{mGPS, j} \cdot \text{mGPS}_{ij}
 \end{aligned}
 $$
 
 where:
 
 -   $\beta_{tx}$ is the effect of treatment (selection for invitation to the SAT),
--   $\text{ecog}_i$ is a binary indicator for ECOG performance status ($0$ if ECOG 0-1, $1$ if ECOG $\geq 2$),
+-   $\text{ecog}_i$ is a binary indicator for ECOG performance status ($0$ if ECOG $\leq 1$, $1$ if ECOG $> 1$),
 -   $\text{stage}_i$ is a binary indicator for disease stage ($0$ if locally advanced non-operable, $1$ if metastatic),
--   $\text{mGPS}_{ij}$ represents the modified Glasgow Prognostic Score (mGPS) categories, coded as dummy variables for $j \in \{1, 2\}$ (with mGPS=0 as reference).
+-   $\text{lung}_i$ is a binary indicator for the primary diagnosis ($1$ if lung cancer, $0$ if otherwise)
+-   $\text{mGPS}_{ij}$ represents the modified Glasgow Prognostic Score (mGPS) [@Proctor2011-tc] categories, coded as dummy variables for $j \in \{1, 2\}$ (with mGPS=0 as reference).
 
-The modified Glasgow Prognostic Score (mGPS) [@Proctor2011-tc] is a validated prognostic tool based on serum CRP and albumin levels:
+The mGPS is a validated prognostic tool based on serum CRP and albumin levels:
 
 -   **mGPS = 0:** CRP $\leq 10$ mg/L (regardless of albumin)
 -   **mGPS = 1:** CRP $> 10$ mg/L and albumin $\geq 35$ g/L
@@ -464,7 +467,8 @@ $$
 \beta_0 &\sim \mathcal{N}(0, 20) \\     
 \beta_{tx} &\sim \mathcal{N}(0, 0.55) \\     
 \beta_{\text{ecog}} &\sim \mathcal{N}(0, 2.5) \\
-\beta_{\text{stage}} &\sim \mathcal{N}(0, 2.5) \\ 
+\beta_{\text{stage}} &\sim \mathcal{N}(0, 2.5) \\
+\beta_{\text{lung}} &\sim \mathcal{N}(0, 2.5) \\ 
 \beta_{\text{mGPS}, j \in 1,2} &\sim \mathcal{N}(0, 2.5) \\
 \gamma &\sim \text{Dirichlet}(\mathbf{1}_5) 
 \end{aligned}
@@ -484,9 +488,7 @@ Besides the RMST, we will also derive risk differences and risk ratios at 6 mont
 
 We evaluated the operating characteristics OS endpoint through a simulation study based on historical patient data.
 
-To ensure realistic survival trajectories, we generated data using a second-order Markov ordinal transition model fitted to historical *daily* status data from the Division of Medical Oncology. This model predicts daily transitions between five health states, where State 5 (Death) is an absorbing state. For each simulation iteration, we generated trajectories for $N=270$ patients, allocated 2:1 to the intervention ($n=180$) and control ($n=90$) arms, mirroring the trial's fixed sample size.
-
-We defined a null scenario (H0) and several alternative scenarios (HA) by introducing a treatment effect into the transition model. The treatment effect was implemented as an odds ratio (OR) applied to the daily transitions, reducing the probability of moving to a worse health state (including death).
+To ensure realistic survival trajectories, we generated data using a second-order Markov ordinal transition model fitted to historical *daily* status data from the Division of Medical Oncology. This model predicts daily transitions between five health states, where State 5 (Death) is an absorbing state. For each simulation iteration, we generated trajectories for $N=270$ patients. We defined a null scenario (H0) and several alternative scenarios (HA) by introducing a treatment effect into the transition model. The treatment effect was implemented as an odds ratio (OR) applied to the daily transitions, reducing the probability of moving to a worse health state (including death).
 
 These transition-based effects were mapped to the primary estimand, the difference in RMST at 6 months:
 
@@ -534,15 +536,15 @@ rmst_sim |>
 
 We will visualize the survival curves and $\tau_{OS}$ as shown in @fig-os-survcurves and @fig-os-tau.
 
-![This figure shows the model derived marginal survival curves, with the Kaplan-Meier curves overlaid as dashed lines. The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days). Abbreviations: SAT; single-arm trial, SoC; standard of care.](img/fig-os-survcurves.svg){#fig-os-survcurves width="500"}
+![This figure shows the model derived marginal survival curves, with the Kaplan-Meier curves overlaid as dashed lines. The sample ($n=270$) is from simulated data with a true underlying $OR = 0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days). Abbreviations: SAT; single-arm trial, UC; usual care.](img/fig-os-survcurves.svg){#fig-os-survcurves width="500"}
 
-![Posterior distribution of the primary estimand, the expected difference the restricted mean survival time ($\hat{\tau}_{OS}$). The sample ($n=270$) is from simulated data with a true underlying odds ratio of $0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days). The 66% and 95% credible interval are shown. Abbreviations: SAT; single-arm trial, SoC; standard of care.](img/fig-os-tau.svg){#fig-os-tau width="500"}
+![Posterior distribution of the primary estimand, the expected difference the restricted mean survival time ($\hat{\tau}_{OS}$). The sample ($n=270$) is from simulated data with a true underlying odds ratio of $0.9$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{OS} \approx 3$ days). The 66% and 95% credible interval are shown. Abbreviations: SAT; single-arm trial, UC; usual care.](img/fig-os-tau.svg){#fig-os-tau width="500"}
 
 ## Quality of Life
 
 ### Data
 
-In LIQPLAT QoL, measured using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^3] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
+In LIQPLAT, QoL is recorded using the European Organisation for Research and Treatment of Cancer (EORTC) QLQ-C30 and QLQ-C15 questionnaires [@Fayers2002-ra].[^3] The QoL scale (question 30) is an ordinal outcome with seven levels, ranging from 1 (very poor) to 7 (excellent), as shown below:
 
 [^3]: The EORTC's scoring manual advocates for treating the responses as numeric [@Fayers2001-jv], which we will not do. The shortcomings of treating ordinal scores as if they were numeric have explained in detail elsewhere [@Liddell2018-zj].
 
@@ -680,7 +682,7 @@ The handling of intercurrent events for the QoL analysis is described in @tbl-qo
 : Handling of intercurrent events for Quality of Life analysis. {#tbl-qol-ie}
 :::
 
-::: callout-warning
+::: {.callout-important icon="false"}
 **Informative Missingness due to Routine Care Data Collection**: A design limitation is that QoL is measured during routine appointments. If the ctDNA strategy influences clinical decisions (e.g., earlier switch to best supportive care , different follow-up intensity), it affects *both* the patient's true QoL *and* the probability of observing QoL. This creates a potential for informative missingness. To assess the potential for differential informative missingness, we will compare the cumulative incidence of switching to best supportive care between the two trial arms. If the rates and timing of switching to best supportive care are similar between groups, it reduces the concern that missingness driven by palliative care transitions biases the treatment comparison.
 :::
 
@@ -793,15 +795,15 @@ Key assumptions
 *(+) Indicates that we are confident the assumption is valid, (+/-) indicates that we are uncertain regarding its validity, (-) indicates that we believe the assumption to be strenuous.*
 :::
 
-Given these assumptions, especially assumptions six to eight, we have **low confidence** in the results. Nevertheless, we believe that other analysis options we have explored are less optimal and would lead us to have very low confidence.
+Given these assumptions, especially assumptions six to eight, we have **low confidence** in the results. Nevertheless, we believe that all other analysis options we have explored are less optimal and would lead us to have very low confidence.
 
 #### Visualization of Estimate
 
 We will visualize the SOPs and $\tau_{QoL}$ as shown below.
 
-![Marginal state occupancy probabilities with 95% credible bands based the model fitted to a sample ($n=216$) from simulated data with a true difference in good or better Quality of Life of $2$ weeks. State occupancy probabilities have been grouped for illustrative purposes. States 1 to 3 are categorized as 'Good', state 4 as 'Average', and states 5-7 as 'Bad' Quality of Life.](img/qol-primary-estimand-sop-line-grouped.svg){#fig-qol-sops}
+![Marginal state occupancy probabilities with 95% credible bands based the model fitted to a sample ($n=216$) from simulated data with a true difference in good or better Quality of Life of $2$ weeks. State occupancy probabilities have been grouped for illustrative purposes. States 1 to 3 are categorized as 'Good', state 4 as 'Average', and states 5-7 as 'Bad' Quality of Life. Abbreviations: SAT; single-arm trial.](img/qol-primary-estimand-sop-line-grouped.svg){#fig-qol-sops width="500"}
 
-![Posterior distribution of the estimated difference in weeks with good or better quality of life ($\hat{\tau}_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=216$) of simulated data with a true underlying difference of two weeks. Larger values favour the group selected for invitation to the SAT.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
+![Posterior distribution of the estimated difference in weeks with good or better quality of life ($\hat{\tau}_{QoL}$), defined as state 1, 2, or 3, based on a sample ($n=216$) of simulated data with a true underlying difference of two weeks. Larger values favour the group selected for invitation to the SAT. Abbreviations: SAT; single-arm trial, UC; usual care.](img/qol-primary-estimand-posterior.svg){#fig-qol-tau width="500"}
 
 #### Operating Characteristics
 
@@ -981,9 +983,9 @@ To validate that our model adequately captures the complex longitudinal dependen
 
 We will visualize the SOPs and $\tau_{TAOOH}$ as shown in @fig-taooh-sops and @fig-taooh-tau.
 
-![The left plot shows the empirical state occupancy probabilities (SOP) based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{TAOOH} \approx 1.2$ weeks). The right plot shows the marginalized SOPs derived from the fitted model with 95 per cent credible bands.](img/taooh_sop_comp.svg){#fig-taooh-sops}
+![The left plot shows the empirical state occupancy probabilities (SOP) based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau_{TAOOH} \approx 1.2$ weeks). The right plot shows the marginalized SOPs derived from the fitted model with 95 per cent credible bands. Abbreviations: SAT; single-arm trial.](img/taooh_sop_comp.svg){#fig-taooh-sops width="500"}
 
-![Posterior distribution of the primary estimand, the expected difference in weeks alive and out of hospital ($\hat{\tau}_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the single-arm trial.](img/taooh_primary_estimand_conservative-prior.svg){#fig-taooh-tau width="500"}
+![Posterior distribution of the primary estimand, the expected difference in weeks alive and out of hospital ($\hat{\tau}_{TAOOH}$), defined as state 1, based on a sample ($n=270$) from simulated data with a true underlying $OR = 0.8$ for transitioning to a worse state for the group selected for invitation to the single-arm trial ($\tau \approx 1.2$ weeks). Larger values favour the group invited to the single-arm trial. Abbreviations: SAT; single-arm trial, UC; usual care.](img/fig-taooh-tau.svg){#fig-taooh-tau width="500"}
 
 #### Operating Characteristics
 
@@ -994,7 +996,7 @@ summary_h0 <- readRDS("./2-hosp/output/sim-summary_h0.rds")
 summary_ha <- readRDS("./2-hosp/output/sim-summary_ha.rds")
 ```
 
-@tbl-oper-char-toh-ha shows frequentist operating characteristics of the second-order transition model for TAOOH. To generate plausible trajectories, we fit a second-order markov model on historical data, and used its parameters to generated datasets with known treatment effects; $OR \in \{0.0, 0.7, 0.8, 0.9\}$. In our historical data, this approximately equaled the following differences in the weeks spent at home and alive over 26 weeks $\tau_{TAOOH} \in \{0, 0.6, 1.2, 1.8\}$. More information on the data generation can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/5-sim-datasets.pdf). For each scenario, 1,000 datasets were simulated and analyzed using the second-order transition model (without covariates). The power is estimated as the proportion of simulations where the posterior probability of any benefit exceeds 0.95.
+@tbl-oper-char-toh-ha shows frequentist operating characteristics of the second-order transition model for TAOOH. To generate plausible trajectories, we fit a second-order Markov model on historical data, and used its parameters to generated datasets with known treatment effects; $OR \in \{0.0, 0.7, 0.8, 0.9\}$. In our historical data, this approximately equaled the following differences in the weeks spent at home and alive over 26 weeks $\tau_{TAOOH} \in \{0, 0.6, 1.2, 1.8\}$. More information on the data generation can be found [here](https://github.com/scjohannes/liqplat-stat/blob/main/2-hosp/5-sim-datasets.pdf). For each scenario, 1,000 datasets were simulated and analyzed using the second-order transition model (without covariates). The power is estimated as the proportion of simulations where the posterior probability of any benefit exceeds 0.95.
 
 ```{r}
 #| echo: false
@@ -1041,11 +1043,13 @@ We will conduct sensitivity analyses for each of the three primary outcomes to a
 
 ## Overall Survival
 
-As a sensitivity analysis for OS, we will fit a non-proportional hazards model to assess whether the proportional hazards assumption is violated. Specifically, we will model time-varying treatment effects using cubic B-splines with 3 degrees of freedom for the interaction between treatment and time.
+As a sensitivity analysis for OS, we will fit a non-proportional hazards model. Specifically, we will model time-varying treatment effects using cubic B-splines with 3 degrees of freedom for the interaction between treatment and time.
 
 ## Time Alive and Out of Hospital
 
 As a sensitivity analysis for TAOOH, we will fit a first-order Markov model (conditioning only on $y_{t-1}$ rather than both $y_{t-1}$ and $y_{t-2}$). While the primary second-order model was selected based on model fit criteria in historical data, this sensitivity analysis will assess whether the additional complexity of the second-order specification materially affects our conclusions. If results are consistent between the first-order and second-order models, this would strengthen confidence in the robustness of our findings.
+
+As an additional sensitivity analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death.
 
 ## Quality of Life
 
@@ -1067,7 +1071,7 @@ The following secondary outcomes are considered exploratory and focus on the imp
 
 ### Invitation Offered by Physician
 
-Among patients selected for invitation, we estimate the proportion who were offered participation by their physician using a Bayesian multilevel logistic regression:
+Among patients selected for invitation, we estimate the proportion who were offered participation by their physician using logistic regression:
 
 $$
 \begin{align*}
@@ -1078,11 +1082,11 @@ $$
 
 where $i$ indexes patients.
 
-**Derived Quantities:** We will report the marginal probability of being offered participation. Exploratory analyses will assess differences by sex and age group.
+**Derived Quantities:** We will report the marginal probability of being offered participation. Exploratory analyses will assess differences by sex and age.
 
 ### Patient Acceptance of Invitation
 
-Among patients who were offered participation, we estimate the proportion who provided informed consent using a Bayesian multilevel logistic regression:
+Among patients who were offered participation, we estimate the proportion who provided informed consent using logistic regression:
 
 $$
 \begin{align*}
@@ -1122,7 +1126,7 @@ $$
 \end{align*}
 $$
 
-where $i$ indexes patients, $\mathbf{X}_i$ represents histological types of the a patient's cancer with coefficients $\boldsymbol{\beta_1}$.
+where $i$ indexes blood samples, $\mathbf{X}_i$ represents histological types of the a corresponding patient's cancer with coefficients $\boldsymbol{\beta_1}$.
 
 **Derived Quantities:** We will report the marginal probability of ctDNA detection at baseline. Exploratory analyses will evaluate differences by histological subtype.
 
@@ -1165,13 +1169,13 @@ where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}
 
 We evaluate the time from treatment initiation to the first occurrence of treatment switch or discontinuation. We estimate the cause-specific hazard, i.e., we censor patients who die prior to switching or stopping.
 
-We use the same Bayesian proportional hazards model specified for Overall Survival (@sec-os-analysis). The primary estimand is the cause-specific hazard ratio.
+We use the same proportional hazards model specified for Overall Survival (@sec-os-analysis). The primary estimand is the cause-specific hazard ratio.
 
 ### Time to Best Supportive Care
 
 We evaluate the time from first-line treatment initiation to the switch to best supportive care. To specifically assess the timing of the decision to transition to palliative care (as a proxy for recognizing ineffective therapy) conditional on the patient being alive, we estimate the cause-specific hazard, i.e., patients who die without having switched to best supportive care are censored at the date of death.
 
-We use the same Bayesian proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the cause-specific hazard ratio.
+We use the same proportional hazards model as specified for Overall Survival (@sec-os-analysis). We will report the posterior distribution of the cause-specific hazard ratio.
 
 ### Targeted Therapy Use
 
@@ -1202,7 +1206,7 @@ $$
 
 where $Y_{i}$ is the count of transfusions for patient $i$, $t_{i}$ is the follow-up time, $grp_i$ is the treatment group indicator, $hgb_i$ is the hemoglobin concentration at baseline, $plt_i$ is the platelet count at baseline, $age_i$ is the age at baseline, $crea_i$ is creatinine at baseline, and $\phi$ is the overdispersion parameter. The functions $f_1(\cdot)$ to $f_4(\cdot)$ are modeled using restricted cubic splines with 3 knots.
 
-**Derived Quantities:** The marginal rate ratio and difference in the rate of transfusions between groups will be reported.
+**Derived Quantities:** The marginalized rate ratio and difference in the rate of transfusions between groups will be reported.
 
 # Long-term Follow-up Analyses
 
@@ -1975,18 +1979,18 @@ Survival time is censored at 182 days (6 months) for the primary analysis. The d
 #| echo: false
 df <- df_raw |> 
   mutate(
-    diagnosis = fct_lump_n(diagnosis, n = 4),
-    diagnosis = factor(as.integer(diagnosis)),
+    lung = fct_lump_n(diagnosis, n = 1), # top diagnosis is lung-cancer in historical data
+    lung = factor(as.integer(lung)),
     event_death   = if_else(survival_time <= 182, 1, 0),
     survival_time = pmin(survival_time, 182),
     tx            = factor(tx),
-    ecog_fstcnt = factor(ecog_fstcnt, ordered = TRUE)
+    ecog_binary = factor(if_else(ecog_fstcnt == "0" | ecog_fstcnt == "1", "<=1", ">1"))
   ) |> 
   select(
     pat_id,
     gender,
     age,
-    ecog_fstcnt,
+    ecog_binary,
     tx,
     albumin,
     bilirubin,
@@ -1994,7 +1998,7 @@ df <- df_raw |>
     lactate_dehydrogenase,
     event_death,
     survival_time,
-    diagnosis
+    lung
   ) |> 
   relocate(pat_id, event_death, survival_time)
 ```
@@ -2014,23 +2018,27 @@ Following @Mathur2025-sl, we restrict the imputation model to variables included
 
 #### Analysis Variables
 
-+----------------------+------------------------------------------------+----------------+
-| Variable             | Description                                    | Type           |
-+======================+================================================+================+
-| `tx`                 | Treatment group allocation                     | Binary         |
-+----------------------+------------------------------------------------+----------------+
-| `ecog_fstcnt`        | ECOG performance status at baseline (0–4)      | Ordered factor |
-+----------------------+------------------------------------------------+----------------+
-| `stage`              | Tumor stage (locally advanced vs metastasized) | Binary         |
-+----------------------+------------------------------------------------+----------------+
-| `albumin`            | Serum albumin at baseline (g/L)                | Continuous     |
-+----------------------+------------------------------------------------+----------------+
-| `c_reactive_protein` | C-reactive protein at baseline (mg/L)          | Continuous     |
-+----------------------+------------------------------------------------+----------------+
-| `event_death`        | Death indicator (within 182 days)              | Binary         |
-+----------------------+------------------------------------------------+----------------+
++----------------------+-----------------------------------------------------------------------+-------------+
+| Variable             | Description                                                           | Type        |
++======================+=======================================================================+=============+
+| `tx`                 | Treatment group allocation                                            | Binary      |
++----------------------+-----------------------------------------------------------------------+-------------+
+| `ecog_binary`        | ECOG performance status at baseline (\<= 1 vs \> 1)                   | Binary      |
++----------------------+-----------------------------------------------------------------------+-------------+
+| `stage`              | Tumor stage (locally advanced vs metastasized)                        | Binary      |
++----------------------+-----------------------------------------------------------------------+-------------+
+| `albumin`            | Serum albumin at baseline (g/L)                                       | Continuous  |
++----------------------+-----------------------------------------------------------------------+-------------+
+| `c_reactive_protein` | C-reactive protein at baseline (mg/L)                                 | Continuous  |
++----------------------+-----------------------------------------------------------------------+-------------+
+| `lung`               | Indicator for the primary diagnosis (1 if lung cancer, 0 if otherise) | Binary      |
++----------------------+-----------------------------------------------------------------------+-------------+
+| `event_death`        | Death indicator (within 182 days)                                     | Binary      |
++----------------------+-----------------------------------------------------------------------+-------------+
 
 : Analysis variables included in the imputation model {#tbl-analysis-vars}
+
+Albumin and CRP will be summarized into the mGPS before analysis.
 
 #### Auxiliary Variables
 
@@ -2054,25 +2062,27 @@ Following @Mathur2025-sl, we restrict the imputation model to variables included
 
 #### Imputation Methods
 
-+-------------------------+--------------+-----------------------------------------------------------+
-| Variable                | Method       | Description                                               |
-+=========================+==============+===========================================================+
-| `ecog_fstcnt`           | `polr`       | Proportional odds logistic regression for ordered factors |
-+-------------------------+--------------+-----------------------------------------------------------+
-| `stage`                 | `logreg`     | Logistic regression for binary variables                  |
-+-------------------------+--------------+-----------------------------------------------------------+
-| `albumin`               | `pmm`        | Predictive mean matching for continuous variables         |
-+-------------------------+--------------+-----------------------------------------------------------+
-| `bilirubin`             | `pmm`        | Predictive mean matching for continuous variables         |
-+-------------------------+--------------+-----------------------------------------------------------+
-| `c_reactive_protein`    | `pmm`        | Predictive mean matching for continuous variables         |
-+-------------------------+--------------+-----------------------------------------------------------+
-| `lactate_dehydrogenase` | `pmm`        | Predictive mean matching for continuous variables         |
-+-------------------------+--------------+-----------------------------------------------------------+
++-------------------------+--------------+---------------------------------------------------+
+| Variable                | Method       | Description                                       |
++=========================+==============+===================================================+
+| `ecog_fstcnt`           | `logreg`     | Logistic regression for binary variables          |
++-------------------------+--------------+---------------------------------------------------+
+| `stage`                 | `logreg`     | Logistic regression for binary variables          |
++-------------------------+--------------+---------------------------------------------------+
+| `albumin`               | `pmm`        | Predictive mean matching for continuous variables |
++-------------------------+--------------+---------------------------------------------------+
+| `bilirubin`             | `pmm`        | Predictive mean matching for continuous variables |
++-------------------------+--------------+---------------------------------------------------+
+| `c_reactive_protein`    | `pmm`        | Predictive mean matching for continuous variables |
++-------------------------+--------------+---------------------------------------------------+
+| `lactate_dehydrogenase` | `pmm`        | Predictive mean matching for continuous variables |
++-------------------------+--------------+---------------------------------------------------+
 
 : Imputation methods by variable {#tbl-methods}
 
-Predictive mean matching (PMM) is used for continuous variables to preserve the marginal distributions and avoid imputing implausible values. We use Type 1 PMM with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapter 3.4]. For ordered categorical variables (ECOG), proportional odds logistic regression (`polr`) maintains the ordinal structure.
+`tx`, `lung`, `event_death`, `age`, and `gender` are never missing.
+
+Predictive mean matching (PMM) is used for continuous variables to preserve the marginal distributions and avoid imputing implausible values. We use Type 1 PMM with a donor pool of $k = 5$ [@van-Buuren2021-pc, chapter 3.4].
 
 #### Predictor Matrix Configuration
 
@@ -2086,7 +2096,7 @@ The predictor matrix is configured to:
 #| echo: true
 #| output: false
 
-# Note: We don't have stage well defined in historic data, so we will use diagnosis (5 level factor) instead for illustrative purposes
+# Note: We don't have stage well defined in historic data
 md.pattern(df)
 
 init <- mice(df, maxit = 0)
@@ -2104,8 +2114,8 @@ pred_matrix["survival_time", ] <- 0
 meth["survival_time"] <- ""
 
 imputed_data <- mice(df,
-                     m = 5,      # 50 in final analysis
-                     maxit = 5,  # 50 in final analysis
+                     m = 10,      # 50 in final analysis
+                     maxit = 10,  # 50 in final analysis
                      predictorMatrix = pred_matrix,
                      method = meth,
                      donors = 5,
@@ -2149,7 +2159,7 @@ densityplot(imputed_data)
 #| fig-cap: "Density plot for ECOG performance status."
 #| fig-width: 5
 #| fig-height: 3
-densityplot(imputed_data, ~ecog_fstcnt)
+densityplot(imputed_data, ~ecog_binary)
 ```
 
 ```{r}
@@ -2165,7 +2175,7 @@ stripplot(imputed_data, albumin + bilirubin + c_reactive_protein + lactate_dehyd
 #| fig-cap: "Strip plot of imputed values for ECOG performance status across imputed datasets."
 #| fig-width: 5
 #| fig-height: 3
-stripplot(imputed_data, ecog_fstcnt ~ .imp)
+stripplot(imputed_data, ecog_binary ~ .imp)
 ```
 
 ### Analysis of Trial Data
@@ -2246,7 +2256,7 @@ prior <- normal(
 
 # Fit the model
 model_os <- stan_surv(
-    formula = Surv(day, death) ~ tx + ecog_binary + stage_binary + 
+    formula = Surv(day, death) ~ tx + ecog_binary + stage_binary + lung + 
               mgps,
     data = data,
     basehaz = "ms",
@@ -2471,6 +2481,7 @@ The predict function from rmsb ignores random effects.
 #| eval: FALSE 
 #| echo: TRUE
 predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
+  # --- 0) Prerequisite Checks ---
   if (!is.data.frame(newdata)) {
     stop("`newdata` must be a data frame.")
   }
@@ -2480,22 +2491,43 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
   
   N_new <- nrow(newdata)
 
-  # --- 1) Get the design matrix for the new data ---
+  # --- 1) Get the design matrices for the new data ---
   X <- rms::predictrms(fit, newdata = newdata, type = 'x')
-
+  
   # --- 2) Extract posterior draws and model information ---
   draws <- fit$draws
   ndraws <- nrow(draws)
   ns <- fit$non.slopes
   K <- ns + 1
+  pppo <- fit$pppo
   
   intercept_draws <- draws[, 1:ns, drop = FALSE]
-  beta_draws <- draws[, (ns + 1):ncol(draws), drop = FALSE]
+  
+  # Extract beta coefficients (excluding intercepts and tau parameters)
+  cn <- colnames(draws)
+  tauinfo <- fit$tauInfo
+  betanam <- setdiff(cn, c(cn[1:ns], tauinfo$name))
+  beta_draws <- draws[, betanam, drop = FALSE]
+  
+  # Extract non-proportional odds parameters if they exist
+  has_npo <- pppo > 0
+  if (has_npo) {
+    Z <- rms::predictrms(fit, newdata = newdata, type = 'x', second = TRUE)
+    tau_draws <- draws[, tauinfo$name, drop = FALSE]
+    cppo <- fit$cppo
+    ylevels <- fit$ylevels
+    cppos <- sapply(ylevels[-1], cppo)  # Evaluate cppo for each threshold
+  }
 
   # --- 3) Calculate the fixed-effect linear predictor (eta_fixed) ---
-  eta_fixed <- beta_draws %*% t(X)
+  xb <- beta_draws %*% t(X)
+  
+  # --- 4) Calculate non-proportional odds linear predictor if applicable ---
+  if (has_npo) {
+    zt <- tau_draws %*% t(Z)
+  }
 
-  # --- 4) Get the random effect draws (u_draws) if requested ---
+  # --- 5) Get the random effect draws (u_draws) if requested ---
   u_draws <- matrix(0, nrow = ndraws, ncol = N_new)
   
   if (include_re) {
@@ -2511,25 +2543,34 @@ predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
     u_draws <- all_gamma_draws[, patient_ids, drop = FALSE]
   }
 
-  # --- 5) Calculate the total linear predictor (eta) ---
-  stopifnot(all(dim(eta_fixed) == dim(u_draws)))
-  eta <- eta_fixed + u_draws
-
   # --- 6) Calculate probabilities for each observation and each draw ---
   p_cat_draws_list <- vector("list", N_new) 
   
   for (i in 1:N_new) {
-    eta_i <- eta[, i]
-    s_ge <- plogis(sweep(intercept_draws, 1, eta_i, "+"))
+    # Compute cumulative probabilities P(Y >= k) for each threshold k
+    cum_probs <- matrix(NA_real_, nrow = ndraws, ncol = ns)
     
+    for (k in 1:ns) {
+      # Linear predictor for threshold k: alpha[k] + X*beta + cppo(ylevels[k+1])*Z*tau + u
+      ep <- intercept_draws[, k] + xb[, i] + u_draws[, i]
+      
+      # Add non-proportional odds effect (scaled by cppo value) for this threshold
+      if (has_npo) {
+        ep <- ep + cppos[k] * zt[, i]
+      }
+      
+      cum_probs[, k] <- plogis(ep)
+    }
+    
+    # Convert cumulative probabilities to category probabilities
     p_cat_draws <- matrix(NA_real_, nrow = ndraws, ncol = K)
-    p_cat_draws[, 1] <- 1 - s_ge[, 1]
+    p_cat_draws[, 1] <- 1 - cum_probs[, 1]
     if (K > 2) {
       for (kk in 2:(K - 1)) {
-        p_cat_draws[, kk] <- s_ge[, kk - 1] - s_ge[, kk]
+        p_cat_draws[, kk] <- cum_probs[, kk - 1] - cum_probs[, kk]
       }
     }
-    p_cat_draws[, K] <- s_ge[, K - 1]
+    p_cat_draws[, K] <- cum_probs[, K - 1]
     colnames(p_cat_draws) <- paste0("y=", 1:K)
     
     p_cat_draws_list[[i]] <- p_cat_draws
