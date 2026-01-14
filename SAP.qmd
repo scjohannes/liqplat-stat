@@ -1295,7 +1295,7 @@ The substantive analysis model includes only patients who survived beyond 182 da
 
 #### Variable Transformations
 
-Ordered factors (ECOG, QoL, distress) are converted to numeric format for imputation. This avoids sparse dummy variable matrices that can cause convergence issues in MICE. Predictive mean matching preserves the discrete nature of these variables by imputing only observed values.
+Ordered factors (ECOG, QoL) are converted to numeric format for imputation. This avoids sparse dummy variable matrices that can cause convergence issues in MICE. Predictive mean matching preserves the discrete nature of these variables by imputing only observed values.
 
 ```{r}
 #| echo: false
@@ -1314,7 +1314,6 @@ imputation_vars <- c(
   "diagnosis",
   "plan_fstcnt_coded",
   "week",
-  "distress",
   "q30"
   # Variables available in trial data but not in historical dataset:
   # "albumin",
@@ -1325,7 +1324,6 @@ df <- df_raw |>
   filter(quest_day <= 182, (is.na(death_day) | death_day >= 182)) |>
   mutate(
     tx = if_else(pat_id %in% tx, "1", "0"),
-    distress = as.numeric(as.factor(coalesce(distress_therm_2, distress_therm_v2, distress_therm_inpat)), ordered = TRUE),
     week = ceiling(quest_day / 7),
     diagnosis = fct_lump_n(diagnosis, n = 4),
     diagnosis = factor(as.integer(diagnosis)),
@@ -1395,8 +1393,6 @@ The imputation model includes variables from the substantive analysis model and 
 +----------------------+---------------------------------------------+---------------+
 | Variable             | Description                                 | Level         |
 +======================+=============================================+===============+
-| `distress`           | Distress thermometer score (0–10)           | Longitudinal  |
-+----------------------+---------------------------------------------+---------------+
 | `plan_fstcnt_coded`  | Treatment intent at baseline (5 categories) | Baseline      |
 +----------------------+---------------------------------------------+---------------+
 | `albumin`            | Serum albumin at baseline (g/L)             | Baseline      |
@@ -1465,7 +1461,6 @@ pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl
 
 # Longitudinal variables: multilevel PMM
 meth["q30"] <- "2l.pmm"
-meth["distress"] <- "2l.pmm"
 
 # Baseline variables: cluster-level PMM
 meth["ecog_fstcnt"] <- "2lonly.pmm"
@@ -1531,15 +1526,6 @@ stripplot(imputed_data, baseline_q30 + ecog_fstcnt + diagnosis + plan_fstcnt_cod
 xyplot(imputed_data, q30 ~ week | .imp, pch = c(1, 20))
 xyplot(imputed_data, q30 ~ week | tx, pch = c(1, 20))
 xyplot(imputed_data, q30 ~ baseline_q30 | .imp, pch = c(1, 20))
-```
-
-```{r}
-#| fig-cap: "Scatter plot of QoL against distress thermometer score by imputed dataset."
-#| echo: false
-#| fig-height: 5
-#| fig-width: 8
-
-xyplot(imputed_data, q30 ~ distress | .imp, pch = c(1, 20))
 ```
 
 ### Analysis of Trial Data
