@@ -46,17 +46,21 @@ library(arrow)
 
 ## Roles and responsibilities
 
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Name              | Affiliation                                          | Role                                            |
-+:==================+:=====================================================+:================================================+
-| Johannes Schwenke | University of Basel and University Hospital of Basel | Trial Statistician                              |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Giusi Moffa       | Independent                                          | Advising Statistician                           |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Benjamin Kasenda  | University Hospital of Basel                         | Principal investigator and Sponsor-Investigator |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
-| Matthias Briel    | University of Basel and University Hospital of Basel | Methodologist                                   |
-+-------------------+------------------------------------------------------+-------------------------------------------------+
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
+| Name              | Affiliation                                                            | Role                                            |
++:==================+:=======================================================================+:================================================+
+| Johannes Schwenke | University of Basel and University Hospital of Basel                   | Trial Statistician                              |
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
+| Giusi Moffa       | Independent                                                            | Advising Statistician                           |
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
+| Benjamin Kasenda  | University Hospital of Basel                                           | Principal investigator and Sponsor-Investigator |
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
+| Matthias Briel    | University of Basel and University Hospital of Basel                   | Methodologist                                   |
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
+| Lars Hemkens      | Department of Clinical Research, University of Bern, Bern, Switzerland | Methodologist                                   |
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
+| Perrine Janiaud   | Department of Clinical Research, University of Bern, Bern, Switzerland | Methodologist                                   |
++-------------------+------------------------------------------------------------------------+-------------------------------------------------+
 
 ## Abbreviations
 
@@ -1039,7 +1043,7 @@ We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for t
 
 # Sensitivity Analyses {#sec-sensitivity-analyses}
 
-We will conduct sensitivity analyses for each of the three primary outcomes to assess the robustness of our findings to key modeling assumptions. These analyses are pre-specified but considered secondary to the primary analyses.
+We will conduct sensitivity analyses for each of the three primary outcomes to assess the robustness of our findings to key modeling assumptions.
 
 ## Overall Survival
 
@@ -1049,11 +1053,11 @@ As a sensitivity analysis for OS, we will fit a non-proportional hazards model. 
 
 As a sensitivity analysis for TAOOH, we will fit a first-order Markov model (conditioning only on $y_{t-1}$ rather than both $y_{t-1}$ and $y_{t-2}$). While the primary second-order model was selected based on model fit criteria in historical data, this sensitivity analysis will assess whether the additional complexity of the second-order specification materially affects our conclusions. If results are consistent between the first-order and second-order models, this would strengthen confidence in the robustness of our findings.
 
-As an additional sensitivity analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death.
+As an additional sensitivity analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death. In a further sensitivity analysis, we allow a linear deviation from proportional odds of the effect of linear time.
 
 ## Quality of Life
 
-We will conduct two sensitivity analyses for the Quality of Life endpoint to assess the robustness of our results to the Principal Stratum assumption and the handling of death.
+We will conduct two sensitivity analyses for the Quality of Life endpoint to assess the robustness of our results to the Principal Stratum assumption and the handling of death:
 
 ### Landmark Analysis
 
