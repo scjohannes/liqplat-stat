@@ -2240,12 +2240,12 @@ tx_scale <- 0.55
 default_scale <- 2.5
 
 prior <- normal(
-  location = c(rep(0, 5)),
-  scale = c(tx_scale, rep(default_scale, 4))
+  location = c(rep(0, 6)),
+  scale = c(tx_scale, rep(default_scale, 5))
 )
 
 # Fit the model
-model_os <- stan_surv(
+model <- stan_surv(
     formula = Surv(day, death) ~ tx + ecog_binary + stage_binary + lung + 
               mgps,
     data = data,
@@ -2270,7 +2270,7 @@ model_os <- stan_surv(
 # Get posterior survival curves for tx=0
 ps_0_list <- posterior_survfit(
     model,
-    newdata = data_for_model |> mutate(tx = 0),
+    newdata = data |> mutate(tx = 0),
     times = 0,
     extrapolate = TRUE,
     standardise = TRUE,
@@ -2285,7 +2285,7 @@ time_points <- sapply(ps_0_list, attr, "times")
 # Get posterior survival curves for tx=1
 ps_1_list <- posterior_survfit(
     model,
-    newdata = data_for_model |> mutate(tx = 1),
+    newdata = data |> mutate(tx = 1),
     times = 0,
     extrapolate = TRUE,
     standardise = TRUE,
@@ -2457,7 +2457,7 @@ model_taooh <- blrm(
                 rcs(c_reactive_protein, 3) + cluster(id),
     pcontrast = pcontrast_arg,
     data = data_toh,
-    iter = 4000, chains = 4, seed = 68818,
+    iter = 2000, chains = 4, seed = 68818,
 )
 ```
 
