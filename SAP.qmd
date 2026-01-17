@@ -1053,7 +1053,7 @@ As a sensitivity analysis for OS, we will fit a non-proportional hazards model. 
 
 As a sensitivity analysis for TAOOH, we will fit a first-order Markov model (conditioning only on $y_{t-1}$ rather than both $y_{t-1}$ and $y_{t-2}$). While the primary second-order model was selected based on model fit criteria in historical data, this sensitivity analysis will assess whether the additional complexity of the second-order specification materially affects our conclusions. If results are consistent between the first-order and second-order models, this would strengthen confidence in the robustness of our findings.
 
-As an additional sensitivity analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death. In a further sensitivity analysis, we allow a linear deviation from proportional odds of the effect of linear time.
+As an additional sensitivity analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death.
 
 ## Quality of Life
 
@@ -1167,7 +1167,7 @@ where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}
 
 **Derived Quantities:** We will report the marginal probability of having at least one actionable alteration, with exploratory analyses by cancer diagnosis category.
 
-## Comparative Outcomes (SAT vs. External Control)
+## Comparative Outcomes (SAT vs. External Comparator)
 
 ### Time to Treatment Switch or Stop
 
