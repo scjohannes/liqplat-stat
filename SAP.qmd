@@ -278,7 +278,7 @@ All primary analyses will be conducted within a Bayesian framework. The inferent
 
 ## Missing Data Handling {#sec-missing-data}
 
-Missing data are expected for baseline covariates, longitudinal QoL states, and exceptionally for TAOOH states. Death is unlikely to be missing, as the data will be obtained from a very complete registry. We will use Multiple Imputation by Chained Equations (MICE), assuming data are Missing At Random (MAR). Based on @Mathur2025-sl we restrict the imputation model to variables included in the substantative analysis or those acting causally on the missing variables or on their missingness indicator, to avoid bias. Imputations will be run using a maximum of 50 iterations for each imputed dataset. We will create $m=50$ completed datasets.
+Missing data are expected for baseline covariates, longitudinal QoL states, and exceptionally for TAOOH states. Death is unlikely to be missing, as the data will be obtained from a very complete registry. We will use Multiple Imputation by Chained Equations (MICE), assuming data are Missing At Random (MAR). Based on @Mathur2025-sl we restrict the imputation model to variables included in the substantive analysis or those acting causally on the missing variables or on their missingness indicator, to avoid bias. Imputations will be run using a maximum of 50 iterations for each imputed dataset. We will create $m=50$ completed datasets.
 
 ### Longitudinal Outcomes
 
@@ -480,7 +480,7 @@ $$
 
 #### Implementation
 
-The model will be fitted using the `stan_surv` function from the `rstanarm` package in R. Convergence will be assessed using $\hat{R}$ and trace plots. Example impleme1000ntation code is provided in @sec-appendix-os-code.
+The model will be fitted using the `stan_surv` function from the `rstanarm` package in R. Convergence will be assessed using $\hat{R}$ and trace plots. Example implementation code is provided in @sec-appendix-os-code.
 
 #### Obtaining the Estimand
 
@@ -1005,7 +1005,7 @@ summary_ha <- readRDS("./2-hosp/output/sim-summary_ha.rds")
 ```{r}
 #| echo: false
 #| label: tbl-oper-char-toh-ha
-#| tbl-cap: Probability of assertion of benefit when $P(\text{benefit}) > 0.95$ is chosen as a cut-off for.
+#| tbl-cap: Probability of assertion of benefit when $P(\text{benefit}) > 0.95$ is chosen as a cut-off.
 h0 <- summary_h0 |> 
   mutate(
     OR = 1.0,
@@ -1251,7 +1251,7 @@ Results will be reported according to CONSORT guidelines where applicable, adapt
 
 While the primary analysis defines the treatment as the random selection for invitation, an alternative estimand of clinical interest is the average causal effect of the intervention among patients who actually accepted the invitation.
 
-We consider an extended causal diagram, where $Z$ denotes random selection for invitation to the SAT, $I$ denotes invitation to the SAT, $A$ denotes acceptance of said invitation, and $Y$ denotes the coutome. $S$ is an indicator for selection into the population which accepted the invitation. $L_1$ and $L_2$ are measured (baseline) covariates which capture the effects of the unmeasured causes $U$ on $A$ and $I$. By adjusting for $L_1$ and $L_2$, we could block the paths $Z \rightarrow \boxed{S} \leftarrow I \leftarrow L_1 \leftarrow U \rightarrow Y$ and $Z \rightarrow \boxed{S} \leftarrow A \leftarrow L_2 \leftarrow U \rightarrow Y$. However, we have not evaluated / assessed whether our routine data adequately captures $L_1$ and $L_2$ and therefore do not plan to estimate this estimand.
+We consider an extended causal diagram, where $Z$ denotes random selection for invitation to the SAT, $I$ denotes invitation to the SAT, $A$ denotes acceptance of said invitation, and $Y$ denotes the outcome. $S$ is an indicator for selection into the population which accepted the invitation. $L_1$ and $L_2$ are measured (baseline) covariates which capture the effects of the unmeasured causes $U$ on $A$ and $I$. By adjusting for $L_1$ and $L_2$, we could block the paths $Z \rightarrow \boxed{S} \leftarrow I \leftarrow L_1 \leftarrow U \rightarrow Y$ and $Z \rightarrow \boxed{S} \leftarrow A \leftarrow L_2 \leftarrow U \rightarrow Y$. However, we have not evaluated / assessed whether our routine data adequately captures $L_1$ and $L_2$ and therefore do not plan to estimate this estimand.
 
 ![Extended causal diagram for alternative estimands. $Z$ denotes random selection, $I$ denotes actual invitation, and $A$ denotes acceptance. $U$ represents unmeasured common causes of the treatment process and the outcome $Y$. $L_1$​ and $L_2$​ are measured covariates that act as mediators for $U$; $L_1$ predicts the actual invitation, while $L_2$​ predicts acceptance. $S$ represents the selection into the analyzed population.](img/dag-appendix.svg){#fig-dag-appendix}
 
