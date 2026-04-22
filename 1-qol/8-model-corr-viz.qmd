@@ -55,4 +55,4 @@ corr |>
 plotCorrM(corr)[[2]]
 ```
 
-The estimated serial very weak, and doesn't decay with time. That's likely why model with random intercept fits the model (almost) as well as the markov model.
+The estimated serial correlation is very weak, and doesn't decay with time. That's likely why model with random intercept fits the data (almost) as well as the markov model.
