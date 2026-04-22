@@ -43,6 +43,9 @@ library(arrow)
 +----------+------------+-------------------+--------------------------------------------------------------+
 | 0.9      | 2025-10-27 | Johannes Schwenke | Consolidated draft based on results from simulations studies |
 +----------+------------+-------------------+--------------------------------------------------------------+
+| 1.0      | 2026-04-21 | Johannes Schwenke | Final version                                                |
++----------+------------+-------------------+--------------------------------------------------------------+
+
 
 ## Roles and responsibilities
 
@@ -121,7 +124,7 @@ library(arrow)
 +---------------+------------------------------------------------------------+
 | **TAOOH**     | Time Alive and Out of Hospital                             |
 +---------------+------------------------------------------------------------+
-| **sta**       | Usual Care                                                 |
+| **UC**        | Usual Care                                                 |
 +---------------+------------------------------------------------------------+
 
 {{< pagebreak >}}
@@ -174,62 +177,25 @@ We developed this SAP using data sets based on routinely collected data of patie
 
 # Trial Overview
 
-## Background and rationale
-
-Liquid biopsies, particularly circulating tumor DNA (ctDNA) analysis, offer potential solutions to challenges in treating patients with solid cancers. ctDNA may provide a more comprehensive view of tumor heterogeneity than traditional biopsies, aiding in identifying targetable alterations, quantifying disease burden, detecting early treatment resistance, and predicting outcomes. While promising, more robust trial data on the implementation of ctDNA in routine care is needed. We therefore conduct a single-arm trial (SAT) to investigate ctDNA implementation in routine care for advanced cancer patients, using random invitation to ensure representative sampling. The random invitation to participation allows for a randomized comparison with eligible patients not invited to the trial.
-
-## Objectives
-
-As per protocol version 1.1 LIQPLAT has two primary objectives:
-
-1.  To assess the implementation and feasibility of ctDNA measurements from peripheral blood during routine clinical care of cancer patients in the University Hospital Basel.
-2.  To compare clinical and patient-reported outcomes of patients from this trial with patients who did not receive systematic ctDNA measurement.
-
-This SAP focuses primarily on the second objective, detailing the analyses for the three co-primary outcomes of the randomized comparison: Overall Survival (OS), Quality of Life (QoL), and Time Out of Hospital (TAOOH).
+For a detailed background, rationale, and methods, please refer to the [LIQPLAT protocol](https://www.medrxiv.org/content/10.1101/2025.02.13.25322206v1). Below we provide a brief overview of the trial design and methods relevant for the analyses described in this SAP.
 
 # Study methods
 
 ## Trial design
 
-LIQPLAT is a single-arm, single-center trial at the University Hospital Basel. Patients are randomly invited from an ongoing research registry for participation in the trial (@fig-trial-design). The ongoing research registry is made up of all patients who have signed the general research consent (GRC) of the University Hospital Basel.
+LIQPLAT is a random invitation single-arm trial at the University Hospital Basel. Patients are randomly invited from an ongoing research registry for participation in the trial (@fig-trial-design). The ongoing research registry is made up of all patients who have signed the general research consent (GRC) of the University Hospital Basel.
 
 Based on past-data of the Division of Medical Oncology, around 240-300 patients would be eligible for the trial over a period of 18 months. However, for logistic reasons and capacity of the Department of Pathology, we limit the sample size to 150 participants, with a maximum of three patients selected for invitation to the trial per week.
 
 ![Patients are randomly selected for invitation to the single-arm trial from a prospective research registry. Some eligible participants might not be considered for selection for operational reasons, e.g., inpatients who require emergency treatment before trial staff was made aware of their existence. All outcome data are obtained from routinely collected data. The design enables an unconfounded (randomized) comparison of patients who were selected for invitation to the single-arm trial with patients who were eligible but not selected for invitation.](img/liqplat-flow.png){#fig-trial-design}
 
-### Trial population {#sec-eligibility}
-
-#### Inclusion criteria
-
-1.  All adult patients who are part of the University Hospital Basel prospective research registry, i.e., have signed the GRC, with
-2.  A proven advanced solid malignant disease, and
-3.  An indication for medical anti-cancer treatment (including combined chemo-radiotherapy or immuno-radiotherapy).
-
-#### Exclusion criteria
-
-1.  Patients with primary brain tumors,
-2.  Patients with primary resectable disease, and
-3.  Patients with prior treatment for advanced or metastatic disease.
-
-### Random Invitation to the Single-Arm Trial
-
-#### Screening list
-
-We build a weekly screening list containing all patients who have an appointment for a first consultation for advanced cancer at the Division of Medical Oncology in the following week in REDCap (v. 14.3.14), using routinely collected data from the electronic patient records. The list is randomly ordered by sorting a hashed version (SHA-256) of the sequentially generated patient hospital ID. The trial team (at least one board-certified oncologist) checks whether patients fulfill the eligibility criteria every Friday afternoon.
-
-#### Invitation to the Single-Arm Trial
-
-Descending the screening list row by row, we select up to three patients per week who will be invited to the trial. The decision to invite is made randomly, using a random sampling table uploaded to REDCap. The random sampling table was generated by a trialist not associated with the trial using R version 4.3.1 (2023-06-16) @RCoreTeam. The table was stratified by presence or absence of a primary diagnosis of a lung cancer, with a block size of 9, and has odds of 2:1 for an invitation to the trial. All investigators are blinded to the random sampling table.
-
-Once three patients have been randomly selected for an invitation to the trial, the list is closed for the current week and a new one is started the next week. Inpatients can also be invited when fulfilling eligibility criteria and slots are available for the given week.
-
-### Randomized comparison with external comparator
+### Randomized comparison with usual care comparator
 
 Randomly inviting patients from a prospective research registry to the SAT enables a randomized comparison with patients who were not invited to the trial, as the data on outcomes for the latter can be obtained from routine data. In @fig-dags $Z$ is the indicator for selection for invitation to the SAT, $A$ indicates whether a patient was invited to the study *and* accepted, $S$ indicates the selection into the population who accepted the invitation, $Y$ denotes the outcome of a patient, and $U$ denotes a set of unmeasured causes $A$ and $Y$. Selection for invitation to the trial ($Z$) and the outcomes of interest ($Y$) have no common causes, because the decision to select a patient for invitation to the SAT was made at random.
 
 As all patients who are considered for LIQPLAT are part of the prospective research registry and have therefore agreed for their data to be used for research purposes, we can compare the outcomes of patients who were invited to the trial to those who were not invited. However, a patient's decision to accept the invitation to the SAT ($A$) is not random and likely to be influenced by factors ($U$) which also cause the outcome. If we restricted the analysis to patients who have accepted the invitation (as represented by a box around $S$), we would be conditioning on the child of a mediator, leading to collider bias. In other words, patients who were selected for invitation to the SAT and patients who could have been selected but were not are exchangeable regarding their potential outcomes [@Rubin2005-wc], but participants of the SAT are not exchangeable with non-participants. This means that for the randomized comparison, the random selection for invitation to the SAT is considered as the treatment.
 
-**Even though LIQPLAT is not a randomized controlled trial, when considering selection for invitation to the trial as treatment, it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where [we consider invitation to the SAT as the "treatment"]{.underline}.** An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
+**Even though LIQPLAT is not a randomized controlled trial, when considering selection for invitation to the trial as "treatment", it can be analyzed analogously to a randomized controlled trial. We will therefore specify comparative analyses in line with the estimand framework [@Kahan2024-au], where [we consider invitation to the SAT as the "treatment"]{.underline}.** An analysis of the effect of actual participation in the SAT, would require additional assumptions, which are outlined in @sec-appendix-alternative-estimands, but are not part of this SAP.
 
 ::: {#fig-dags layout-ncol="2"}
 ![Dag 1](img/dag-1.b-simplified.svg){#fig-dag1}
@@ -241,13 +207,11 @@ Simplified causal diagrams for the LIQPLAT trial. $Z$ represents the indicator f
 
 ### Outcome data
 
-All participants of LIQPLAT are part of the University Hospital's prospective research registry and have thus consented to further use of their routinely collected data for research purposes. We will obtain outcome data almost exclusively from routinely collected data from electronic health records, which are mirrored in the clinical data warehouse (CDWH), and REDCap databases of the Division of Medical Oncology.
+All participants of LIQPLAT are part of the University Hospital's prospective research registry and have thus consented to further use of their routinely collected data for research purposes. We will obtain outcome data almost exclusively from routinely collected data from electronic health records, which are mirrored in the clinical data warehouse (CDWH), and REDCap databases of the Division of Medical Oncology. Trial specific data, such as dates of random selection, are stored within a REDCap database specific to LIQPLAT.
 
-Trial specific data, such as dates of random selection, are stored within a REDCap database specific to LIQPLAT.
+## Endpoints for Randomized Comparison
 
-## Primary Endpoints for Randomized Comparison
-
-This SAP focuses on the three primary endpoints for the randomized comparison between the group selected for invitation to the SAT and the external comparator (not selected for invitation).
+This SAP focuses on the three primary endpoints for the randomized comparison between the group selected for invitation to the SAT and the usual care comparator (not selected for invitation).
 
 1.  **Overall Survival (OS):** Time from date of random selection until death due to any cause within 6 months after random selection.
 2.  **Quality of Life (QoL):** Patient-reported global quality of life measured longitudinally using EORTC questionnaires during routine care up to 6 months after random selection.
@@ -262,13 +226,13 @@ Secondary endpoints as described in the protocol (e.g., Progression-Free Surviva
 The ITT population includes all patients from the prospective research registry who were eligible for LIQPLAT according to the criteria in @sec-eligibility and were considered for random selection for invitation. It comprises two groups defined by the random selection process:
 
 1.  **SAT Group (Selected for Invitation):** All eligible patients randomly selected for invitation to participate in the LIQPLAT SAT.
-2.  **External Comparator (Not Selected for Invitation):** All eligible patients who were considered for invitation but not randomly selected during the same recruitment period.
+2.  **Usual Care Comparator (Not Selected for Invitation):** All eligible patients who were considered for invitation but not randomly selected during the same recruitment period.
 
 This population forms the basis for the primary analyses of overall survival and time alive and out of hospital.
 
 ### Principal Stratum Population
 
-The primary analysis for the QoL endpoint will be conducted on the Principal Stratum Population. This population is defined as the subset of ITT patients who would have survived the entire 26-week (6-month) follow-up period, regardless of their assignment to be invited to the SAT or not. In practice, this population will be approximated by including all patients from the ITT population who were observed to be alive at the end of the 26-week follow-up. The rationale for restricting the QoL analysis to this Principal Stratum is detailed in @sec-qol-rationale-ps.
+The primary analysis for the QoL endpoint will be conducted on the Principal Stratum Population. This population is defined as the subset of ITT patients who would have survived the entire 26-week (6-month) follow-up period, regardless of being invited to the SAT or not. In practice, this population will be approximated by including all patients from the ITT population who were observed to be alive at the end of the 26-week follow-up. The rationale for restricting the QoL analysis to this Principal Stratum is detailed in @sec-qol-rationale-ps.
 
 # General Statistical Considerations
 
@@ -330,7 +294,7 @@ Following imputation, each analysis model (OS, QoL, TAOOH) will be fitted to eac
 
 ## Software
 
-Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesian models will be fitted using Stan via the `rstanarm` [@RStanARM] and `rmsb` [@rmsb] packages. Multiple imputation will use the `mice` [@mice_2011] and `miceadds` [@miceadds_3.17-44] packages. For data wrangling and plotting we use the `tidyverse` [@tidyverse]. To assess the convergence of the Markov Chain Monte Carlo (MCMC), we will check $\hat{R}$ for all parameters, with a target value \< 1.01, and inspect trace plots to confirm adequate mixing of the chains.
+Analyses will be performed using R (version 4.4.3 or later) [@RCoreTeam]. Bayesian models will be fitted using Stan via the `rstanarm` [@RStanARM] and `rmsb` [@rmsb] packages. Multiple imputation will use the `mice` [@mice_2011] and `miceadds` [@miceadds_3.17-44] packages. For data processing and plotting we use the `tidyverse` [@tidyverse]. To assess the convergence of the Markov Chain Monte Carlo (MCMC), we will check $\hat{R}$ for all parameters, with a target value \< 1.01, and inspect trace plots to confirm adequate mixing of the chains.
 
 ## Model Fitting Strategy
 
@@ -340,7 +304,7 @@ For each analysis model, we will first fit the model without the treatment indic
 
 The trial aims to enroll $150$ participants who accept the invitation to the single-arm trial (SAT). This target sample size is driven by feasibility, including logistical constraints (such as a maximum of three invitations per week) and the capacity of the Department of Pathology. Based on estimates of patient acceptance, we anticipate needing to invite approximately $180$ eligible patients to achieve this target (an acceptance rate of $\approx 83 \%$).
 
-The random invitation process, as described in @sec-eligibility, uses a $2:1$ ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected external comparator (not selected for invitation) of approximately $90$ patients.
+The random invitation process, as described in @sec-eligibility, uses a $2:1$ ratio (invitation vs. no invitation). Applying this ratio to the $180$ invited patients implies an expected usual care comparator (not selected for invitation) of approximately $90$ patients.
 
 Therefore, the ITT population for the randomized comparison is expected to be $N = 270$. All simulation studies for power and operating characteristics are based on this total sample size of $N = 270$.
 
@@ -350,7 +314,7 @@ The primary estimand for all outcomes is the effect of the treatment policy, whi
 
 The simulations (e.g., for TAOOH, @tbl-oper-char-toh-ha) do not explicitly model this non-uptake mechanism. Instead, the true effect sizes used in the simulations (e.g., a true OR of $0.7$) are assumed to represent this already-diluted ITT effect. In other words, a simulated OR of 0.7 reflects the average effect of the invitation strategy across all 180 invited patients (including non-acceptors), compared to the $90$ non-invited patients.
 
-# Co-Primary Outcomes
+# Outcomes
 
 ## Overall Survival
 
@@ -616,9 +580,9 @@ The estimand definition for Quality of Life is summarized in @tbl-qol-estimand.
 +:========================+:=====================================================================================================================================================================================================================+
 | **Target Population**   | The Principal Stratum of adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first-line therapy, defined as patients who would survive at least 26 weeks after their first appointment. |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to the SAT. \|                                                                                                                                                                       |
+| **Treatment Arms**      | (A=1): Selection for invitation to the SAT.                                                                                                                                                                          |
 |                         |                                                                                                                                                                                                                      |
-|                         | (A=0): No selection for invitation to the SAT. \|                                                                                                                                                                    |
+|                         | (A=0): No selection for invitation to the SAT.                                                                                                                                                                       |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | **Variable**            | Ordinal QoL state (7 levels, derived from EORTC QLQ-C30 Q30) measured longitudinally at irregular intervals. We use an inverted scale where 1='Excellent', ..., 7='Very Poor'.                                       |
 +-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -844,23 +808,23 @@ summary_table |>
 The estimand definition for Time Alive and Out of Hospital is summarized in @tbl-taooh-estimand.
 
 ::: {tbl-colwidths="[25, 75]"}
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
-| Attribute               | Definition                                                                                                                                   |
-+:========================+:=============================================================================================================================================+
-| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first-line anti-cancer therapy.                             |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
-| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                  |
-|                         |                                                                                                                                              |
-|                         | (A=0): No selection for invitation (External Comparator). \|                                                                                 |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
-| **Variable**            | Weekly health state: 1=Alive/Out-of-Hospital, 2=Alive/In-Hospital(Planned), 3=Alive/In-Hospital(ER), 4=Alive/In-Hospital(Unplanned), 5=Dead. |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
-| **Time Horizon**        | $t_{max} = 26$ weeks (6 months).                                                                                                             |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
-| **Summary Measure**     | Difference in mean number of weeks spent Alive and Out of Hospital (State 1) during the 26-week period.                                      |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
-| **Intercurrent Events** | Primarily death, which is modeled as the absorbing state (State 5). See @sec-os-intercurrent-events for considerations.                      |
-+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Attribute               | Definition                                                                                                                                                                                                           |
++:========================+:=====================================================================================================================================================================================================================+
+| **Target Population**   | Adult (≥ 18 years) patients with advanced solid cancer, who have not yet started first-line anti-cancer therapy.                                                                                                     |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Treatment Arms**      | (A=1): Selection for invitation to ctDNA-guided care (SAT).                                                                                                                                                          |
+|                         |                                                                                                                                                                                                                      |
+|                         | (A=0): No selection for invitation (usual care comparator).                                                                                                                                                          |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Variable**            | Weekly health state: 1=Alive/Out-of-Hospital, 2=Alive/In-Hospital(Planned), 3=Alive/In-Hospital(ER), 4=Alive/In-Hospital(Unplanned), 5=Dead.                                                                         |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Time Horizon**        | $t_{max} = 26$ weeks (6 months).                                                                                                                                                                                     |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Summary Measure**     | Difference in mean number of weeks spent Alive and Out of Hospital (State 1) during the 26-week period.                                                                                                              |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Intercurrent Events** | Primarily death, which is modeled as the absorbing state (State 5). See @sec-os-intercurrent-events for considerations.                                                                                              |
++-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 
 : Estimand definition for Time Alive and Out of Hospital. {#tbl-taooh-estimand}
 :::
@@ -1041,33 +1005,39 @@ summary_ha |>
 
 We emphasize that the $P(\text{benefit})>0.95$ threshold is used here only for the purpose of evaluating operating characteristics. It will not be used as a formal, dichotomous decision rule in the final analysis. Instead, the primary reporting will focus on presenting and interpreting the full posterior distribution of $\hat{\tau}_{TAOOH}$​. The estimates in @tbl-oper-char-toh-ha are intended to provide a conventional benchmark to illustrate which effect sizes the study can reasonably detect given our sample size and modeling approach.
 
-# Sensitivity Analyses {#sec-sensitivity-analyses}
+# Supporting Analyses {#sec-sensitivity-analyses}
 
-We will conduct sensitivity analyses for each of the three primary outcomes to assess the robustness of our findings to key modeling assumptions.
+We will conduct supporting analyses for each of the three main outcomes to support interpretation of the main analyses, assess robustness to key modeling assumptions, and provide simple complementary summaries at clinically relevant fixed time points.
 
 ## Overall Survival
 
-As a sensitivity analysis for OS, we will fit a non-proportional hazards model. Specifically, we will model time-varying treatment effects using cubic B-splines with 3 degrees of freedom for the interaction between treatment and time.
+As a supporting analysis for OS, we will fit a non-proportional hazards model. Specifically, we will model time-varying treatment effects using cubic B-splines with 3 degrees of freedom for the interaction between treatment and time.
+
+As an additional supporting analysis, we will analyze death status at 26 weeks as a binary outcome using an unadjusted logistic regression model with randomized group as the only predictor. We will report the observed proportion of death in each group at 26 weeks, along with the unadjusted difference in proportions, to provide a simple complementary summary of mortality at the fixed 26-week time point.
 
 ## Time Alive and Out of Hospital
 
-As a sensitivity analysis for TAOOH, we will fit a first-order Markov model (conditioning only on $y_{t-1}$ rather than both $y_{t-1}$ and $y_{t-2}$). While the primary second-order model was selected based on model fit criteria in historical data, this sensitivity analysis will assess whether the additional complexity of the second-order specification materially affects our conclusions. If results are consistent between the first-order and second-order models, this would strengthen confidence in the robustness of our findings.
+As a supporting analysis for TAOOH, we will fit a first-order Markov model (conditioning only on $y_{t-1}$ rather than both $y_{t-1}$ and $y_{t-2}$). While the primary second-order model was selected based on model fit criteria in historical data, this supporting analysis will assess whether the additional complexity of the second-order specification materially affects our conclusions. If results are consistent between the first-order and second-order models, this would strengthen confidence in the robustness of our findings.
 
-As an additional sensitivity analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death.
+As an additional supporting analysis, we will fit a more flexible version of the second order model, where a separate treatment effect is estimated for the transition from states $<5$ to $5$, i.e., a transition to death.
 
 ## Quality of Life
 
-We will conduct two sensitivity analyses for the Quality of Life endpoint to assess the robustness of our results to the Principal Stratum assumption and the handling of death:
+We will conduct three supporting analyses for the Quality of Life endpoint to assess the robustness of our results to the Principal Stratum assumption and the handling of death:
 
-### Landmark Analysis
+### Landmark Analysis Adjusted for Baseline QoL
 
-The first sensitivity analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model.
+The first supporting analysis is a landmark analysis of Quality of Life up to 6 months. We define the outcome as the latest available Quality of Life measurement for each participant within the 6-month follow-up period, excluding the baseline measurement. To account for survival, we include death as the worst possible category (State 8), ranked below "Very Poor" (State 7). We will compare the distribution of this composite outcome between the two groups using a proportional odds model adjusted for the baseline QoL value.
+
+### Unadjusted Landmark Analysis
+
+As an additional supporting analysis, we will fit the same proportional odds model for the 6-month landmark outcome, but without any covariates. We will use the same outcome definition as above, namely the latest available post-baseline Quality of Life measurement within 6 months with death assigned to the worst category (State 8).
 
 ### Longitudinal Ordinal Model with Death
 
-The second sensitivity analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored (see @sec-appendix-qol-censoring), we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
+The third supporting analysis aims to fit a longitudinal ordinal model similar to the main analysis but incorporating death as an absorbing state. As the differential missingness between the absorbing state (death, which is always observed) and non-absorbing QoL states (which are sparsely observed) leads to biased estimates of the cumulative incidence of death if unobserved intervals are simply treated as censored (see @sec-appendix-qol-censoring), we will use multiple imputation. We will impute QoL values (states 1-7) for all weeks where patients are known to be alive but have no recorded measurement. This approach ensures that the cumulative incidence of death is correctly estimated. We will then fit the first-order Markov ordinal transition model to the imputed datasets, including death as state 8.
 
-# Secondary Outcomes
+# Other Outcomes
 
 The following secondary outcomes are considered exploratory and focus on the implementation and feasibility of ctDNA-guided care, as well as downstream clinical processes. All analyses will be conducted within a Bayesian framework using default or weakly informative priors from `brms` [@brms-2017] and `rstanarm` [@RStanARM]. We will report posterior medians and 95% credible intervals.
 
@@ -1167,7 +1137,7 @@ where $i$ indexes patients, $j$ indexes cancer diagnosis categories, and $u_{0j}
 
 **Derived Quantities:** We will report the marginal probability of having at least one actionable alteration, with exploratory analyses by cancer diagnosis category.
 
-## Comparative Outcomes (SAT vs. External Comparator)
+## Comparative Outcomes (SAT vs. usual care comparator)
 
 ### Time to Treatment Switch or Stop
 
