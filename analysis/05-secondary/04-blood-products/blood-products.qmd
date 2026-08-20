@@ -1,0 +1,96 @@
+---
+title: "Secondary outcome: blood products"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Blood products
+
+The outcome is the count of administered red-blood-cell and platelet products.
+Exposure is observed follow-up time in days.  The adjusted model follows the
+historical SAP specification: Bayesian negative binomial with treatment,
+linear age, and diagnosis/cancer category, with `log(observed_follow_up_days)`
+as the offset.  The compact result artifact reports posterior rate,
+rate-ratio, and rate-difference summaries.
+
+Rows with unknown product types are retained as a missingness/quality flag;
+they are not silently recoded as zero.  A patient with no qualifying event has
+count zero only when the event-level table is available and complete.
+
+```{r}
+#| eval: false
+
+source(here::here("analysis", "05-secondary", "secondary-helpers.R"))
+source(here::here("R", "count-helpers.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "data-validation.R"))
+
+cohort <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-cohort.parquet"),
+  schema = here::here("data", "schema", "cohort_follow_up.yml")
+)
+products_path <- here::here(
+  "analysis", "00-data", "results", "analysis-blood-products.parquet"
+)
+if (!file.exists(products_path)) {
+  stop(
+    "Blood-products analysis is pending: the audited input contract contains " ,
+    "only participant-level aggregates and no approved event-level product table; " ,
+    "an aggregate is not substituted for event-level counts."
+  )
+}
+products <- read_pseudonymized_parquet(
+  products_path,
+  schema = here::here("data", "schema", "blood_products.yml")
+)
+
+# Count administered red-cell and platelet product records.  A complete event
+# table with no qualifying row gives an observed zero; missing product fields
+# are retained as missing/quality flags and are never recoded as zero.
+transfusion <- as.numeric(products$transfusion)
+product_type <- tolower(trimws(as.character(products$product_type)))
+product_type <- gsub("[_-]+", " ", product_type)
+product_type <- ifelse(
+  product_type %in% c("red blood cell", "red blood cells", "rbc",
+                      "packed red blood cell", "packed red blood cells"),
+  "red_blood_cell",
+  ifelse(product_type %in% c("platelet", "platelets", "platelet product",
+                             "platelet products"), "platelet", NA_character_)
+)
+administered <- transfusion == 1 & !is.na(product_type)
+count_table <- as.data.frame(table(as.character(products$id[administered])),
+                             stringsAsFactors = FALSE)
+names(count_table) <- c("id", "n_blood_products")
+count_table$n_blood_products <- as.integer(count_table$n_blood_products)
+blood_data <- secondary_observed_follow_up(
+  cohort, origin_col = "randomization_date", horizon_days = 182L,
+  output_col = "observed_follow_up_days"
+)
+blood_data <- secondary_join_count(blood_data, count_table, "n_blood_products")
+secondary_count_ready(blood_data, "n_blood_products", "observed_follow_up_days")
+
+# Exact adjusted SAP count model: Bayesian negative binomial with observed-time
+# offset, treatment, linear age, and diagnosis/cancer category.
+blood_formula <- n_blood_products ~ 1 + tx + age + diagnosis +
+  offset(log(observed_follow_up_days))
+blood_fit <- rstanarm::stan_glm(
+  formula = blood_formula,
+  data = blood_data,
+  family = rstanarm::neg_binomial_2(),
+  chains = 4,
+  iter = 1000,
+  warmup = 500,
+  seed = 17006
+)
+write_atomic_parquet(
+  data.frame(
+    outcome = "blood_products",
+    model = "Bayesian negative binomial",
+    adjustment = "tx + linear age + diagnosis",
+    stringsAsFactors = FALSE
+  ),
+  project_path("results", "secondary", "blood-products", "status.parquet")
+)
+```

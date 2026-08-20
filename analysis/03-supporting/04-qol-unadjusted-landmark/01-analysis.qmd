@@ -1,0 +1,77 @@
+---
+title: "QoL unadjusted landmark — computationally reduced supporting/sensitivity analysis (5 imputations)"
+format: html
+execute:
+  freeze: false
+---
+
+This computationally reduced supporting/sensitivity analysis (5 imputations)
+uses the death-as-state-8 week-26 landmark without covariate adjustment. It
+uses fixed imputations 1–5 and retains 200 posterior draws per imputation.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("analysis", "module-runtime.R"))
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config, supporting = TRUE)
+if (!identical(indices, 1:5)) stop("Supporting unadjusted landmark requires exactly imputations 1:5.")
+data_dir <- project_path("artifacts", "primary", "quality-of-life", "imputations")
+death_path <- project_path("artifacts", "primary", "quality-of-life", "death-inclusive-prepared.parquet")
+output_dir <- ensure_directory(project_path("artifacts", "supporting", "qol-unadjusted-landmark"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: fit-unadjusted-landmark
+#| include: false
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(output_dir, sprintf("model-%02d.rds", index))
+  draws_path <- file.path(output_dir, sprintf("draws-%02d.parquet", index))
+  if (!file.exists(data_path) || !file.exists(death_path)) stop("QoL landmark inputs are incomplete for imputation ", index, ".")
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("supporting-qol-unadjusted-landmark-%02d", index),
+    input_paths = c(data_path, death_path),
+    output_paths = c(model_path, draws_path),
+    code_paths = code_paths,
+    metadata = list(label = "computationally reduced supporting/sensitivity analysis (5 imputations)",
+                   imputation = index, imputations = 1:5, posterior_draws = 200L,
+                   death_state = 8L, adjusted = FALSE),
+    worker = function() {
+      data <- module_read_parquet(data_path)
+      death <- module_read_parquet(death_path)
+      latest <- data[data$week == 26L, c("id", "tx"), drop = FALSE]
+      latest$y_landmark <- as.integer(as.character(data$y[data$week == 26L]))
+      deaths <- death[death$event_death == 1L & death$week == 26L, c("id", "tx"), drop = FALSE]
+      deaths$y_landmark <- 8L
+      landmark <- rbind(latest, deaths)
+      landmark$y_landmark <- factor(landmark$y_landmark, levels = 1:8, ordered = TRUE)
+      model <- rmsb::blrm(
+        formula = y_landmark ~ tx,
+        data = landmark,
+        chains = 4L,
+        iter = 1000L,
+        warmup = 500L,
+        seed = analysis_seed(config, "supporting", index)
+      )
+      if (!requireNamespace("posterior", quietly = TRUE)) stop("Package 'posterior' is required for landmark draws.")
+      draws <- posterior::as_draws_df(rmsb::stanGet(model))
+      if (nrow(draws) < 200L) stop("Unadjusted landmark posterior has fewer than 200 draws.")
+      draws <- as.data.frame(draws[seq_len(200L), , drop = FALSE])
+      draws$imputation <- index
+      module_save_rds(model, model_path)
+      module_save_parquet(draws, draws_path)
+    }
+  )
+}
+```

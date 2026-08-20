@@ -1,0 +1,232 @@
+# Sole ordered registry for the public analysis pipeline.  The runner never
+# discovers QMDs from the directory tree: every executable stage is listed
+# here, including pending contracts and the final report/SAP artifacts.
+version: 1
+stages:
+  # Data validation, derivation, and QC
+  - id: data_validate_inputs
+    number: 10
+    path: analysis/00-data/01-validate-inputs.qmd
+    description: Validate locked private-domain schemas and availability
+  - id: data_build_analysis_datasets
+    number: 20
+    path: analysis/00-data/02-build-analysis-datasets.qmd
+    description: Build canonical analysis datasets
+  - id: data_qc
+    number: 30
+    path: analysis/00-data/03-data-qc.qmd
+    description: Run data-quality and derivation checks
+
+  # Population
+  - id: population_recruitment
+    number: 40
+    path: analysis/01-population/01-recruitment.qmd
+    description: Recruitment and invitation accounting
+  - id: population_consort
+    number: 50
+    path: analysis/01-population/02-consort.qmd
+    description: CONSORT-style participant flow
+  - id: population_baseline
+    number: 60
+    path: analysis/01-population/03-baseline-table.qmd
+    description: Baseline cohort description
+
+  # Main overall-survival analysis
+  - id: primary_os_preparation
+    number: 70
+    path: analysis/02-primary/01-overall-survival/01-preparation.qmd
+    description: Prepare locked OS endpoint and covariates
+  - id: primary_os_imputation
+    number: 80
+    path: analysis/02-primary/01-overall-survival/02-imputation.qmd
+    description: Main OS multiple-imputation branches
+  - id: primary_os_fitting
+    number: 90
+    path: analysis/02-primary/01-overall-survival/03-fitting.qmd
+    description: Fit primary OS proportional-hazards models
+  - id: primary_os_estimand
+    number: 100
+    path: analysis/02-primary/01-overall-survival/04-estimand.qmd
+    description: Calculate OS posterior estimands and RMST
+  - id: primary_os_diagnostics
+    number: 110
+    path: analysis/02-primary/01-overall-survival/05-diagnostics.qmd
+    description: Validate OS posterior diagnostics
+
+  # Main quality-of-life analysis
+  - id: primary_qol_no_treatment_sentinel
+    number: 120
+    path: analysis/02-primary/02-quality-of-life/00-no-treatment-sentinel.qmd
+    description: Validate QoL Markov API and data contract
+  - id: primary_qol_preparation
+    number: 130
+    path: analysis/02-primary/02-quality-of-life/01-preparation.qmd
+    description: Prepare longitudinal QoL endpoint
+  - id: primary_qol_imputation
+    number: 140
+    path: analysis/02-primary/02-quality-of-life/02-imputation.qmd
+    description: Main QoL multiple-imputation branches
+  - id: primary_qol_fitting
+    number: 150
+    path: analysis/02-primary/02-quality-of-life/03-fitting.qmd
+    description: Fit primary first-order QoL Markov models
+  - id: primary_qol_estimand
+    number: 160
+    path: analysis/02-primary/02-quality-of-life/04-estimand.qmd
+    description: Calculate QoL posterior estimands
+  - id: primary_qol_diagnostics
+    number: 170
+    path: analysis/02-primary/02-quality-of-life/05-diagnostics.qmd
+    description: Validate QoL posterior diagnostics
+
+  # Main time-alive-and-out-of-hospital analysis
+  - id: primary_taooh_no_treatment_sentinel
+    number: 180
+    path: analysis/02-primary/03-taooh/00-no-treatment-sentinel.qmd
+    description: Validate TAOOH Markov API and data contract
+  - id: primary_taooh_preparation
+    number: 190
+    path: analysis/02-primary/03-taooh/01-preparation.qmd
+    description: Prepare weekly TAOOH endpoint
+  - id: primary_taooh_imputation
+    number: 200
+    path: analysis/02-primary/03-taooh/02-imputation.qmd
+    description: Main TAOOH multiple-imputation branches
+  - id: primary_taooh_fitting
+    number: 210
+    path: analysis/02-primary/03-taooh/03-fitting.qmd
+    description: Fit primary second-order TAOOH Markov models
+  - id: primary_taooh_estimand
+    number: 220
+    path: analysis/02-primary/03-taooh/04-estimand.qmd
+    description: Calculate TAOOH posterior estimands
+  - id: primary_taooh_diagnostics
+    number: 230
+    path: analysis/02-primary/03-taooh/05-diagnostics.qmd
+    description: Validate TAOOH posterior diagnostics
+
+  # Supporting analyses (fixed imputations 1:5)
+  - id: supporting_os_non_proportional_hazards
+    number: 240
+    path: analysis/03-supporting/01-os-non-proportional-hazards/01-analysis.qmd
+    description: OS non-proportional-hazards sensitivity analysis
+  - id: supporting_os_fixed_26_week_death
+    number: 250
+    path: analysis/03-supporting/02-os-fixed-26-week-death/01-analysis.qmd
+    description: Fixed 26-week death sensitivity analysis
+  - id: supporting_qol_adjusted_landmark
+    number: 260
+    path: analysis/03-supporting/03-qol-adjusted-landmark/01-analysis.qmd
+    description: Adjusted six-month QoL landmark sensitivity analysis
+  - id: supporting_qol_unadjusted_landmark
+    number: 270
+    path: analysis/03-supporting/04-qol-unadjusted-landmark/01-analysis.qmd
+    description: Unadjusted six-month QoL landmark sensitivity analysis
+  - id: supporting_qol_death_inclusive_longitudinal
+    number: 280
+    path: analysis/03-supporting/05-qol-death-inclusive-longitudinal/01-analysis.qmd
+    description: Death-inclusive longitudinal QoL sensitivity analysis
+  - id: supporting_taooh_first_order
+    number: 290
+    path: analysis/03-supporting/06-taooh-first-order/01-analysis.qmd
+    description: First-order TAOOH sensitivity analysis
+  - id: supporting_taooh_death_transition_nonproportional_odds
+    number: 300
+    path: analysis/03-supporting/07-taooh-death-transition-nonproportional-odds/01-analysis.qmd
+    description: TAOOH death-transition non-proportional-odds sensitivity analysis
+
+  # Implementation outcomes
+  - id: implementation_invitation_offered
+    number: 310
+    path: analysis/04-implementation/01-invitation-offered.qmd
+    description: Invitation-offered implementation outcome
+  - id: implementation_invitation_accepted
+    number: 320
+    path: analysis/04-implementation/02-invitation-accepted.qmd
+    description: Invitation-accepted implementation outcome
+  - id: implementation_technical_validity
+    number: 330
+    path: analysis/04-implementation/03-technical-validity.qmd
+    description: ctDNA technical-validity outcome
+  - id: implementation_baseline_detection
+    number: 340
+    path: analysis/04-implementation/04-baseline-detection.qmd
+    description: Baseline ctDNA detection outcome
+  - id: implementation_chip
+    number: 350
+    path: analysis/04-implementation/05-chip.qmd
+    description: CHIP outcome
+  - id: implementation_actionability
+    number: 360
+    path: analysis/04-implementation/06-actionability.qmd
+    description: Exact-level ctDNA actionability outcome
+  - id: implementation_turnaround
+    number: 370
+    path: analysis/04-implementation/07-turnaround.qmd
+    description: ctDNA turnaround-time outcome
+  - id: implementation_mtb
+    number: 380
+    path: analysis/04-implementation/08-mtb.qmd
+    description: Molecular tumour board outcome
+
+  # Secondary outcomes
+  - id: secondary_pfs
+    number: 390
+    path: analysis/05-secondary/01-pfs/pfs.qmd
+    description: Progression-free survival
+  - id: secondary_survival_rates
+    number: 400
+    path: analysis/05-secondary/02-survival-rates/survival-rates.qmd
+    description: Six- and twelve-month survival rates
+  - id: secondary_best_supportive_care
+    number: 410
+    path: analysis/05-secondary/03-best-supportive-care/bsc.qmd
+    description: Time to best supportive care
+  - id: secondary_blood_products
+    number: 420
+    path: analysis/05-secondary/04-blood-products/blood-products.qmd
+    description: Blood-product count/rate outcome
+  - id: secondary_tissue_biopsy
+    number: 430
+    path: analysis/05-secondary/05-tissue-biopsy/tissue-biopsy.qmd
+    description: Tissue-biopsy count/rate outcome
+  - id: secondary_imaging
+    number: 440
+    path: analysis/05-secondary/06-imaging/imaging.qmd
+    description: Imaging count/rate outcome
+
+  # Pending status-only contracts
+  - id: pending_weekly_treatment
+    number: 450
+    path: analysis/90-pending/01-weekly-treatment.qmd
+    description: Weekly treatment exposure readiness status
+  - id: pending_next_treatment_line
+    number: 460
+    path: analysis/90-pending/02-next-treatment-line.qmd
+    description: Next-treatment-line readiness status
+  - id: pending_treatment_switch_stop
+    number: 470
+    path: analysis/90-pending/03-treatment-switch-stop.qmd
+    description: Treatment switch/stop readiness status
+  - id: pending_targeted_therapy
+    number: 480
+    path: analysis/90-pending/04-targeted-therapy.qmd
+    description: Targeted-therapy readiness status
+  - id: pending_trial_referral_recruitment
+    number: 490
+    path: analysis/90-pending/05-trial-referral-recruitment.qmd
+    description: Trial referral/recruitment readiness status
+  - id: pending_physical_function
+    number: 500
+    path: analysis/90-pending/06-physical-function.qmd
+    description: Physical-function readiness status
+
+  # Artifact-only report and final SAP
+  - id: public_report
+    number: 510
+    path: reports/analysis-report.qmd
+    description: Artifact-only public report
+  - id: sap
+    number: 520
+    path: sap/SAP.qmd
+    description: Statistical Analysis Plan

@@ -1,0 +1,12 @@
+# Implementation outcomes
+
+Implementation outcomes are reported only when their compact status manifests
+and result artifacts are present.  Denominators and missingness are retained
+as supplied by the implementation stages.
+
+```{r}
+#| label: implementation-results
+#| results: asis
+
+report_render_section("implementation", root = report_root)
+```

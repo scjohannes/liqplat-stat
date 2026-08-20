@@ -1,0 +1,103 @@
+---
+title: "Sampling-to-first-report turnaround"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Turnaround is the calendar-day difference between the recorded sample date and
+the first report-availability date. Missing or invalid date pairs are excluded
+from the turnaround distribution and counted explicitly; no follow-up month
+classification is introduced.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_turnaround"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+summary_path <- file.path(result_dir, "turnaround-summary.parquet")
+values_path <- file.path(result_dir, "turnaround-values.parquet")
+figure_path <- file.path(result_dir, "turnaround-distribution.svg")
+ctdna_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-ctdna-samples.parquet")
+if (!file.exists(ctdna_path)) stop("Turnaround analysis requires the built ctDNA sample table.")
+input_paths <- c(ctdna_path, private_domain_path(config, "ctdna_samples"),
+                 schema_domain_path(config, "ctdna_samples"))
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(summary_path, values_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "07-turnaround.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  turnaround_summary <- read_result_table(summary_path)
+} else {
+  samples <- read_result_table(ctdna_path)
+  require_public_columns(samples, c("sample_id", "sample_date"), "turnaround")
+  report_col <- intersect(c("report_date", "analysis_date"), names(samples))[1L]
+  if (is.na(report_col)) {
+    stop("Turnaround requires the first report-availability date (`report_date` or `analysis_date`).")
+  }
+  sample_dates <- parse_analysis_date(samples$sample_date, "sample_date")
+  report_dates <- parse_analysis_date(samples[[report_col]], report_col)
+  turnaround_days <- as.numeric(report_dates - sample_dates)
+  turnaround_days[!is.na(turnaround_days) & turnaround_days < 0] <- NA_real_
+  values <- data.frame(turnaround_days = turnaround_days[is.finite(turnaround_days)],
+                       stringsAsFactors = FALSE)
+  n_total <- nrow(samples)
+  n_valid <- nrow(values)
+  turnaround_summary <- data.frame(
+    report_date_field = report_col,
+    n_samples = n_total,
+    n_valid_date_pairs = n_valid,
+    n_excluded_missing_or_invalid = n_total - n_valid,
+    median_days = if (n_valid == 0L) NA_real_ else stats::median(values$turnaround_days),
+    q1_days = if (n_valid == 0L) NA_real_ else stats::quantile(values$turnaround_days, 0.25),
+    q3_days = if (n_valid == 0L) NA_real_ else stats::quantile(values$turnaround_days, 0.75),
+    stringsAsFactors = FALSE
+  )
+  write_module_table(turnaround_summary, summary_path)
+  write_module_table(values, values_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the turnaround figure.")
+  }
+  plot <- ggplot2::ggplot(values, ggplot2::aes(turnaround_days)) +
+    ggplot2::geom_histogram(bins = 30) +
+    ggplot2::labs(x = "Calendar days from sample to first report", y = "Samples") +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 7, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built", unit = "calendar_days"),
+    code_paths = here::here("analysis", "04-implementation", "07-turnaround.qmd")
+  )
+}
+```
+
+```{r}
+#| label: turnaround-summary
+#| tbl-cap: "Sampling-to-report turnaround summary"
+
+turnaround_summary |>
+  knitr::kable()
+```

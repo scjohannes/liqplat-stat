@@ -1,0 +1,13 @@
+name: physical_function
+version: 1
+description: Future-ready longitudinal physical-function assessments.
+primary_key: [id, assessment_id]
+privacy_boundary: Pseudonymized assessment records only.
+columns:
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  assessment_id: {type: string, required: true, unit: "", coding: unique assessment record, sensitive: false, private: false}
+  assessment_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  ecog: {type: integer, required: false, unit: score, coding: "0-4; source missing remains missing", sensitive: true, private: false}
+  performance_status: {type: string, required: false, unit: category, coding: controlled performance-status scale, sensitive: true, private: false}
+  walking_aid: {type: string, required: false, unit: category, coding: controlled walking-aid category, sensitive: true, private: false}
+  adl_score: {type: number, required: false, unit: score, coding: validated ADL score, sensitive: true, private: false}

@@ -1,0 +1,110 @@
+---
+title: "Molecular tumour board success"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+MTB registration success uses `mtb_reg`; discussion success uses numeric
+`n_mtb >= 1`. The discussion-count distribution and missingness are retained.
+No referral proxy or follow-up month classification is substituted.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_mtb"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+summary_path <- file.path(result_dir, "mtb-summary.parquet")
+distribution_path <- file.path(result_dir, "mtb-discussion-distribution.parquet")
+figure_path <- file.path(result_dir, "mtb-discussion-distribution.svg")
+cohort_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                         "analysis-cohort.parquet")
+if (!file.exists(cohort_path)) stop("MTB analysis requires the built analysis cohort.")
+input_paths <- c(cohort_path, private_domain_path(config, "cohort_follow_up"),
+                 schema_domain_path(config, "cohort_follow_up"))
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(summary_path, distribution_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "08-mtb.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  mtb_summary <- read_result_table(summary_path)
+} else {
+  cohort <- read_result_table(cohort_path)
+  require_public_columns(cohort, c("id", "mtb_reg", "n_mtb"), "MTB outcomes")
+  cohort_ids <- unique(cohort$id[!is.na(cohort$id)])
+  referral <- validate_binary(cohort$mtb_reg, "mtb_reg")
+  discussion_count <- suppressWarnings(as.numeric(as.character(cohort$n_mtb)))
+  invalid_count <- !is.na(discussion_count) &
+    (!is.finite(discussion_count) | discussion_count < 0 |
+       discussion_count != floor(discussion_count))
+  if (any(invalid_count)) {
+    stop("MTB discussion counts must be non-negative integers.")
+  }
+  registered_ids <- unique(cohort$id[referral == 1 & !is.na(cohort$id)])
+  discussed_ids <- unique(cohort$id[!is.na(discussion_count) &
+                                       discussion_count >= 1 & !is.na(cohort$id)])
+  mtb_summary <- data.frame(
+    patients = length(cohort_ids),
+    mtb_registered = length(registered_ids),
+    mtb_registered_proportion = if (length(cohort_ids) == 0L) NA_real_ else
+      length(registered_ids) / length(cohort_ids),
+    mtb_discussed = length(discussed_ids),
+    mtb_discussed_proportion = if (length(cohort_ids) == 0L) NA_real_ else
+      length(discussed_ids) / length(cohort_ids),
+    missing_discussion_count = sum(is.na(discussion_count)),
+    stringsAsFactors = FALSE
+  )
+  distribution <- as.data.frame(table(discussion_count, useNA = "ifany"),
+                                 stringsAsFactors = FALSE)
+  names(distribution) <- c("n_mtb", "patients")
+  distribution$n_mtb <- as.character(distribution$n_mtb)
+  write_module_table(mtb_summary, summary_path)
+  write_module_table(distribution, distribution_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the MTB figure.")
+  }
+  plot <- ggplot2::ggplot(
+    distribution[distribution$n_mtb != "NA", , drop = FALSE],
+    ggplot2::aes(x = n_mtb, y = patients)
+  ) +
+    ggplot2::geom_col() +
+    ggplot2::labs(x = "Recorded MTB discussion count", y = "Patients") +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 7, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built", definition = "mtb_reg_and_n_mtb_at_least_one"),
+    code_paths = here::here("analysis", "04-implementation", "08-mtb.qmd")
+  )
+}
+```
+
+```{r}
+#| label: mtb-summary
+#| tbl-cap: "MTB registration and discussion summary"
+
+mtb_summary |>
+  knitr::kable()
+```

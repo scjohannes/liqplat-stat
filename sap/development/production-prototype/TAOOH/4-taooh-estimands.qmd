@@ -1,0 +1,465 @@
+---
+title: "TAOOH Estimands"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(data.table)
+library(ggdist)
+library(patchwork)
+library(duckdb)
+```
+
+## Read empirical data
+
+```{r}
+data_emp <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_long.parquet"))
+
+fig_emp <- data_emp |>
+  mutate(
+        week = ceiling(day / 7),
+        surv_time = ceiling(surv_time / 7),
+    ) |>
+    group_by(id, week) |>
+    mutate(
+        y_taooh = factor(max(y_taooh), levels = 1:5)) |>
+    ungroup() |>
+    select(id, week, tx, y = y_taooh) |>
+    distinct() |>
+    filter(week > 0) |>
+    group_by(id) |>
+    complete(week = 1:26) |>
+    arrange(id, week) |>
+    fill(c(tx, y), .direction = "down") |>
+    markov.misc::plot_sops(time_var = "week", linetype_var = "tx", facet_var = NULL, geom = "line") +
+    scale_color_brewer(palette = "Dark2") +
+    scale_y_continuous(n.breaks = 10) +
+    scale_x_continuous(breaks = seq(1, 26, by = 4)) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(title = "Empirical state occupancy probabilities")
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_emp_sops.svg"),
+  plot = fig_emp,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+fig_emp2 <- data_emp |>
+  mutate(
+        week = ceiling(day / 7),
+        surv_time = ceiling(surv_time / 7),
+        tx = factor(tx, levels = c(0, 1), labels = c("UC", "SAT"))
+    ) |>
+    group_by(id, week) |>
+    mutate(
+        y_taooh = factor(max(y_taooh), levels = 1:5)) |>
+    ungroup() |>
+    select(id, week, tx, y = y_taooh) |>
+    distinct() |>
+    filter(week > 0) |>
+    group_by(id) |>
+    complete(week = 1:26) |>
+    arrange(id, week) |>
+    fill(c(tx, y), .direction = "down") |>
+    markov.misc::plot_sops(time_var = "week", linetype_var = "tx", facet_var = "tx", geom = "bar") +
+    scale_fill_brewer(palette = "Dark2") +
+    scale_y_continuous(n.breaks = 10) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(title = "Empirical state occupancy probabilities")
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_emp_sops_stacked.svg"),
+  plot = fig_emp2,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+## Read marginalized SOPs
+
+Loop over all imputations and combine the SOPs.
+
+```{r}
+# Directory containing the SOPs
+sop_dir <- here("0-main-analysis", "TAOOH", "results", "sops")
+
+# Get number of imputations
+m <- length(dir_ls(sop_dir))
+
+# # Initialize list to store data from each imputation
+# sop_list <- vector("list", m)
+
+# # Loop over imputations
+# for (imp_idx in 1:m) {
+
+#   message(glue::glue("Reading imputation {imp_idx} of {m}"))
+
+#   # Control arm
+#   files_0 <- dir_ls(
+#     here(sop_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_0"),
+#     glob = "*.parquet"
+#   )
+#   soc_df <- map(files_0, \(x) read_parquet(x)) |> rbindlist()
+
+#   # Treatment arm
+#   files_1 <- dir_ls(
+#     here(sop_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_1"),
+#     glob = "*.parquet"
+#   )
+#   tx_df <- map(files_1, \(x) read_parquet(x)) |> rbindlist()
+
+#   # Combine and add imputation indicator
+#   imp_df <- bind_rows(soc_df, tx_df) |>
+#     mutate(imp = imp_idx)
+
+#   sop_list[[imp_idx]] <- imp_df
+# }
+
+# # Combine all imputations
+# sop_df_all <- rbindlist(sop_list)
+
+# # Average SOPs over covariate settings and imputations
+# sop_df <- sop_df_all[, .(probability = mean(probability)), by = .(state, time, draw, tx, imp)]
+# sop_df[, state := as.factor(state)]
+# sop_df[, tx := factor(tx, levels = c(0, 1), labels = c("UC", "SAT"))]
+# setnames(sop_df, "probability", "sop")
+```
+
+```{r}
+library(duckdb)
+
+# Create a temporary on-disk database
+db_path <- here("taooh_scratch.duckdb")
+con <- dbConnect(duckdb(), dbdir = db_path)
+
+# Process each imputation separately and aggregate progressively
+message("Processing imputations...")
+sop_list <- vector("list", m)
+
+for (imp_idx in 1:m) {
+  message(glue::glue("Processing imputation {imp_idx} of {m}"))
+
+  # Get normalized paths
+  dir_0 <- normalizePath(here(sop_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_0"), winslash = "/")
+  dir_1 <- normalizePath(here(sop_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_1"), winslash = "/")
+
+  # Process each arm separately and aggregate immediately
+  # This reduces memory by averaging over covariate patterns before combining
+  query <- glue::glue("
+    SELECT
+      state,
+      time,
+      draw,
+      tx,
+      {imp_idx} as imp,
+      AVG(probability) as sop
+    FROM (
+      SELECT state, time, draw, 0 as tx, probability FROM read_parquet('{dir_0}/*.parquet')
+      UNION ALL
+      SELECT state, time, draw, 1 as tx, probability FROM read_parquet('{dir_1}/*.parquet')
+    )
+    GROUP BY state, time, draw, tx
+  ")
+
+  # Get aggregated data for this imputation
+  sop_list[[imp_idx]] <- dbGetQuery(con, query) |> as_tibble()
+}
+
+# Combine all imputations
+message("Combining results...")
+sop_summary <- rbindlist(sop_list)
+
+# Clean up
+dbDisconnect(con, shutdown = TRUE)
+duckdb::duckdb_shutdown(duckdb::duckdb())  # Fully release file locks
+if (file.exists(db_path)) file.remove(db_path)
+
+# Format for plotting
+setDT(sop_summary)
+sop_summary[, state := as.factor(state)]
+sop_summary[, tx := factor(tx, levels = c(0, 1), labels = c("UC", "SAT"))]
+```
+
+## Plotting
+
+### Marginalized SOPs
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+fig_marginalized <-
+  sop_summary |>
+  ggplot() +
+  aes(x = time, y = sop) +
+  stat_lineribbon(
+    aes(fill = state, linetype = tx),
+    linewidth = 0.6,
+    alpha = 0.4,
+    .width = 0.95
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by = 4)) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    x = "Study Week",
+    y = "SOP",
+    subtitle = "Marginalized state occupancy probabilities",
+    fill = "State",
+    linetype = "Group"
+  )
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_marginalized_sops.svg"),
+  plot = fig_marginalized,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_marginalized_sops.png"),
+  plot = fig_marginalized,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+## Primary Estimand
+
+### Difference in Weeks  Alive and Out of Hospital
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+posterior <- sop_summary |>
+  filter(state == "1") |>
+  group_by(tx, draw, imp) |>
+  summarise(mean_weeks = sum(sop), .groups = "drop") |>
+  pivot_wider(names_from = tx, values_from = mean_weeks, names_prefix = "tx_") |>
+  mutate(difference = tx_SAT - tx_UC)
+
+# Summary statistics
+posterior_summary <- posterior |>
+  summarise(
+    mean = mean(difference),
+    median = median(difference),
+    sd = sd(difference),
+    q025 = quantile(difference, 0.025),
+    q975 = quantile(difference, 0.975),
+    p_benefit = mean(difference > 0)
+  )
+
+posterior_summary
+```
+
+Table
+
+```{r}
+state_tbl <- sop_summary |>
+  group_by(state, tx, draw, imp) |>
+  summarise(
+    weeks = sum(sop),
+    .groups = "drop"
+  ) |>
+  pivot_wider(
+    names_from = tx,
+    values_from = weeks,
+    names_prefix = "tx_"
+  ) |>
+  mutate(
+    difference = tx_SAT - tx_UC
+  ) |>
+  group_by(state) |>
+  summarise(
+    UC_mean = mean(tx_UC),
+    UC_sd = sd(tx_UC),
+    UC_median = median(tx_UC),
+    UC_lower = quantile(tx_UC, 0.025),
+    UC_upper = quantile(tx_UC, 0.975),
+
+    SAT_mean = mean(tx_SAT),
+    SAT_sd = sd(tx_SAT),
+    SAT_median = median(tx_SAT),
+    SAT_lower = quantile(tx_SAT, 0.025),
+    SAT_upper = quantile(tx_SAT, 0.975),
+
+    diff_mean = mean(difference),
+    diff_sd = sd(difference),
+    diff_median = median(difference),
+    diff_lower = quantile(difference, 0.025),
+    diff_upper = quantile(difference, 0.975),
+
+    p_benefit = mean(difference > 0),
+    .groups = "drop"
+  ) |>
+  mutate(
+    state = case_match(
+      as.character(state),
+      "1" ~ "Out of hospital",
+      "2" ~ "Planned hospitalization",
+      "3" ~ "Emergency room visit",
+      "4" ~ "Unplanned hospitalization",
+      "5" ~ "Death"
+    ),
+    `UC Mean (SD)` = sprintf("%.1f (%.1f)", UC_mean, UC_sd),
+    `UC Median [95%% CrI]` = sprintf("%.1f [%.1f, %.1f]", UC_median, UC_lower, UC_upper),
+    `SAT Mean (SD)` = sprintf("%.1f (%.1f)", SAT_mean, SAT_sd),
+    `SAT Median [95%% CrI]` = sprintf("%.1f [%.1f, %.1f]", SAT_median, SAT_lower, SAT_upper),
+    `SAT - UC Mean (SD)` = sprintf("%.1f (%.1f)", diff_mean, diff_sd),
+    `SAT - UC Median [95%% CrI]` = sprintf("%.1f [%.1f, %.1f]", diff_median, diff_lower, diff_upper),
+    `Posterior Pr(SAT > UC)` = sprintf("%.1f%%", 100 * p_benefit),
+    .keep = "none"
+  )
+
+state_tbl
+
+write_parquet(state_tbl, here("0-main-analysis", "TAOOH", "results", "taooh_estimands.parquet"))
+```
+
+### Posterior Distribution Plot (Difference)
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+plot_posterior <- posterior |>
+  ggplot(aes(x = difference)) +
+  # stat_dots(side = "bottom") +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = bquote(paste("Treatment Difference in Weeks spent Alive and Out of Hospital (SAT - UC)")),
+    y = "Density"
+  )
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_posterior_distribution.svg"),
+  plot = plot_posterior,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_posterior_distribution.png"),
+  plot = plot_posterior,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+### Posterior Distribution Plot (Difference with Color-Coded Regions)
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+plot_posterior_colored <- posterior |>
+  ggplot(aes(x = difference)) +
+  stat_halfeye(aes(fill = after_stat(x > 0))) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(
+    values = c("TRUE" = "#2ca066ff", "FALSE" = "grey"),
+    labels = c("TRUE" = "Benefit (SAT > UC)", "FALSE" = "Harm (SAT ≤ UC)")
+  ) +
+  labs(
+    x = bquote(paste("Difference in Weeks spent Alive and Out of Hospital")),
+    y = "Density",
+    fill = "Region"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom"
+  )
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_posterior_distribution_colored.svg"),
+  plot = plot_posterior_colored,
+  width = 5,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_posterior_distribution_colored.png"),
+  plot = plot_posterior_colored,
+  width = 5,
+  height = 5,
+  dpi = 300
+)
+```
+
+### Posterior Distribution by Group
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+# Prepare data for group-specific posteriors
+posterior_by_group <- posterior |>
+  pivot_longer(
+    cols = c(tx_UC, tx_SAT),
+    names_to = "group",
+    values_to = "weeks",
+    names_prefix = "tx_"
+  ) |>
+  mutate(
+    group = factor(group, levels = c("SAT", "UC"),
+                   labels = c("Single-Arm Trial", "Usual Care"))
+  )
+
+# Define colors matching table-1
+group_colors <- c("Single-Arm Trial" = "#009e73", "Usual Care" = "#56b4e9")
+
+plot_posterior_by_group <- posterior_by_group |>
+  ggplot(aes(x = weeks, fill = group, color = group)) +
+  stat_halfeye(
+    slab_alpha = 0.2,     # Faint density
+    interval_alpha = 0.9, # Solid intervals
+    point_alpha = 1.0,    # Solid point estimate
+    linewidth = 1.2,
+    .width = 0.95) +
+  scale_fill_manual(values = group_colors) +
+  scale_color_manual(values = group_colors) +
+  labs(
+    x = "Weeks Alive and Out of Hospital",
+    y = "Density",
+    fill = "Group",
+    color = "Group"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  )
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_posterior_by_group.svg"),
+  plot = plot_posterior_by_group,
+  width = 5,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  here("0-main-analysis", "img", "taooh_posterior_by_group.png"),
+  plot = plot_posterior_by_group,
+  width = 5,
+  height = 5,
+  dpi = 300
+)
+```

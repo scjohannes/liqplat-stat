@@ -1,0 +1,14 @@
+name: progression_bsc
+version: 1
+description: Progression and best-supportive-care event records.
+primary_key: [event_id]
+privacy_boundary: Dates and event classifications are pseudonymized clinical data.
+columns:
+  event_id: {type: string, required: true, unit: "", coding: unique pseudonymized event identifier, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  event_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  event_type: {type: string, required: true, unit: category, coding: "progression | bsc_start | switch | stop | death | censoring", sensitive: true, private: false}
+  progression: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = progression", sensitive: true, private: false}
+  bsc_start_date: {type: date, required: false, unit: date, coding: ISO-8601; clinical BSC start definition, sensitive: true, private: false}
+  death_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  follow_up_end_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: false, private: false}

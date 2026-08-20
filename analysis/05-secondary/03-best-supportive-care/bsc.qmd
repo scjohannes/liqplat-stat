@@ -1,0 +1,85 @@
+---
+title: "Secondary outcome: best supportive care"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Best supportive care
+
+Time to best supportive care (BSC) starts at first-line treatment initiation,
+as specified in the SAP.  The derived endpoint retains a `bsc_date` column for
+every cohort participant; participants without a recorded BSC start have an
+explicit missing date.  Death before BSC is treated as censoring at the death
+date for the cause-specific analysis, with `bsc_censor_reason` preserving that
+distinction.  A supporting cumulative-incidence artifact may describe both
+events when produced by the analysis stage.
+
+```{r}
+#| eval: false
+
+source(here::here("analysis", "05-secondary", "secondary-helpers.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "data-validation.R"))
+
+cohort <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-cohort.parquet"),
+  schema = here::here("data", "schema", "cohort_follow_up.yml")
+)
+
+# The time origin is the first-line treatment initiation, never randomization.
+cohort$treatment_start_date <- secondary_parse_date(
+  cohort$treatment_start_date, "treatment_start_date"
+)
+bsc_data <- cohort
+bsc_data$bsc_origin_date <- bsc_data$treatment_start_date
+bsc_data$bsc_date <- secondary_parse_date(bsc_data$bsc_date, "bsc_date")
+bsc_data$follow_up_end_date <- secondary_date_column(
+  bsc_data, "follow_up_end_date", "follow_up_end_date"
+)
+bsc_data$follow_up_end_date[is.na(bsc_data$follow_up_end_date)] <- as.Date("2026-08-21")
+bsc_data$administrative_end <- pmin(bsc_data$follow_up_end_date, as.Date("2026-08-21"))
+bsc_data$death_date <- secondary_date_column(bsc_data, "death_date", "death_date")
+bsc_data$event_bsc <- 0L
+bsc_data$bsc_censor_reason <- "administrative_end"
+bsc_data$bsc_censor_date <- bsc_data$administrative_end
+for (row in seq_len(nrow(bsc_data))) {
+  bsc_before_death <- !is.na(bsc_data$bsc_date[row]) &&
+    !is.na(bsc_data$bsc_origin_date[row]) &&
+    bsc_data$bsc_date[row] >= bsc_data$bsc_origin_date[row] &&
+    (is.na(bsc_data$death_date[row]) ||
+       bsc_data$bsc_date[row] <= bsc_data$death_date[row])
+  if (bsc_before_death && bsc_data$bsc_date[row] <= bsc_data$administrative_end[row]) {
+    bsc_data$event_bsc[row] <- 1L
+    bsc_data$bsc_censor_date[row] <- bsc_data$bsc_date[row]
+    bsc_data$bsc_censor_reason[row] <- "bsc_observed"
+  } else if (!is.na(bsc_data$death_date[row]) &&
+             bsc_data$death_date[row] <= bsc_data$administrative_end[row] &&
+             (is.na(bsc_data$bsc_date[row]) ||
+                bsc_data$death_date[row] < bsc_data$bsc_date[row])) {
+    # Death before BSC is censored at death for the cause-specific analysis.
+    bsc_data$bsc_censor_date[row] <- bsc_data$death_date[row]
+    bsc_data$bsc_censor_reason[row] <- "death_before_bsc"
+  }
+}
+bsc_data$time_to_bsc_days <- as.numeric(
+  pmax(0, bsc_data$bsc_censor_date - bsc_data$bsc_origin_date)
+)
+bsc_formula <- survival::Surv(time_to_bsc_days, event_bsc) ~ tx + age + diagnosis
+bsc_fit <- rstanarm::stan_surv(
+  formula = bsc_formula,
+  data = bsc_data,
+  basehaz = "ms",
+  basehaz_ops = list(df = 5),
+  chains = 4,
+  iter = 1000,
+  warmup = 500,
+  seed = 17005
+)
+write_atomic_parquet(
+  bsc_data[, c("id", "tx", "bsc_date", "time_to_bsc_days", "event_bsc",
+               "bsc_censor_reason")],
+  project_path("results", "secondary", "bsc", "endpoint.parquet")
+)
+```

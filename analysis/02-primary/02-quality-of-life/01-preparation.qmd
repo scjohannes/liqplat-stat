@@ -1,0 +1,105 @@
+---
+title: "Quality of life — primary preparation"
+subtitle: "Inverted Q30 states, principal-stratum survivors, and death-inclusive data"
+format: html
+execute:
+  freeze: false
+---
+
+QoL state 1 is the best state after the SAP inversion (`8 - Q30`). The
+principal-stratum artifact contains participants observed alive at day 182;
+the separate death-inclusive artifact retains all participants and assigns the
+absorbing state 8 from the recorded death week onward for the SAP decision rule.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "data-validation.R"))
+source(here::here("R", "data-helpers.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+cohort_path <- project_path("analysis", "00-data", "results", "analysis-cohort.parquet")
+qol_path <- project_path("analysis", "00-data", "results", "analysis-qol.parquet")
+cohort_schema_path <- project_path("data", "schema", "cohort_follow_up.yml")
+qol_schema_path <- project_path("data", "schema", "qol.yml")
+output_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life"))
+principal_path <- file.path(output_dir, "prepared.parquet")
+death_inclusive_path <- file.path(output_dir, "death-inclusive-prepared.parquet")
+stage_id <- "primary-qol-preparation"
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "data-validation.R"),
+  here::here("R", "data-helpers.R"), here::here("R", "checkpoints.R"),
+  here::here("analysis", "module-runtime.R"), knitr::current_input()
+)
+```
+
+```{r}
+#| label: prepare-qol-data
+#| include: false
+module_branch(
+  runtime = runtime,
+  stage_id = stage_id,
+  input_paths = c(cohort_path, qol_path, cohort_schema_path, qol_schema_path),
+  output_paths = c(principal_path, death_inclusive_path),
+  code_paths = code_paths,
+  metadata = list(endpoint = "quality_of_life", horizon_weeks = 26L, state_inversion = "8-q30"),
+  worker = function() {
+    cohort <- module_input(cohort_path, cohort_schema_path)
+    qol <- module_input(qol_path, qol_schema_path)
+    module_require_columns(
+      cohort,
+      c("id", "randomization_date", "tx", "diagnosis", "death_date", "follow_up_end_date"),
+      "cohort_follow_up"
+    )
+    module_require_columns(qol, c("id", "assessment_id", "day", "q30", "baseline_q30"), "qol")
+    cohort <- derive_survival_endpoint(
+      cohort,
+      origin_col = "randomization_date",
+      death_date_col = "death_date",
+      follow_up_end_col = "follow_up_end_date",
+      lock_date = parse_analysis_date(config$analysis$data_lock, "data_lock", allow_missing = FALSE),
+      horizon_days = 182L
+    )
+    cohort$ecog_fstcnt <- if ("ecog_fstcnt" %in% names(cohort)) cohort$ecog_fstcnt else NA_integer_
+    cohort$event_death <- as.integer(cohort$event_death)
+    cohort$survival_time_days <- as.numeric(cohort$survival_time_days)
+    base <- cohort[
+      , c("id", "tx", "diagnosis", "ecog_fstcnt", "event_death", "survival_time_days"),
+      drop = FALSE
+    ]
+    base$diagnosis <- as.integer(factor(base$diagnosis, levels = sort(unique(base$diagnosis))))
+    weeks <- data.frame(week = 1:26)
+    grid <- merge(base, weeks, by = NULL)
+    observations <- qol[qol$day > 0 & qol$day <= 182, c("id", "day", "q30", "baseline_q30"), drop = FALSE]
+    observations$week <- pmax(1L, pmin(26L, ceiling(observations$day / 7)))
+    observations <- observations[order(observations$id, observations$week, observations$day), , drop = FALSE]
+    observations <- observations[!duplicated(observations[c("id", "week")], fromLast = TRUE), , drop = FALSE]
+    grid <- merge(grid, observations[, c("id", "week", "q30", "baseline_q30"), drop = FALSE],
+                  by = c("id", "week"), all.x = TRUE, sort = FALSE)
+    grid$y <- q30_to_analysis_state(grid$q30, strict = FALSE)
+    grid$baseline_state <- q30_to_analysis_state(grid$baseline_q30, strict = FALSE)
+    grid <- grid[order(grid$id, grid$week), , drop = FALSE]
+    grid$death_week <- ifelse(
+      grid$event_death == 1L,
+      pmax(1L, pmin(26L, ceiling(grid$survival_time_days / 7))),
+      27L
+    )
+    death_inclusive <- grid
+    death_inclusive$y_death_inclusive <- ifelse(
+      death_inclusive$week >= death_inclusive$death_week, 8L,
+      death_inclusive$y
+    )
+    principal <- grid[grid$event_death == 0L, , drop = FALSE]
+    principal <- principal[principal$week <= 26L, , drop = FALSE]
+    if (nrow(principal) == 0L) stop("No observed 26-week survivors are available for primary QoL.")
+    module_save_parquet(principal, principal_path)
+    module_save_parquet(death_inclusive, death_inclusive_path)
+  }
+)
+```

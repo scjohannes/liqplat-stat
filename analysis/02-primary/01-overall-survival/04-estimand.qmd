@@ -1,0 +1,237 @@
+---
+title: "Overall survival — primary estimand"
+subtitle: "182-day RMST, survival, and risk contrasts pooled over 50 imputations"
+format: html
+execute:
+  freeze: false
+---
+
+For each imputation, 200 deterministic standardized posterior survival draws
+are generated on 200 equally spaced time points through day 182. RMST uses the
+trapezoidal rule. Imputation branches are pooled with equal weight only after
+all 50 branches have completed.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "model-helpers.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("R", "survival-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config)
+model_dir <- project_path("artifacts", "primary", "overall-survival", "models")
+data_dir <- project_path("artifacts", "primary", "overall-survival", "imputations")
+draw_dir <- ensure_directory(project_path("artifacts", "primary", "overall-survival", "estimand"))
+result_dir <- ensure_directory(project_path("results", "primary", "overall-survival"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "imputation.R"),
+  here::here("R", "model-helpers.R"), here::here("R", "survival-helpers.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: derive-os-branches
+#| include: false
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  curves_path <- file.path(draw_dir, sprintf("survival-curves-%02d.parquet", index))
+  rmst_path <- file.path(draw_dir, sprintf("rmst-draws-%02d.parquet", index))
+  risk_path <- file.path(draw_dir, sprintf("risk-draws-%02d.parquet", index))
+  if (!file.exists(model_path) || !file.exists(data_path)) {
+    stop("OS estimand inputs are incomplete for imputation ", index, ".")
+  }
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-os-estimand-%02d", index),
+    input_paths = c(model_path, data_path),
+    output_paths = c(curves_path, rmst_path, risk_path),
+    code_paths = code_paths,
+    metadata = list(endpoint = "overall_survival", imputation = index,
+                   posterior_draws = 200L, standardized_time_points = 200L),
+    worker = function() {
+      model <- readRDS(model_path)
+      data <- module_read_parquet(data_path)
+      standardized_curve <- function(treatment, seed) {
+        newdata <- data
+        newdata$tx <- treatment
+        old_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+        old_seed <- if (old_exists) get(".Random.seed", envir = .GlobalEnv) else NULL
+        set.seed(seed)
+        raw <- tryCatch(
+          rstanarm::posterior_survfit(
+            model,
+            newdata = newdata,
+            times = 0,
+            extrapolate = TRUE,
+            standardise = TRUE,
+            control = list(edist = as.numeric(config$analysis$horizon_days), epoints = 200L),
+            return_matrix = TRUE,
+            draws = 200L
+          ),
+          finally = {
+            if (old_exists) assign(".Random.seed", old_seed, envir = .GlobalEnv)
+            else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+              rm(".Random.seed", envir = .GlobalEnv)
+            }
+          }
+        )
+        matrix_value <- if (is.matrix(raw)) raw else {
+          if (!is.list(raw) || length(raw) == 0L) stop("posterior_survfit returned no standardized curves.")
+          do.call(cbind, raw)
+        }
+        matrix_value <- as.matrix(matrix_value)
+        times <- attr(raw, "times")
+        if (is.null(times) && is.list(raw)) times <- attr(raw[[1L]], "times")
+        if (is.null(times)) {
+          times <- seq(0, as.numeric(config$analysis$horizon_days), length.out = ncol(matrix_value))
+        }
+        times <- as.numeric(times)
+        if (length(times) != ncol(matrix_value)) stop("Standardized survival times do not match posterior draws.")
+        if (nrow(matrix_value) < 200L && ncol(matrix_value) == 200L) matrix_value <- t(matrix_value)
+        if (nrow(matrix_value) < 200L) stop("posterior_survfit returned fewer than 200 draws.")
+        matrix_value <- matrix_value[seq_len(200L), , drop = FALSE]
+        data.frame(
+          draw = rep(seq_len(200L), each = length(times)),
+          time = rep(times, times = 200L),
+          survival = as.vector(t(matrix_value)),
+          tx = treatment,
+          stringsAsFactors = FALSE
+        )
+      }
+      curves <- rbind(
+        standardized_curve(0, analysis_seed(config, "survival", index, offset = 0L)),
+        standardized_curve(1, analysis_seed(config, "survival", index, offset = 1000L))
+      )
+      curves$imputation <- index
+      rmst <- compute_rmst_draws(
+        curves,
+        draw_col = "draw",
+        time_col = "time",
+        survival_col = "survival",
+        horizon = as.numeric(config$analysis$horizon_days),
+        group_cols = c("tx", "imputation")
+      )
+      risk <- survival_risk_draws(
+        curves,
+        horizon = as.numeric(config$analysis$horizon_days),
+        treatment_col = "tx"
+      )
+      risk$imputation <- index
+      module_save_parquet(curves, curves_path)
+      module_save_parquet(rmst, rmst_path)
+      module_save_parquet(risk, risk_path)
+    }
+  )
+}
+```
+
+```{r}
+#| label: pool-os-estimand
+#| include: false
+pooled_outputs <- c(
+  project_path("results", "primary", "overall-survival", "rmst-summary.parquet"),
+  project_path("results", "primary", "overall-survival", "risk-summary.parquet"),
+  project_path("results", "primary", "overall-survival", "estimand-draws.parquet"),
+  project_path("results", "primary", "overall-survival", "survival-curves.parquet"),
+  project_path("results", "primary", "overall-survival", "follow-up-sufficiency.yml")
+)
+branch_inputs <- c(
+  file.path(draw_dir, sprintf("rmst-draws-%02d.parquet", indices)),
+  file.path(draw_dir, sprintf("risk-draws-%02d.parquet", indices)),
+  file.path(draw_dir, sprintf("survival-curves-%02d.parquet", indices))
+)
+module_branch(
+  runtime = runtime,
+  stage_id = "primary-os-estimand-pooling",
+  input_paths = branch_inputs,
+  output_paths = pooled_outputs,
+  code_paths = code_paths,
+  metadata = list(endpoint = "overall_survival", imputations = 50L,
+                 posterior_draws_per_imputation = 200L, rope_days = c(-7, 7)),
+  worker = function() {
+    rmst_frames <- lapply(indices, function(index) {
+      frame <- module_read_parquet(file.path(draw_dir, sprintf("rmst-draws-%02d.parquet", index)))
+      frame$imputation <- index
+      frame
+    })
+    rmst_frames <- lapply(rmst_frames, function(frame) {
+      control <- frame[frame$tx == 0, c("draw", "imputation", "rmst"), drop = FALSE]
+      intervention <- frame[frame$tx == 1, c("draw", "imputation", "rmst"), drop = FALSE]
+      names(control)[names(control) == "rmst"] <- "rmst_0"
+      names(intervention)[names(intervention) == "rmst"] <- "rmst_1"
+      joined <- merge(control, intervention, by = c("draw", "imputation"), all = FALSE)
+      joined$rmst_diff <- joined$rmst_1 - joined$rmst_0
+      joined
+    })
+    if (length(rmst_frames) != 50L) stop("RMST pooling requires all 50 imputations.")
+    pooled_rmst <- pool_equal_weight_draws(
+      lapply(rmst_frames, function(frame) frame["rmst_diff"]),
+      n_draws = 200L,
+      seed = analysis_seed(config, "reports")
+    )
+    pooled_rmst$draw <- pooled_rmst$.pooled_draw
+    summary <- summarize_posterior_draws(pooled_rmst$rmst_diff)
+    summary$probability_benefit <- posterior_probability(pooled_rmst$rmst_diff)
+    summary$ci_66_low <- stats::quantile(pooled_rmst$rmst_diff, 0.17, names = FALSE)
+    summary$ci_66_high <- stats::quantile(pooled_rmst$rmst_diff, 0.83, names = FALSE)
+    summary$ci_95_low <- stats::quantile(pooled_rmst$rmst_diff, 0.025, names = FALSE)
+    summary$ci_95_high <- stats::quantile(pooled_rmst$rmst_diff, 0.975, names = FALSE)
+    summary$rope_low <- -7
+    summary$rope_high <- 7
+    summary$rope_66_contains <- summary$ci_66_low >= -7 && summary$ci_66_high <= 7
+    summary$horizon_days <- 182L
+    risk_frames <- lapply(indices, function(index) {
+      frame <- module_read_parquet(file.path(draw_dir, sprintf("risk-draws-%02d.parquet", index)))
+      frame$imputation <- index
+      frame
+    })
+    pooled_risks <- pool_equal_weight_draws(risk_frames, n_draws = 200L,
+                                            seed = analysis_seed(config, "reports", offset = 1L))
+    risk_summary <- summarize_survival_risks(pooled_risks)
+    risk_table <- data.frame(
+      measure = c("survival_risk_difference", "survival_risk_ratio"),
+      mean = c(risk_summary$summary["risk_difference", "mean"], risk_summary$summary["risk_ratio", "mean"]),
+      median = c(risk_summary$summary["risk_difference", "median"], risk_summary$summary["risk_ratio", "median"]),
+      q025 = c(risk_summary$summary["risk_difference", "q2.5"], risk_summary$summary["risk_ratio", "q2.5"]),
+      q975 = c(risk_summary$summary["risk_difference", "q97.5"], risk_summary$summary["risk_ratio", "q97.5"]),
+      horizon_days = 182L,
+      stringsAsFactors = FALSE
+    )
+    curve_frames <- lapply(indices, function(index) {
+      frame <- module_read_parquet(file.path(draw_dir, sprintf("survival-curves-%02d.parquet", index)))
+      frame$imputation <- index
+      frame
+    })
+    pooled_curves <- do.call(rbind, curve_frames)
+    if (!is.data.frame(pooled_curves) || nrow(pooled_curves) == 0L) {
+      stop("OS survival-curve pooling produced no rows.")
+    }
+    max_curve_day <- max(pooled_curves$time, na.rm = TRUE)
+    sufficiency <- data.frame(
+      horizon_days = c(182L, 365L),
+      sufficient = c(max_curve_day >= 182, max_curve_day >= 365),
+      reason = c(
+        if (max_curve_day >= 182) "Primary OS curves cover the 182-day horizon."
+        else "Primary OS curves do not cover the 182-day horizon.",
+        if (max_curve_day >= 365) "OS curves cover the 365-day horizon."
+        else "The locked primary OS curves stop at 182 days."
+      ),
+      stringsAsFactors = FALSE
+    )
+    module_save_parquet(as.data.frame(summary), pooled_outputs[1L])
+    module_save_parquet(risk_table, pooled_outputs[2L])
+    module_save_parquet(pooled_rmst, pooled_outputs[3L])
+    module_save_parquet(pooled_curves, pooled_outputs[4L])
+    write_atomic_text(yaml::as.yaml(sufficiency), pooled_outputs[5L])
+  }
+)
+```

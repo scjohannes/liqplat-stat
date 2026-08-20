@@ -1,0 +1,84 @@
+---
+title: "Secondary outcome: tissue biopsy"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Tissue biopsy
+
+The patient-level outcome is the number of unique calendar days on which a
+biopsy was performed.  Multiple biopsy records on the same date count once.
+The adjusted Bayesian negative-binomial model includes randomized treatment,
+linear age, ECOG collapsed to 0/1/2/3+, and the offset
+`log(observed_survival_days)`.
+
+Observed survival days are derived from the fixed data lock and death or
+administrative follow-up dates.  Missing dates and missing counts remain
+missing and are not substituted with zero; positive exposure is required by
+the count-model contract.
+
+```{r}
+#| eval: false
+
+source(here::here("analysis", "05-secondary", "secondary-helpers.R"))
+source(here::here("R", "count-helpers.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "data-validation.R"))
+
+cohort <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-cohort.parquet"),
+  schema = here::here("data", "schema", "cohort_follow_up.yml")
+)
+biopsy_path <- here::here("analysis", "00-data", "results", "analysis-biopsy.parquet")
+if (!file.exists(biopsy_path)) {
+  stop(
+    "Tissue-biopsy analysis is pending: no approved event-level biopsy table " ,
+    "is available; the participant aggregate is not substituted for biopsy events."
+  )
+}
+biopsy <- read_pseudonymized_parquet(
+  biopsy_path,
+  schema = here::here("data", "schema", "biopsy.yml")
+)
+
+biopsy$sample_date <- secondary_parse_date(
+  biopsy$sample_date, "sample_date", allow_missing = FALSE
+)
+# Count only biopsy events observed between randomization and each participant's
+# fixed-lock/182-day observed end.  Multiple records on one date count once.
+biopsy_data <- secondary_observed_follow_up(
+  cohort, origin_col = "randomization_date", horizon_days = 182L,
+  output_col = "observed_survival_days"
+)
+biopsy_lookup <- biopsy_data[, c("id", "randomization_date", "observed_end_date"),
+                             drop = FALSE]
+biopsy <- merge(biopsy, biopsy_lookup, by = "id", all = FALSE)
+biopsy <- biopsy[biopsy$sample_date >= biopsy$randomization_date &
+                   biopsy$sample_date <= biopsy$observed_end_date, , drop = FALSE]
+unique_day <- !duplicated(paste(as.character(biopsy$id), biopsy$sample_date, sep = "\r"))
+biopsy_counts <- as.data.frame(table(as.character(biopsy$id[unique_day])),
+                               stringsAsFactors = FALSE)
+names(biopsy_counts) <- c("id", "unique_biopsy_days")
+biopsy_counts$unique_biopsy_days <- as.integer(biopsy_counts$unique_biopsy_days)
+biopsy_data <- secondary_join_count(biopsy_data, biopsy_counts, "unique_biopsy_days")
+biopsy_data$ecog_3_plus <- secondary_collapse_ecog(biopsy_data$ecog_fstcnt)
+secondary_count_ready(biopsy_data, "unique_biopsy_days", "observed_survival_days")
+
+biopsy_formula <- unique_biopsy_days ~ tx + age + ecog_3_plus +
+  offset(log(observed_survival_days))
+biopsy_fit <- rstanarm::stan_glm(
+  formula = biopsy_formula,
+  data = biopsy_data,
+  family = rstanarm::neg_binomial_2(),
+  chains = 4,
+  iter = 1000,
+  warmup = 500,
+  seed = 17006
+)
+write_atomic_parquet(
+  biopsy_data[, c("id", "tx", "unique_biopsy_days", "observed_survival_days")],
+  project_path("results", "secondary", "tissue-biopsy", "endpoint.parquet")
+)
+```

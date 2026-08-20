@@ -1,0 +1,52 @@
+---
+title: "LIQPLAT Analysis Report"
+subtitle: "Artifact-only assembly of locked analyses"
+author: "LIQPLAT analysis team"
+date: "2026-08-21"
+format:
+  html:
+    toc: true
+    number-sections: true
+    html-math-method: katex
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: true
+    section-numbering: 1.1.1
+    columns: 1
+execute:
+  echo: false
+  warning: false
+  message: false
+  freeze: true
+---
+
+```{r}
+#| label: report-setup
+#| include: false
+
+source(here::here("R", "report-reader.R"))
+report_root <- report_project_root()
+```
+
+This report is assembled from compact public result artifacts and their status
+manifests.  It never fits or imputes a model.  A missing artifact is shown as
+**not run** or **unavailable**, never as a zero or a successful analysis.
+
+{{< include sections/01-population.qmd >}}
+
+{{< include sections/02-os.qmd >}}
+
+{{< include sections/03-qol.qmd >}}
+
+{{< include sections/04-taooh.qmd >}}
+
+{{< include sections/05-supporting.qmd >}}
+
+{{< include sections/06-implementation.qmd >}}
+
+{{< include sections/07-secondary.qmd >}}
+
+{{< include sections/08-pending.qmd >}}

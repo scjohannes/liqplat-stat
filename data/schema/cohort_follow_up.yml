@@ -1,0 +1,18 @@
+name: cohort_follow_up
+version: 1
+description: Pseudonymized patient-level cohort and follow-up interface.
+primary_key: [id]
+privacy_boundary: No direct identifiers; source-system linkage remains private.
+columns:
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  randomization_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: false, private: false}
+  tx: {type: integer, required: true, unit: binary, coding: "0 = external comparator; 1 = SAT invitation", sensitive: false, private: false}
+  diagnosis: {type: string, required: true, unit: category, coding: SAP diagnosis category, sensitive: true, private: false}
+  gender: {type: string, required: false, unit: category, coding: source coding, sensitive: true, private: false}
+  age: {type: number, required: false, unit: years, coding: age at randomization, sensitive: true, private: false}
+  ecog_fstcnt: {type: integer, required: false, unit: score, coding: "0-4; source missing remains missing", sensitive: true, private: false}
+  albumin: {type: number, required: false, unit: g/L, coding: laboratory value, sensitive: true, private: false}
+  c_reactive_protein: {type: number, required: false, unit: mg/L, coding: laboratory value, sensitive: true, private: false}
+  death_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  follow_up_end_date: {type: date, required: false, unit: date, coding: ISO-8601 administrative/source end, sensitive: false, private: false}
+  status_death: {type: integer, required: false, unit: binary, coding: "0 = alive; 1 = dead", sensitive: true, private: false}

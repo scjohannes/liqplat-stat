@@ -1,0 +1,76 @@
+# Public, version-controlled analysis constants.
+#
+# The clean production markov.misc release is deliberately not filled in yet.
+# Production preflight must fail until both the exact clean version and commit
+# are recorded after the package has been reviewed and installed.
+analysis:
+  name: LIQPLAT
+  config_version: 1
+  data_lock: "2026-08-21"
+  horizon_days: 182
+
+imputation:
+  main:
+    m: 50
+    maxit: 50
+    donors: 5
+  supporting:
+    indices: [1, 2, 3, 4, 5]
+    m: 5
+    maxit: 50
+    donors: 5
+  method: mice
+
+markov:
+  chains: 4
+  iterations: 1000
+  warmup: 500
+  retry_iterations: 2000
+  post_estimation_draws: 200
+  first_order:
+    order: 1
+    p_var: yprev
+  second_order:
+    order: 2
+    p_var: yprev
+    p2_var: ypprev
+
+seeds:
+  # Every stochastic stage receives a named family.  Stage code must derive
+  # per-imputation seeds with analysis_seed(), never from the clock.
+  data: 17001
+  imputation: 17002
+  qol: 17003
+  taooh: 17004
+  survival: 17005
+  supporting: 17006
+  diagnostics: 17007
+  reports: 17008
+
+diagnostics:
+  max_rhat: 1.01
+  min_ess_bulk: 400
+  min_ess_tail: 400
+  max_divergent_transitions: 0
+  max_treedepth_exceeded: 0
+  min_bfmi: 0.3
+  posterior_draws: 200
+  retry_on_failure: true
+
+provenance:
+  markov_misc:
+    package: markov.misc
+    # INVALID PLACEHOLDER: replace only with the reviewed clean release.
+    version: "0.0.0-CLEAN-SHA-REQUIRED"
+    git_sha: "REPLACE_WITH_REVIEWED_CLEAN_40_HEX_SHA"
+    source: "future clean markov.misc checkout"
+
+paths:
+  private_data: data/private
+  schema_dir: data/schema
+  derived_data: data/derived
+  artifacts: artifacts
+  results: results
+  reports: reports
+  logs: logs
+  checkpoints: artifacts/checkpoints

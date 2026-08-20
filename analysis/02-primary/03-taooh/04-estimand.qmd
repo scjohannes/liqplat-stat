@@ -1,0 +1,147 @@
+---
+title: "TAOOH — primary estimand"
+subtitle: "Weeks alive and out of hospital (state 1) over 26 weeks"
+format: html
+execute:
+  freeze: false
+---
+
+Posterior standardization is over observed trial participants using
+patient-specific random-intercept draws. It is not empirical Bayes. The
+second-order `avg_sops()` and `avg_comparisons()` calls retain both lag
+histories, use state 1 as the time-in-state target, and use 200 draws per
+imputation with mean SOP summaries.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "model-helpers.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config)
+data_dir <- project_path("artifacts", "primary", "taooh", "imputations")
+model_dir <- project_path("artifacts", "primary", "taooh", "models")
+draw_dir <- ensure_directory(project_path("artifacts", "primary", "taooh", "estimand"))
+result_dir <- ensure_directory(project_path("results", "primary", "taooh"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "model-helpers.R"),
+  here::here("R", "imputation.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: derive-taooh-branches
+#| include: false
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  sops_path <- file.path(draw_dir, sprintf("sops-%02d.rds", index))
+  comparison_path <- file.path(draw_dir, sprintf("comparisons-%02d.rds", index))
+  plot_sops_path <- file.path(draw_dir, sprintf("sops-%02d.png", index))
+  plot_comparison_path <- file.path(draw_dir, sprintf("comparisons-%02d.png", index))
+  if (!file.exists(data_path) || !file.exists(model_path)) stop("TAOOH estimand inputs are incomplete for imputation ", index, ".")
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-taooh-estimand-%02d", index),
+    input_paths = c(data_path, model_path),
+    output_paths = c(sops_path, comparison_path, plot_sops_path, plot_comparison_path),
+    code_paths = code_paths,
+    metadata = list(endpoint = "taooh", imputation = index, posterior_draws = 200L,
+                   summary = "mean", state = 1L, horizon_weeks = 26L,
+                   include_re = TRUE, standardization = "observed participants; patient-specific random-intercept draws"),
+    worker = function() {
+      data <- module_read_parquet(data_path)
+      model <- readRDS(model_path)
+      observed <- data[!duplicated(data$id), c("id", "tx", "diagnosis", "ecog_fstcnt", "albumin", "c_reactive_protein", "yprev", "ypprev"), drop = FALSE]
+      observed$yprev <- factor(observed$yprev, levels = 1:5, ordered = FALSE)
+      observed$ypprev <- factor(observed$ypprev, levels = 1:5, ordered = FALSE)
+      sops <- markov.misc::avg_sops(
+        model = model,
+        newdata = observed,
+        variables = list(tx = c(0, 1)),
+        times = 1:26,
+        y_levels = 1:5,
+        absorb = 5L,
+        p_var = "yprev",
+        p2_var = "ypprev",
+        id_var = "id",
+        time_var = "week",
+        include_re = TRUE,
+        n_draws = 200L,
+        seed = analysis_seed(config, "taooh", index),
+        posterior_summary = "mean",
+        return_draws = TRUE
+      )
+      comparisons <- markov.misc::avg_comparisons(
+        model = model,
+        newdata = observed,
+        variables = list(tx = c(0, 1)),
+        estimand = "time_in_state",
+        state_sets = 1L,
+        times = 1:26,
+        y_levels = 1:5,
+        absorb = 5L,
+        id_var = "id",
+        time_var = "week",
+        p_var = "yprev",
+        p2_var = "ypprev",
+        include_re = TRUE,
+        n_draws = 200L,
+        seed = analysis_seed(config, "taooh", index),
+        posterior_summary = "mean",
+        return_draws = TRUE
+      )
+      module_save_rds(sops, sops_path)
+      module_save_rds(comparisons, comparison_path)
+      if (!requireNamespace("markov.misc", quietly = TRUE)) stop("Package 'markov.misc' is required for TAOOH plots.")
+      ggplot2::ggsave(plot_sops_path, markov.misc::plot_sops(sops), width = 8, height = 5, dpi = 120)
+      ggplot2::ggsave(plot_comparison_path, markov.misc::plot_comparisons(comparisons), width = 8, height = 5, dpi = 120)
+    }
+  )
+}
+```
+
+```{r}
+#| label: pool-taooh-estimand
+#| include: false
+comparison_paths <- file.path(draw_dir, sprintf("comparisons-%02d.rds", indices))
+output_paths <- c(
+  file.path(result_dir, "home-time-summary.parquet"),
+  file.path(result_dir, "home-time-comparison-draws.parquet")
+)
+module_branch(
+  runtime = runtime,
+  stage_id = "primary-taooh-estimand-pooling",
+  input_paths = comparison_paths,
+  output_paths = output_paths,
+  code_paths = code_paths,
+  metadata = list(endpoint = "taooh", imputations = 50L, state = 1L,
+                 posterior_draws_per_imputation = 200L,
+                 standardization = "observed participants; patient-specific random-intercept draws"),
+  worker = function() {
+    comparisons <- lapply(comparison_paths, readRDS)
+    if (length(comparisons) != 50L) stop("TAOOH pooling requires all 50 comparison branches.")
+    draws <- lapply(seq_along(comparisons), function(position) {
+      value <- attr(comparisons[[position]], "draws")
+      if (is.null(value) || !is.data.frame(value)) stop("TAOOH comparison branch lacks posterior draws: ", position)
+      names(value)[names(value) == "estimate"] <- "draw_value"
+      value["draw_value"]
+    })
+    pooled <- pool_equal_weight_draws(draws, n_draws = 200L, seed = analysis_seed(config, "reports"))
+    summary <- summarize_posterior_draws(pooled$draw_value)
+    summary$probability_benefit <- posterior_probability(pooled$draw_value)
+    summary$state <- 1L
+    summary$horizon_weeks <- 26L
+    module_save_parquet(as.data.frame(summary), output_paths[1L])
+    module_save_parquet(pooled, output_paths[2L])
+  }
+)
+```

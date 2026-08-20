@@ -1,0 +1,687 @@
+---
+title: "Simulation Study: Handling Differential Missingness in Markov QoL Models"
+format:
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: true
+    columns: 1
+    tbl-cap-location: bottom
+---
+
+## Problem Statement
+
+In longitudinal QoL studies with death as an absorbing state, we face **differential missingness**:
+
+- **Death (state 8)**: Fully observed at exact time of occurrence
+- **QoL states (1-7)**: Sparsely observed (~15-20% of timepoints)
+
+This creates biased state occupancy probability (SOP) estimates because the cumulative incidence of death is incorrectly estimated when unobserved QoL times are treated as missing.
+
+**Approach:** Multiple Imputation (MI) to impute plausible QoL values constrained to 1-7.
+
+**Key insight**: We cannot use `Ocens()` for this problem because intervals are only valid for the outcome at each timepoint, but we also need valid `yprev` values for the Markov model. Imputation addresses both issues.
+
+## Setup
+
+```{r}
+#| output: false
+#| label: setup
+library(here)
+library(tidyverse)
+library(arrow)
+library(patchwork)
+library(markov.misc)
+library(data.table)
+library(Hmisc)
+library(rms)
+library(VGAM)
+library(mice)
+library(miceadds)
+library(furrr)
+library(future.callr)
+
+set.seed(12345)
+
+# Configuration
+N_PATIENTS <- 270
+N_IMPUTATIONS <- 5
+# N_BOOTSTRAP <- 200
+N_SIM_ITERATIONS <- 32
+SAMPLE_PERCENTAGE <- 0.20
+FU <- 26
+N_WORKERS <- 8
+```
+
+## Data Generating Process
+
+### Fit Model to Historical Data
+
+```{r}
+#| label: fit-dgp-model
+data <- read_parquet(here("data", "qol_historic.parquet")) |>
+  mutate(
+    yprev = factor(yprev, ordered = FALSE),
+    ecog_fstcnt = factor(ecog_fstcnt)
+  )
+
+# Fit proportional odds model (basis for DGP)
+m_dgp <- vglm(
+  ordered(y) ~ pol(week, 3) + yprev + ecog_fstcnt + diagnosis,
+  family = cumulative(reverse = TRUE, parallel = TRUE),
+  data = data
+)
+
+# Extract intercepts (add death state intercept)
+ints <- rev(c(coef(m_dgp)[1:6], -5))
+extra_params <- coef(m_dgp)[-c(1:6)]
+```
+
+### Define Linear Predictor Function
+
+```{r}
+#| label: lp-function
+g <- function(yprev, t, tx, ecog_fstcnt, diagnosis, parameter, extra_params) {
+  tx_effect <- parameter * as.numeric(as.character(tx))
+  time_effect <- extra_params["pol(week, 3)week"] * t +
+    extra_params["pol(week, 3)week^2"] * t^2 +
+    extra_params["pol(week, 3)week^3"] * t^3
+
+  yprev_effect <- rep(0, length(yprev))
+  for (state in unique(yprev)) {
+    if (state != 1) {
+      state_idx <- which(yprev == state)
+      yprev_coef_name <- paste0("yprev", state)
+      if (yprev_coef_name %in% names(extra_params)) {
+        yprev_effect[state_idx] <- extra_params[[yprev_coef_name]]
+      }
+    }
+  }
+
+  diagnosis_effect <- rep(0, length(diagnosis))
+  for (diag in unique(diagnosis)) {
+    if (diag != levels(diagnosis)[1]) {
+      diag_idx <- which(diagnosis == diag)
+      diag_coef_name <- paste0("diagnosis", diag)
+      if (diag_coef_name %in% names(extra_params)) {
+        diagnosis_effect[diag_idx] <- extra_params[[diag_coef_name]]
+      }
+    }
+  }
+
+  ecog_effect <- ifelse(ecog_fstcnt == 2, extra_params["ecog_fstcnt2"], 0)
+  as.numeric(tx_effect + time_effect + yprev_effect + diagnosis_effect + ecog_effect)
+}
+```
+
+### Create Baseline Data
+
+```{r}
+#| label: baseline-data
+baseline_data <- data |>
+  select(pat_id, baseline_q30, ecog_fstcnt, diagnosis, tx) |>
+  distinct() |>
+  mutate(
+    yprev = factor(baseline_q30, ordered = TRUE),
+    week = 1
+  ) |>
+  slice_sample(n = N_PATIENTS, replace = TRUE) |>
+  mutate(id = row_number()) |>
+  select(-pat_id, -week)
+```
+
+## Core Functions
+
+### 1. Simulate Complete Trajectories
+
+```{r}
+#| label: simulate-trajectories
+simulate_complete_data <- function(baseline_data, tx_effect = log(1), seed = NULL) {
+  sim_trajectories_markov(
+    baseline_data = baseline_data,
+    follow_up_time = FU,
+    intercepts = ints,
+    lp_function = g,
+    extra_params = extra_params,
+    parameter = tx_effect,
+    absorbing_states = 8,
+    seed = seed,
+    covariate_names = c("tx", "ecog_fstcnt", "diagnosis")
+  )
+}
+```
+
+### 2. Apply Differential Missingness
+
+```{r}
+#| label: apply-missingness
+apply_differential_missingness <- function(df, sample_pct = SAMPLE_PERCENTAGE) {
+  # Death is ALWAYS observed
+  death_obs <- df |> filter(y == 8)
+
+  # Baseline (time = 1) always observed
+  baseline <- df |>
+    filter(time == 1) |>
+    mutate(observed = TRUE)
+
+  # Sample QoL observations (sparse)
+  qol_obs <- df |>
+    filter(y != 8, time > 1) |>
+    mutate(observed = runif(n()) < sample_pct)
+
+  # Combine: keep structure but mark missingness
+  bind_rows(baseline, qol_obs, death_obs |> mutate(observed = TRUE)) |>
+    arrange(id, time) |>
+    mutate(
+      y_observed = if_else(observed, y, NA_real_),
+      y_true = y  # Keep true value for validation
+    )
+}
+```
+
+### 3. Multiple Imputation for QoL
+
+The key insight: we need to impute **both** `y` (outcome) and reconstruct `yprev` (lagged state) from the imputed trajectory. We also need to preserve the baseline observation at time=1 with its original yprev.
+
+```{r}
+#| label: impute-qol
+impute_qol_trajectory <- function(df, m_imp = N_IMPUTATIONS) {
+  # Convert to data.table for speed
+  dt <- as.data.table(df)
+
+  # 1. Extract death times efficiently
+  death_info <- dt[y == 8, .(death_time = min(time)), by = id]
+
+  # 2. Get baseline covariates (first row per patient)
+  baseline_covars <- dt[time == 1, .(id, baseline_q30, ecog_fstcnt, diagnosis, tx)]
+
+  # 3. Create full grid efficiently using data.table
+  ids <- unique(dt$id)
+  full_grid <- CJ(id = ids, time = 1:FU)
+  full_grid <- death_info[full_grid, on = "id"]
+  full_grid <- baseline_covars[full_grid, on = "id"]
+
+  # Mark censored and death rows
+  full_grid[, `:=`(
+    censored = !is.na(death_time) & time > death_time,
+    is_death_week = !is.na(death_time) & time == death_time
+  )]
+  full_grid <- full_grid[censored == FALSE]
+
+  # 4. Merge observations
+  obs_dt <- dt[, .(id, time, y_observed)]
+  imp_prep <- obs_dt[full_grid, on = c("id", "time")]
+
+  # Define target and proxies
+  imp_prep[, `:=`(
+    y_target = fifelse(is_death_week, 8, y_observed),
+    death_time_safe = fifelse(is.na(death_time), FU + 1L, death_time)
+  )]
+
+  # LOCF for proxy (within each patient)
+  imp_prep[, y_locf := y_observed]
+  imp_prep[time == 1 & is.na(y_locf), y_locf := baseline_q30]
+  setorder(imp_prep, id, time)
+  imp_prep[, y_locf := nafill(y_locf, type = "locf"), by = id]
+  imp_prep[, y_prev_proxy := shift(y_locf, n = 1, type = "lag"), by = id]
+  imp_prep[time == 1, y_prev_proxy := baseline_q30]
+
+  # 5. Prepare MICE data (exclude death weeks)
+  mice_df <- imp_prep[is_death_week == FALSE, .(
+    id, time,
+    y = y_target,
+    y_prev_proxy,
+    death_time = death_time_safe,
+    baseline_q30, ecog_fstcnt, diagnosis, tx
+  )]
+  mice_df[, `:=`(
+    ecog_fstcnt = as.numeric(ecog_fstcnt),
+    diagnosis = as.numeric(diagnosis)
+  )]
+  mice_df <- as.data.frame(mice_df)
+
+  # 6. Configure MICE
+  init <- mice(mice_df, maxit = 0, printFlag = FALSE)
+  pred <- init$predictorMatrix
+  meth <- init$method
+  meth[] <- ""
+  meth["y"] <- "2l.pmm"
+  pred[, "id"] <- -2
+
+  # 7. Impute (single call, most expensive step)
+  imp <- mice(
+    mice_df,
+    m = m_imp,
+    maxit = 10,
+    method = meth,
+    predictorMatrix = pred,
+    printFlag = FALSE
+  )
+
+  # 8. Prepare death rows once
+  death_rows <- as.data.frame(imp_prep[is_death_week == TRUE, .(
+    id, time, y = y_target, baseline_q30, ecog_fstcnt, diagnosis, tx
+  )])
+
+  # 9. Process imputations efficiently
+  process_imputation <- function(i) {
+    completed_qol <- complete(imp, i)
+    completed_qol$ecog_fstcnt <- factor(completed_qol$ecog_fstcnt)
+    completed_qol$diagnosis <- factor(completed_qol$diagnosis)
+    completed_qol <- completed_qol[, c("id", "time", "y", "baseline_q30",
+                                        "ecog_fstcnt", "diagnosis", "tx")]
+
+    full_traj <- rbind(completed_qol, death_rows)
+    full_traj <- full_traj[order(full_traj$id, full_traj$time), ]
+
+    # Use data.table for fast lag computation
+    dt_traj <- as.data.table(full_traj)
+    dt_traj[, `:=`(
+      yprev = shift(y, n = 1, type = "lag", fill = first(baseline_q30)),
+      timeprev = shift(time, n = 1, type = "lag", fill = 0L)
+    ), by = id]
+    dt_traj[, `:=`(
+      yprev = factor(yprev, levels = 1:7, ordered = FALSE),
+      gap = time - timeprev,
+      imp_id = i
+    )]
+
+    as_tibble(dt_traj[!is.na(y)])
+  }
+
+  bind_rows(lapply(1:m_imp, process_imputation))
+}
+```
+
+### 4. Estimation via vglm
+
+For a single dataset (complete case or one imputation), fit the model and compute SOPs.
+
+```{r}
+#| label: fit-vglm-model
+fit_vglm_single <- function(df, ylevels = factor(1:8), absorb = 8) {
+  # Filter out transitions from death (can't predict from absorbing state)
+  model_df <- df |>
+    filter(as.numeric(as.character(yprev)) != 8) |>
+    mutate(
+      yprev = factor(yprev, levels = 1:7, ordered = FALSE),
+      y = as.numeric(y),
+      tx = as.numeric(as.character(tx))
+    )
+
+  # Fit proportional odds model using RCS in formula
+  m <- vglm(
+    y ~ tx + rms::rcs(time, 4) + yprev + ecog_fstcnt + diagnosis,
+    data = model_df,
+    family = cumulative(reverse = TRUE, parallel = TRUE)
+  )
+
+  # Compute standardized SOPs
+  varnames <- list(tvarname = "time", pvarname = "yprev", id = "id", tx = "tx", gap = "gap")
+
+  sops <- standardize_sops(
+    model = m,
+    data = model_df,
+    times = 1:FU,
+    ylevels = ylevels,
+    absorb = absorb,
+    varnames = varnames
+  )
+
+  list(model = m, sops = sops)
+}
+
+#' Fit model to MI data: fit separately to each imputation, then average SOPs
+fit_vglm_mi <- function(mi_df, ylevels = factor(1:8), absorb = 8) {
+  imp_ids <- unique(mi_df$imp_id)
+
+  # Fit model to each imputed dataset
+  results <- lapply(imp_ids, function(i) {
+    fit_vglm_single(mi_df |> filter(imp_id == i), ylevels, absorb)
+  })
+
+  # Average SOPs across imputations (Rubin's rules for point estimates)
+  sop_tx_list <- lapply(results, function(r) r$sops$sop_tx)
+  sop_ctrl_list <- lapply(results, function(r) r$sops$sop_ctrl)
+
+  avg_sop_tx <- Reduce(`+`, sop_tx_list) / length(sop_tx_list)
+  avg_sop_ctrl <- Reduce(`+`, sop_ctrl_list) / length(sop_ctrl_list)
+
+  list(
+    sops = list(sop_tx = avg_sop_tx, sop_ctrl = avg_sop_ctrl),
+    n_imputations = length(results)
+  )
+}
+
+#' Extract time-in-state estimates from SOPs
+extract_time_in_state <- function(sops) {
+  if (is.null(sops)) return(NULL)
+
+  # Time in each state = sum of SOPs across all timepoints
+  time_tx <- colSums(sops$sop_tx)
+  time_ctrl <- colSums(sops$sop_ctrl)
+
+  tibble(
+    state = 1:length(time_tx),
+    time_tx = time_tx,
+    time_ctrl = time_ctrl,
+    diff = time_tx - time_ctrl
+  )
+}
+```
+
+
+### 5. Compute True Time-in-State from Complete Data
+
+```{r}
+#| label: true-time-in-state
+compute_true_time_in_state <- function(complete_df) {
+  # Empirical SOPs from complete data
+  sops_by_tx <- complete_df |>
+    group_by(tx, time) |>
+    count(y) |>
+    mutate(sop = n / sum(n)) |>
+    ungroup()
+
+  # Time in each state
+  time_in_state <- sops_by_tx |>
+    group_by(tx, y) |>
+    summarise(time_in_state = sum(sop), .groups = "drop") |>
+    pivot_wider(names_from = tx, values_from = time_in_state, names_prefix = "tx_") |>
+    rename(state = y) |>
+    mutate(
+      time_tx = tx_1,
+      time_ctrl = tx_0,
+      diff = time_tx - time_ctrl
+    ) |>
+    select(state, time_tx, time_ctrl, diff)
+
+  time_in_state
+}
+```
+
+## Simulation Framework
+
+### Single Iteration
+
+```{r}
+#| label: single-iteration
+run_single_iteration <- function(iter, tx_effect, seed) {
+  set.seed(seed + iter)
+
+  # 1. Generate complete data
+  complete_df <- simulate_complete_data(baseline_data, tx_effect = tx_effect, seed = seed + iter)
+
+  # 2. Compute true time in each state (from complete data)
+  true_time <- compute_true_time_in_state(complete_df)
+
+  # 3. Apply differential missingness
+  df_with_miss <- apply_differential_missingness(complete_df)
+
+  # 4. Multiple Imputation
+  mi_df <- impute_qol_trajectory(df_with_miss, m_imp = N_IMPUTATIONS)
+  mi_fit <- fit_vglm_mi(mi_df)
+  mi_time <- extract_time_in_state(mi_fit$sops)
+
+  # Compile results (long format by state)
+  tibble(
+    iter = iter,
+    state = 1:8,
+    true_tx = true_time$time_tx,
+    true_ctrl = true_time$time_ctrl,
+    true_diff = true_time$diff,
+    mi_tx = mi_time$time_tx,
+    mi_ctrl = mi_time$time_ctrl,
+    mi_diff = mi_time$diff
+  )
+}
+```
+
+### Run Full Simulation
+
+```{r}
+#| label: run-simulation
+run_simulation <- function(n_iter, tx_effect, scenario_name, seed = 12345) {
+  message(glue::glue("Running {scenario_name}: {n_iter} iterations"))
+
+  plan(callr, workers = N_WORKERS)
+
+  results <- future_map_dfr(1:n_iter, function(i) {
+    run_single_iteration(i, tx_effect, seed)
+  }, .options = furrr_options(
+    seed = TRUE,
+    packages = c("tidyverse", "data.table", "mice", "miceadds", "VGAM", "markov.misc")))
+
+  plan(sequential)
+
+  results |> mutate(scenario = scenario_name, tx_effect = tx_effect)
+}
+```
+
+## Demonstration
+
+### Generate Example Data
+
+```{r}
+#| label: demo-data
+# H0: No treatment effect
+d_h0 <- simulate_complete_data(baseline_data, tx_effect = log(1), seed = 1234)
+
+# Visualize complete trajectories
+p1 <- plot_sops(d_h0, time_var = "time", geom = "line", linetype_var = "tx", facet_var = NULL) +
+  coord_cartesian(ylim = c(0, 0.35)) +
+  labs(title = "Complete Data (H0)")
+
+p1
+
+# Apply missingness
+d_miss <- apply_differential_missingness(d_h0)
+
+# Summary of missingness
+miss_summary <- d_miss |>
+  group_by(y_true == 8) |>
+  summarise(
+    n_total = n(),
+    n_observed = sum(observed),
+    pct_observed = mean(observed) * 100
+  )
+
+miss_summary
+```
+
+### Compare Methods
+
+```{r}
+#| label: compare-methods
+# True values from complete data
+true_time <- compute_true_time_in_state(d_h0)
+
+# MI approach (fit to each imputation separately, then average)
+mi_data <- impute_qol_trajectory(d_miss, m_imp = 20)
+
+mi_fit <- fit_vglm_mi(mi_data)
+mi_time <- extract_time_in_state(mi_fit$sops)
+```
+
+### Bias Comparison (All States)
+
+```{r}
+#| label: bias-comparison
+# Combine results
+comparison <- true_time |>
+  rename(true_tx = time_tx, true_ctrl = time_ctrl, true_diff = diff) |>
+  left_join(
+    mi_time |> rename(mi_tx = time_tx, mi_ctrl = time_ctrl, mi_diff = diff),
+    by = "state"
+  ) |>
+  mutate(
+    mi_bias_tx = mi_tx - true_tx,
+    mi_bias_ctrl = mi_ctrl - true_ctrl,
+    mi_bias_diff = mi_diff - true_diff
+  )
+
+# Print comparison
+comparison |>
+  select(state, true_tx, mi_tx, mi_bias_tx) |>
+  knitr::kable(digits = 3, caption = "Time in State (Treatment Arm)")
+
+comparison |>
+  select(state, true_ctrl, mi_ctrl, mi_bias_ctrl) |>
+  knitr::kable(digits = 3, caption = "Time in State (Control Arm)")
+
+comparison |>
+  select(state, true_diff, mi_diff, mi_bias_diff) |>
+  knitr::kable(digits = 3, caption = "Treatment Effect (Difference in Weeks)")
+```
+
+### Visualize SOPs
+
+```{r}
+#| label: viz-sops
+#| fig-width: 12
+#| fig-height: 8
+
+# Prepare SOP data for plotting
+prepare_sop_plot_data <- function(sops, method) {
+  bind_rows(
+    as_tibble(sops$sop_tx) |>
+      mutate(time = 1:FU, tx = "Treatment") |>
+      pivot_longer(-c(time, tx), names_to = "state", values_to = "sop"),
+    as_tibble(sops$sop_ctrl) |>
+      mutate(time = 1:FU, tx = "Control") |>
+      pivot_longer(-c(time, tx), names_to = "state", values_to = "sop")
+  ) |>
+    mutate(method = method)
+}
+
+# Prepare empirical SOPs from complete data
+prepare_empirical_sops <- function(complete_df) {
+  complete_df |>
+    group_by(tx, time) |>
+    count(y) |>
+    mutate(sop = n / sum(n)) |>
+    ungroup() |>
+    mutate(
+      state = as.character(y),
+      tx = if_else(tx == 1, "Treatment", "Control"),
+      method = "True (Complete Data)"
+    ) |>
+    select(time, tx, state, sop, method)
+}
+
+if (exists("mi_fit") && exists("d_h0") && !is.null(mi_fit)) {
+  sop_data <- bind_rows(
+    prepare_empirical_sops(d_h0),
+    prepare_sop_plot_data(mi_fit$sops, "Multiple Imputation")
+  ) |>
+    mutate(method = factor(method, levels = c("True (Complete Data)", "Multiple Imputation")))
+
+  ggplot(sop_data, aes(x = time, y = sop, color = state, linetype = tx)) +
+    geom_line(linewidth = 0.8) +
+    facet_wrap(~method, nrow = 1) +
+    scale_color_brewer(palette = "Dark2") +
+    labs(
+      title = "State Occupancy Probabilities: True vs. Estimated",
+      x = "Study Week", y = "Probability",
+      color = "State", linetype = "Treatment"
+    ) +
+    theme_minimal()
+}
+```
+
+## Run Simulation Study
+
+```{r}
+#| label: full-simulation
+#| eval: false
+
+# Define scenarios
+scenarios <- list(
+  H0 = log(1)      # Null: no effect
+  # HA1 = log(0.8),   # Small effect
+  # HA2 = log(0.6)    # Moderate effect
+)
+
+# Run simulations (this takes time!)
+all_results <- map2_dfr(
+  scenarios, names(scenarios),
+  ~run_simulation(n_iter = N_SIM_ITERATIONS, tx_effect = .x, scenario_name = .y)
+)
+
+# Save results
+write_parquet(all_results, here("1-qol", "output", "diff_miss_sim_results.parquet"))
+```
+
+## Analyze Results
+
+```{r}
+#| label: analyze-results
+#| eval: false
+
+results <- read_parquet(here("1-qol", "output", "diff_miss_sim_results.parquet"))
+
+# Bias by state and scenario
+bias_summary <- results |>
+  mutate(
+    mi_bias_tx = mi_tx - true_tx,
+    mi_bias_ctrl = mi_ctrl - true_ctrl,
+    mi_bias_diff = mi_diff - true_diff
+  ) |>
+  group_by(scenario, state) |>
+  summarise(
+    true_mean_diff = mean(true_diff, na.rm = TRUE),
+    mi_mean_bias = mean(mi_bias_diff, na.rm = TRUE),
+    mi_rmse = sqrt(mean(mi_bias_diff^2, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+bias_summary
+
+# Visualization: Bias in differences by state
+results |>
+  mutate(mi_bias = mi_diff - true_diff) |>
+  ggplot(aes(x = factor(state), y = mi_bias)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~scenario) +
+  labs(
+    title = "Bias in Time-in-State Difference by State (Multiple Imputation)",
+    x = "State", y = "Bias (Estimated - True)"
+  ) +
+  theme_minimal()
+```
+
+### Combined Time-in-State Visualization
+
+```{r}
+#| label: combined-time-in-state-viz
+#| eval: false
+#| fig-width: 12
+#| fig-height: 8
+
+# Create long format for combined visualization
+combined_bias <- results |>
+  mutate(
+    mi_bias_tx = mi_tx - true_tx,
+    mi_bias_ctrl = mi_ctrl - true_ctrl
+  ) |>
+  pivot_longer(
+    cols = c(mi_bias_tx, mi_bias_ctrl),
+    names_to = "arm",
+    values_to = "bias"
+  ) |>
+  mutate(arm = if_else(arm == "mi_bias_tx", "Treatment", "Control"))
+
+# Faceted boxplot
+ggplot(combined_bias, aes(x = factor(state), y = bias)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  facet_grid(arm ~ scenario) +
+  labs(
+    title = "MI Bias in Time-in-State Estimates by Treatment Arm and Scenario",
+    x = "State", y = "Bias (Weeks)"
+  ) +
+  theme_minimal()
+```

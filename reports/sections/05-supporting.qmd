@@ -1,0 +1,13 @@
+# Supporting analyses
+
+All supporting models use fixed imputations 1–5.  They therefore have lower
+Monte Carlo precision than the main analyses, which use 50 imputations.  They
+are complementary checks and are not replacements for the three main
+analyses.
+
+```{r}
+#| label: supporting-results
+#| results: asis
+
+report_render_section("supporting", root = report_root)
+```

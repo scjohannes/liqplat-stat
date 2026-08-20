@@ -1,0 +1,14 @@
+name: qol
+version: 1
+description: Longitudinal EORTC QLQ-C30 Q30 observations.
+primary_key: [id, assessment_id]
+privacy_boundary: Dates and measures are retained only after pseudonymization.
+columns:
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  assessment_id: {type: string, required: true, unit: "", coding: unique questionnaire record, sensitive: false, private: false}
+  questionnaire_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  day: {type: integer, required: true, unit: days, coding: days from randomization, sensitive: false, private: false}
+  week: {type: integer, required: false, unit: weeks, coding: ceiling(day / 7), sensitive: false, private: false}
+  q30: {type: integer, required: false, unit: "EORTC 1-7", coding: "original Q30 scale; missing is not zero", sensitive: true, private: false}
+  baseline_q30: {type: integer, required: false, unit: "EORTC 1-7", coding: "baseline Q30; missing is not zero", sensitive: true, private: false}
+  y_qol: {type: integer, required: false, unit: ordinal state, coding: analysis state after Q30 inversion, sensitive: true, private: false}

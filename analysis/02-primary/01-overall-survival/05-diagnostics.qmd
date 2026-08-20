@@ -1,0 +1,70 @@
+---
+title: "Overall survival — primary diagnostics"
+subtitle: "Compact posterior diagnostics for 50 Bayesian survival fits"
+format: html
+execute:
+  freeze: false
+---
+
+This stage reports compact convergence diagnostics and refuses to certify a
+branch that violates the configured thresholds. It does not re-fit models or
+write patient-level displays.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config)
+model_dir <- project_path("artifacts", "primary", "overall-survival", "models")
+diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "overall-survival", "diagnostics"))
+result_path <- project_path("results", "primary", "overall-survival", "diagnostics.parquet")
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: check-os-models
+#| include: false
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  output_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
+  if (!file.exists(model_path)) stop("Missing OS model branch: ", model_path)
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-os-diagnostics-%02d", index),
+    input_paths = model_path,
+    output_paths = output_path,
+    code_paths = code_paths,
+    metadata = list(endpoint = "overall_survival", imputation = index),
+    worker = function() {
+      model <- readRDS(model_path)
+      if (!requireNamespace("posterior", quietly = TRUE)) stop("Package 'posterior' is required for OS diagnostics.")
+      draws <- posterior::as_draws_df(model)
+      diagnostics <- as.data.frame(posterior::summarise_draws(draws))
+      diagnostics$imputation <- index
+      finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+      finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+      finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+      if (length(finite_rhat) == 0L || any(finite_rhat > config$diagnostics$max_rhat) ||
+          length(finite_bulk) == 0L || any(finite_bulk < config$diagnostics$min_ess_bulk) ||
+          length(finite_tail) == 0L || any(finite_tail < config$diagnostics$min_ess_tail)) {
+        stop("OS posterior diagnostics failed for imputation ", index, ".")
+      }
+      module_save_parquet(diagnostics, output_path)
+    }
+  )
+}
+diagnostic_paths <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", indices))
+if (!all(file.exists(diagnostic_paths))) stop("OS diagnostics are incomplete.")
+all_diagnostics <- do.call(rbind, lapply(diagnostic_paths, module_read_parquet))
+module_save_parquet(all_diagnostics, result_path)
+```

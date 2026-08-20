@@ -1,0 +1,15 @@
+name: taooh
+version: 1
+description: Weekly ordinal Time Alive and Out of Hospital observations.
+primary_key: [id, week]
+privacy_boundary: Pseudonymized longitudinal health-state records only.
+columns:
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  week: {type: integer, required: true, unit: weeks, coding: study week, sensitive: false, private: false}
+  day: {type: integer, required: false, unit: days, coding: days from randomization, sensitive: false, private: false}
+  y_taooh: {type: integer, required: true, unit: ordinal state, coding: "1 = alive/out; 2 = planned; 3 = ER; 4 = unplanned admission; 5 = dead", sensitive: true, private: false}
+  in_hospital: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = yes", sensitive: true, private: false}
+  planned_admission: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = yes", sensitive: true, private: false}
+  er_visit: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = yes", sensitive: true, private: false}
+  unplanned_stay: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = yes", sensitive: true, private: false}
+  status_death: {type: integer, required: false, unit: binary, coding: "0 = alive; 1 = dead", sensitive: true, private: false}

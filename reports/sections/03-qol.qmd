@@ -1,0 +1,17 @@
+# Quality of life
+
+The primary QoL presentation is selected only by the OS decision artifact.  No
+credible interval is recomputed here.  If that artifact is missing, the report
+does not choose a QoL primary.
+
+```{r}
+#| label: qol-decision
+#| results: asis
+
+qol_decision <- read_qol_analysis_decision(root = report_root)
+cat("**QoL decision:** ", qol_primary_label(qol_decision), "\n\n", sep = "")
+if (!is.null(qol_decision$reason)) {
+  cat("**Decision source:** ", qol_decision$reason, "\n\n", sep = "")
+}
+report_render_section("qol", root = report_root)
+```

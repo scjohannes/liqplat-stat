@@ -1,0 +1,155 @@
+---
+title: "LIQPLAT recruitment"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Recruitment is summarized from the pseudonymized event interface. The source
+screening and random-selection dates are used only to build aggregate counts;
+individual dates and identifiers are never printed.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "population_recruitment"
+result_dir <- module_result_dir(file.path("analysis", "01-population"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+recruitment_path <- file.path(result_dir, "recruitment-summary.parquet")
+figure_path <- file.path(result_dir, "recruitment-cumulative.svg")
+input_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-cohort.parquet")
+recruitment_input_path <- file.path(
+  module_result_dir(file.path("analysis", "00-data")),
+  "analysis-recruitment.parquet"
+)
+if (!file.exists(input_path) || !file.exists(recruitment_input_path)) {
+  stop("Recruitment requires the built analysis cohort and recruitment Parquet.")
+}
+input_paths <- c(input_path, recruitment_input_path)
+output_paths <- c(recruitment_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "01-population", "01-recruitment.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  recruitment_summary <- read_result_table(recruitment_path)
+} else {
+  recruitment <- read_result_table(recruitment_input_path)
+  require_public_columns(recruitment, c("id", "screened_date", "eligible"),
+                         "recruitment accounting")
+  recruitment$screened_date <- parse_analysis_date(recruitment$screened_date,
+                                                   "screened_date", allow_missing = FALSE)
+  recruitment$eligible <- validate_binary(recruitment$eligible, "eligible",
+                                          allow_missing = FALSE)
+  if ("randomization_date" %in% names(recruitment)) {
+    recruitment$randomization_date <- parse_analysis_date(recruitment$randomization_date,
+                                                           "randomization_date")
+  }
+  if ("enrolled_date" %in% names(recruitment)) {
+    recruitment$enrolled_date <- parse_analysis_date(recruitment$enrolled_date,
+                                                     "enrolled_date")
+  }
+  if ("tx" %in% names(recruitment)) recruitment$tx <- validate_binary(recruitment$tx, "tx")
+  if (anyDuplicated(recruitment$id)) {
+    id_groups <- split(seq_len(nrow(recruitment)), as.character(recruitment$id), drop = TRUE)
+    recruitment_rows <- lapply(id_groups, function(index) {
+      part <- recruitment[index, , drop = FALSE]
+      result <- data.frame(
+        id = as.character(part$id[[1L]]),
+        screened_date = min(part$screened_date, na.rm = TRUE),
+        eligible = as.integer(max(part$eligible, na.rm = TRUE)),
+        recruitment_records = nrow(part),
+        stringsAsFactors = FALSE
+      )
+      if ("randomization_date" %in% names(part)) {
+        values <- part$randomization_date[!is.na(part$randomization_date)]
+        result$randomization_date <- if (length(values) == 0L) as.Date(NA) else min(values)
+      }
+      if ("enrolled_date" %in% names(part)) {
+        values <- part$enrolled_date[!is.na(part$enrolled_date)]
+        result$enrolled_date <- if (length(values) == 0L) as.Date(NA) else min(values)
+      }
+      if ("tx" %in% names(part)) {
+        values <- unique(part$tx[!is.na(part$tx)])
+        if (length(values) > 1L) stop("Conflicting recruitment assignment for patient.")
+        result$tx <- if (length(values) == 0L) NA_integer_ else as.integer(values[[1L]])
+      }
+      result
+    })
+    recruitment <- do.call(rbind, recruitment_rows)
+    rownames(recruitment) <- NULL
+  }
+  recruitment_summary <- data.frame(
+    step = c("screened", "eligible", "selected_for_invitation", "not_selected"),
+    n = c(
+      nrow(recruitment),
+      sum(recruitment$eligible == 1),
+      if ("tx" %in% names(recruitment)) sum(recruitment$eligible == 1 & recruitment$tx == 1,
+                                             na.rm = TRUE) else NA_integer_,
+      if ("tx" %in% names(recruitment)) sum(recruitment$eligible == 1 & recruitment$tx == 0,
+                                             na.rm = TRUE) else NA_integer_
+    ),
+    stringsAsFactors = FALSE
+  )
+  if ("enrolled_date" %in% names(recruitment)) {
+    recruitment_summary <- rbind(
+      recruitment_summary,
+      data.frame(step = "enrolled", n = sum(!is.na(recruitment$enrolled_date)),
+                 stringsAsFactors = FALSE)
+    )
+  }
+  write_module_table(recruitment_summary, recruitment_path)
+
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the recruitment figure.")
+  }
+  selected <- recruitment[!is.na(recruitment$randomization_date), , drop = FALSE]
+  if (nrow(selected) > 0L) {
+    selected <- selected[order(selected$randomization_date), , drop = FALSE]
+    selected$cumulative_n <- seq_len(nrow(selected))
+    plot <- ggplot2::ggplot(selected, ggplot2::aes(randomization_date, cumulative_n)) +
+      ggplot2::geom_step() +
+      ggplot2::labs(x = "Calendar month", y = "Cumulative selected patients") +
+      ggplot2::theme_minimal()
+  } else {
+    plot <- ggplot2::ggplot() +
+      ggplot2::labs(x = "Calendar month", y = "Cumulative selected patients",
+                    subtitle = "No random-selection dates available at the data lock.") +
+      ggplot2::theme_minimal()
+  }
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 8, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built"),
+    code_paths = here::here("analysis", "01-population", "01-recruitment.qmd")
+  )
+}
+```
+
+```{r}
+#| label: recruitment-table
+#| tbl-cap: "Aggregate recruitment accounting"
+
+recruitment_summary |>
+  knitr::kable()
+```

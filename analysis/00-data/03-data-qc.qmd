@@ -1,0 +1,157 @@
+---
+title: "LIQPLAT non-identifying data quality checks"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+The rendered tables contain only domain/field-level counts and logic-check
+labels. No pseudonymous patient or sample values, dates, free text, or source
+paths are printed.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "data_quality_checks"
+result_dir <- module_result_dir(file.path("analysis", "00-data"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+validation_path <- file.path(result_dir, "input-validation.parquet")
+build_status_path <- file.path(result_dir, "build-status.parquet")
+qc_path <- file.path(result_dir, "data-qc-summary.parquet")
+logic_path <- file.path(result_dir, "data-qc-logic.parquet")
+if (!file.exists(validation_path) || !file.exists(build_status_path)) {
+  stop("Run the input-validation and analysis-dataset build modules first.")
+}
+validation <- read_result_table(validation_path)
+build_status <- read_result_table(build_status_path)
+if (any(validation$status %in% c("missing_required", "schema_missing",
+                                  "manifest_entry_missing", "manifest_marks_unavailable"))) {
+  stop("Data QC cannot proceed while required input validation fails.")
+}
+
+private_dir <- project_path(config_get(config, "paths", "private_data"))
+private_files <- list.files(private_dir, pattern = "\\.parquet$", full.names = TRUE,
+                            ignore.case = TRUE)
+input_paths <- c(validation_path, build_status_path, private_files,
+                 list.files(project_path(config_get(config, "paths", "schema_dir")),
+                            pattern = "\\.yml$", full.names = TRUE, ignore.case = TRUE))
+output_paths <- c(qc_path, logic_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "00-data", "03-data-qc.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  qc_summary <- read_result_table(qc_path)
+  logic_summary <- read_result_table(logic_path)
+} else {
+  qc_rows <- list()
+  logic_rows <- list()
+  available_domains <- validation$domain[validation$status == "validated"]
+  for (domain in available_domains) {
+    data <- load_private_domain(config, domain, required = TRUE)
+    schema <- read_data_schema(schema_domain_path(config, domain))
+    columns <- schema_columns(schema)
+    for (column_name in intersect(names(columns), names(data))) {
+      values <- data[[column_name]]
+      qc_rows[[length(qc_rows) + 1L]] <- data.frame(
+        domain = domain,
+        column = column_name,
+        n_rows = nrow(data),
+        n_missing = sum(is.na(values)),
+        missing_proportion = if (nrow(data) == 0L) NA_real_ else mean(is.na(values)),
+        stringsAsFactors = FALSE
+      )
+    }
+    key <- as.character(schema$primary_key)
+    duplicate_rows <- if (nrow(data) == 0L) 0L else sum(duplicated(data[, key, drop = FALSE]))
+    logic_rows[[length(logic_rows) + 1L]] <- data.frame(
+      domain = domain,
+      check = "primary_key_duplicates",
+      n_violations = duplicate_rows,
+      status = if (duplicate_rows == 0L) "pass" else "fail",
+      stringsAsFactors = FALSE
+    )
+    binary_columns <- names(columns)[vapply(columns, function(specification) {
+      identical(as.character(specification$unit), "binary")
+    }, logical(1))]
+    for (column_name in intersect(binary_columns, names(data))) {
+      values <- suppressWarnings(as.numeric(as.character(data[[column_name]])))
+      invalid <- sum(!is.na(values) & !values %in% c(0, 1))
+      logic_rows[[length(logic_rows) + 1L]] <- data.frame(
+        domain = domain,
+        check = paste0("binary_coding_", column_name),
+        n_violations = invalid,
+        status = if (invalid == 0L) "pass" else "fail",
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  if (length(qc_rows) == 0L) {
+    qc_summary <- data.frame(
+      domain = character(), column = character(), n_rows = integer(),
+      n_missing = integer(), missing_proportion = numeric(),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    qc_summary <- do.call(rbind, qc_rows)
+  }
+  if (length(logic_rows) == 0L) {
+    logic_summary <- data.frame(
+      domain = character(), check = character(), n_violations = integer(),
+      status = character(), stringsAsFactors = FALSE
+    )
+  } else {
+    logic_summary <- do.call(rbind, logic_rows)
+  }
+  rownames(qc_summary) <- NULL
+  rownames(logic_summary) <- NULL
+  write_module_table(qc_summary, qc_path)
+  write_module_table(logic_summary, logic_path)
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "checked"),
+    code_paths = here::here("analysis", "00-data", "03-data-qc.qmd")
+  )
+}
+```
+
+```{r}
+#| label: completeness
+#| tbl-cap: "Non-identifying completeness summary"
+
+qc_summary |>
+  subset(!column %in% c("id", "sample_id", "alteration_id", "recruitment_id",
+                        "assessment_id", "event_id", "imaging_id", "product_id",
+                        "treatment_id", "referral_id", "biopsy_id")) |>
+  transform(
+    missing_proportion = round(missing_proportion, 4),
+    n_rows = as.character(n_rows)
+  ) |>
+  knitr::kable()
+```
+
+```{r}
+#| label: logic
+#| tbl-cap: "Non-identifying logic-check summary"
+
+logic_summary |>
+  knitr::kable()
+```

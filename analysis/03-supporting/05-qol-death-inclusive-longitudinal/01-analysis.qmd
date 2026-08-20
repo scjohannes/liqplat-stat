@@ -1,0 +1,193 @@
+---
+title: "QoL death-inclusive longitudinal Markov — computationally reduced supporting/sensitivity analysis (5 imputations)"
+format: html
+execute:
+  freeze: false
+---
+
+This computationally reduced supporting/sensitivity analysis (5 imputations)
+models QoL states 1–7 together with absorbing death state 8. Missing QoL values
+are imputed only on weeks known to be alive. Fixed imputations 1–5 and 200
+posterior standardized draws per imputation are required.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("R", "markov-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+runtime <- module_runtime()
+config <- runtime$config
+if (!requireNamespace("miceadds", quietly = TRUE)) stop("Package 'miceadds' is required for multilevel QoL imputation.")
+library(miceadds)
+indices <- module_exact_indices(config, supporting = TRUE)
+if (!identical(indices, 1:5)) stop("Supporting death-inclusive QoL requires exactly imputations 1:5.")
+input_path <- project_path("artifacts", "primary", "quality-of-life", "death-inclusive-prepared.parquet")
+output_dir <- ensure_directory(project_path("artifacts", "supporting", "qol-death-inclusive-longitudinal"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "imputation.R"),
+  here::here("R", "markov-helpers.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: fit-death-inclusive-qol
+#| include: false
+prepared <- module_read_parquet(input_path)
+module_require_columns(prepared, c("id", "tx", "diagnosis", "ecog_fstcnt", "week", "q30", "y_death_inclusive"), "death-inclusive QoL data")
+for (index in indices) {
+  model_path <- file.path(output_dir, sprintf("model-%02d.rds", index))
+  sops_path <- file.path(output_dir, sprintf("sops-%02d.rds", index))
+  comparison_path <- file.path(output_dir, sprintf("comparisons-%02d.rds", index))
+  draws_path <- file.path(output_dir, sprintf("draws-%02d.parquet", index))
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("supporting-qol-death-inclusive-%02d", index),
+    input_paths = input_path,
+    output_paths = c(model_path, sops_path, comparison_path, draws_path),
+    code_paths = code_paths,
+    metadata = list(label = "computationally reduced supporting/sensitivity analysis (5 imputations)",
+                   imputation = index, imputations = 1:5, posterior_draws = 200L,
+                   absorbing_state = 8L),
+    worker = function() {
+      data <- prepared
+      data$.cluster <- as.integer(factor(data$id))
+      data$q30_model <- ifelse(data$y_death_inclusive == 8L, NA_real_, data$q30)
+      init <- mice::mice(data, m = 0, maxit = 0, printFlag = FALSE)
+      methods <- init$method
+      predictors <- init$predictorMatrix
+      methods[] <- ""
+      methods["q30_model"] <- "2l.pmm"
+      predictors[,] <- 0
+      predictors["q30_model", c("week", "tx", "diagnosis", "ecog_fstcnt")] <- 1
+      predictors["q30_model", ".cluster"] <- -2
+      predictors[, c("id", ".cluster", "q30", "y_death_inclusive", "death_week")] <- 0
+      predictors[c("id", ".cluster", "q30", "y_death_inclusive", "death_week"), ] <- 0
+      fitted <- mice::mice(
+        data = data,
+        method = methods,
+        predictorMatrix = predictors,
+        m = 1L,
+        maxit = as.integer(config$imputation$supporting$maxit),
+        donors = as.integer(config$imputation$supporting$donors),
+        seed = analysis_seed(config, "supporting", index),
+        printFlag = FALSE
+      )
+      completed <- mice::complete(fitted, action = 1L)
+      completed$y <- ifelse(
+        completed$y_death_inclusive == 8L,
+        8L,
+        q30_to_analysis_state(completed$q30_model, strict = TRUE)
+      )
+      completed <- completed |>
+        dplyr::arrange(id, week) |>
+        dplyr::group_by(id) |>
+        dplyr::mutate(
+          death_seen = dplyr::cumany(y == 8L),
+          y = dplyr::if_else(death_seen, 8L, y),
+          yprev = dplyr::lag(y, 1L, default = dplyr::first(y)),
+          gap = 1L
+        ) |>
+        dplyr::ungroup()
+      completed$death_seen <- NULL
+      completed$y <- factor(completed$y, levels = 1:8, ordered = TRUE)
+      completed$yprev <- factor(completed$yprev, levels = 1:8, ordered = FALSE)
+      observed <- completed[!duplicated(completed$id), c("id", "tx", "diagnosis", "ecog_fstcnt", "yprev", "gap"), drop = FALSE]
+      dd <- rms::datadist(completed)
+      old_datadist <- getOption("datadist")
+      options(datadist = "dd")
+      on.exit(options(datadist = old_datadist), add = TRUE)
+      model_formula <- y ~ tx + rms::rcs(week, 4) + yprev * gap +
+        ecog_fstcnt + factor(diagnosis)
+      fit_seed <- analysis_seed(config, "supporting", index)
+      fitted_model <- tryCatch(
+        markov.misc::blrm_markov(
+          formula = model_formula,
+          ppo = ~week,
+          cppo = function(y) y,
+          data = completed,
+          id_var = "id",
+          time_var = "week",
+          chains = as.integer(config$markov$chains),
+          iter = as.integer(config$markov$iterations),
+          warmup = as.integer(config$markov$warmup),
+          seed = fit_seed,
+          refresh = 0L
+        ),
+        error = identity
+      )
+      diagnostics <- if (inherits(fitted_model, "error")) {
+        fitted_model
+      } else {
+        tryCatch(markov_diagnostics(fitted_model, config$diagnostics), error = identity)
+      }
+      retry <- inherits(fitted_model, "error") || inherits(diagnostics, "error") ||
+        !isTRUE(diagnostics$passed)
+      if (retry) {
+        if (!isTRUE(config$diagnostics$retry_on_failure)) {
+          stop("Supporting death-inclusive QoL Markov fit failed and retries are disabled.")
+        }
+        fitted_model <- markov.misc::blrm_markov(
+          formula = model_formula,
+          ppo = ~week,
+          cppo = function(y) y,
+          data = completed,
+          id_var = "id",
+          time_var = "week",
+          chains = as.integer(config$markov$chains),
+          iter = as.integer(config$markov$retry_iterations),
+          warmup = as.integer(config$markov$retry_iterations / 2L),
+          seed = as.integer(fit_seed + 500000L),
+          refresh = 0L
+        )
+        diagnostics <- markov_diagnostics(fitted_model, config$diagnostics)
+      }
+      assert_markov_diagnostics(diagnostics)
+      sops <- markov.misc::avg_sops(
+        model = fitted_model,
+        newdata = observed,
+        variables = list(tx = c(0, 1)),
+        times = 1:26,
+        y_levels = 1:8,
+        absorb = 8L,
+        p_var = "yprev",
+        id_var = "id",
+        time_var = "week",
+        n_draws = 200L,
+        seed = analysis_seed(config, "supporting", index),
+        posterior_summary = "mean",
+        return_draws = TRUE
+      )
+      comparisons <- markov.misc::avg_comparisons(
+        model = fitted_model,
+        newdata = observed,
+        variables = list(tx = c(0, 1)),
+        estimand = "time_in_state",
+        state_sets = 1:3,
+        times = 1:26,
+        y_levels = 1:8,
+        absorb = 8L,
+        id_var = "id",
+        time_var = "week",
+        p_var = "yprev",
+        include_re = FALSE,
+        n_draws = 200L,
+        seed = fit_seed,
+        posterior_summary = "mean",
+        return_draws = TRUE
+      )
+      module_save_rds(fitted_model, model_path)
+      module_save_rds(sops, sops_path)
+      module_save_rds(comparisons, comparison_path)
+      draws <- attr(sops, "draws")
+      if (is.null(draws) || nrow(draws) < 200L) stop("Death-inclusive QoL SOPs contain fewer than 200 draws.")
+      module_save_parquet(as.data.frame(draws), draws_path)
+    }
+  )
+}
+```

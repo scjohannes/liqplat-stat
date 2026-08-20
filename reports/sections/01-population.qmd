@@ -1,0 +1,12 @@
+# Population and participant flow
+
+The population section reports the randomized ITT cohort, eligibility, and
+participant-flow accounting when the corresponding compact artifacts are
+available.
+
+```{r}
+#| label: population-results
+#| results: asis
+
+report_render_section("population", root = report_root)
+```

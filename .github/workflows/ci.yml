@@ -1,0 +1,65 @@
+name: LIQPLAT CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-smoke:
+    runs-on: windows-latest
+    env:
+      LC_ALL: C
+      R_KEEP_PKG_SOURCE: yes
+    steps:
+      - name: Check out clean repository
+        uses: actions/checkout@v4
+
+      - name: Set up R 4.6.1
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.6.1"
+          use-public-rspm: true
+
+      - name: Set up Rtools45
+        uses: r-lib/actions/setup-rtools@v2
+        with:
+          rtools-version: "45"
+
+      - name: Set up Quarto 1.9.37
+        uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: "1.9.37"
+
+      - name: Install test dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          cache: true
+          extra-packages: any::arrow, any::digest, any::here, any::knitr, any::rmarkdown, any::testthat, any::withr, any::yaml
+
+      - name: Run parse, contract, and privacy tests
+        shell: pwsh
+        run: |
+          $env:MAKEFLAGS = 'PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin'
+          Rscript tests/testthat.R
+
+      - name: Run no-PHI synthetic report smoke test
+        shell: pwsh
+        run: |
+          $env:MAKEFLAGS = 'PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin'
+          Rscript scripts/synthetic-smoke-test.R
+
+      - name: Verify command-line help and environment preflight
+        shell: pwsh
+        run: |
+          $env:MAKEFLAGS = 'PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin'
+          Rscript scripts/check-environment.R --help
+          Rscript scripts/run-all.R --help
+
+      - name: Render SAP from clean clone
+        shell: pwsh
+        run: |
+          quarto render sap/SAP.qmd --to typst --output-dir .ci-artifacts/sap

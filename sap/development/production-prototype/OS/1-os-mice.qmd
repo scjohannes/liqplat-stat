@@ -1,0 +1,137 @@
+---
+title: "Multiple Imputation Overall Survival"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(tidyverse)
+library(here)
+library(mice)
+library(arrow)
+```
+
+## Data
+
+```{r}
+data_raw <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_wide.parquet"))
+```
+
+## Data Preprocessing
+
+### Variable Transformations
+
+- Stage is currently missing
+
+```{r}
+data <- data_raw |>
+  mutate(
+    lung = if_else(diagnosis == "SNM_93880001", 1, 0) #SNM Code for Lung Ca
+  ) |>
+  select(
+    id,
+    status_death,
+    surv_time,
+    tx,
+    gender,
+    age,
+    ecog_fstcnt,
+    lung,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    lactate_dehydrogenase
+  )
+```
+
+### Nelson-Aalen Cumulative Hazard Estimate
+
+We include the Nelson-Aalen cumulative hazard estimate (`na_est`) as a predictor in the imputation model instead of survival time [van-Buuren2021-pc, chapter 9.1].
+
+```{r}
+data$na_est <- nelsonaalen(data, timevar = surv_time, statusvar = status_death)
+```
+
+## Imputation
+
+For the final trial analysis:
+
+- Number of imputed datasets: $m = 50$
+- Maximum iterations: 50
+- Donor pool size: $k = 5$
+
+```{r}
+#| output: false
+md.pattern(data)
+
+init <- mice(data, maxit = 0)
+meth <- init$method
+pred_matrix <- init$predictorMatrix
+
+# Patient ID should not be used for imputation
+pred_matrix[, "id"] <- 0
+pred_matrix["id", ] <- 0
+meth["id"] <- ""
+
+# Use Nelson-Aalen estimate instead of raw survival time
+pred_matrix[, "surv_time"] <- 0
+pred_matrix["surv_time", ] <- 0
+meth["surv_time"] <- ""
+
+imputed_data <- mice(data,
+                     m = 10,      # 50 in final analysis
+                     maxit = 10,  # 50 in final analysis
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     donors = 5,
+                     seed = 78109823)
+```
+
+## Convergence Diagnostics
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
+plot(imputed_data)
+```
+
+## Distribution Diagnostics
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for all imputed variables."
+densityplot(imputed_data)
+```
+
+```{r}
+#| fig-cap: "Density plot for ECOG performance status."
+densityplot(imputed_data, ~ecog_fstcnt)
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Strip plots of imputed values for continuous laboratory variables across imputed datasets."
+stripplot(imputed_data, albumin + bilirubin + c_reactive_protein + lactate_dehydrogenase ~ .imp)
+```
+
+```{r}
+#| fig-cap: "Strip plot of imputed values for ECOG performance status across imputed datasets."
+stripplot(imputed_data, ecog_fstcnt ~ .imp)
+```
+
+## Export
+
+```{r}
+for(i in 1:imputed_data$m){
+    complete_data <- complete(imputed_data, i)
+    write_parquet(complete_data, sink = here("0-main-analysis", "OS", "imp-data", paste0("os-data-", i, ".parquet")))
+}
+```

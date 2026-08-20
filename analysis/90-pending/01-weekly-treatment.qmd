@@ -1,0 +1,28 @@
+---
+title: "Pending outcome: weekly time under treatment"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Weekly time under treatment
+
+**Status: blocked — schema and state contract not ready.**
+
+The planned analysis needs a mutually exclusive weekly Markov state for
+planned no-treatment, active treatment, and death.  The future schema must
+contain, at minimum:
+
+- `id`, `week`, and a unique interval key;
+- `state` with the controlled values `planned_no_treatment`, `treatment`, and
+  `death`;
+- `treatment_line`, `treatment_name`, and the exposure interval dates;
+- `death_date`, `follow_up_end_date`, and a weekly observation/completeness
+  indicator.
+
+The current `weekly_treatment` interface contains `id`, `week`,
+`treatment_line`, `treatment_name`, and `exposed`, but it cannot distinguish
+planned no-treatment from an unobserved week or encode death as an absorbing
+state.  No aggregate exposure field is substituted, and no Markov model is
+run until those fields and their observation rules are approved.

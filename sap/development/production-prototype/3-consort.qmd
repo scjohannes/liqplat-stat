@@ -1,0 +1,259 @@
+---
+title: CONSORT Flowchart
+---
+
+## Setup
+
+```{r}
+library(REDCapR)
+library(tidyverse)
+library(consort)
+library(glue)
+```
+
+## Download REDCap data
+
+
+```{r}
+data <- REDCapR::redcap_read(redcap_uri = Sys.getenv("redcap_fxdb_url"), token = Sys.getenv("liqplat_api"), raw_or_label = "label")
+data <- data$data
+```
+
+## Select Screening Columns
+
+```{r}
+d <- data |>
+  filter(is.na(redcap_repeat_instrument)) |>
+  select(
+    pat_id_liqplat,
+    setting_liqplat,
+    solidtu_liqplat,
+    elig_pre_solid_tumor       = solidtu_liqplat,     # Prerequisite: Solid Tumor
+    elig_4_brain_tumor         = eligcrit_4_liqplat,  # Crit 4: Primary Brain Tumor?
+    elig_1_not_resectable      = eligcrit_1_liqplat,  # Crit 1: Tumor not resectable
+    elig_2_tx_indicated        = eligcrit_2_liqplat,  # Crit 2: Anti-cancer tx indicated
+    elig_5_prior_meta_tx       = eligcrit_5_liqplat,  # Crit 5: Prior tx for metastatic disease
+    elig_3_consent_signed      = eligcrit_3_liqplat,  # Crit 3: General consent signed
+    eligible_liqplat,
+    lung_liqplat,
+    radiother_liqplat,
+    adt_liqplat,
+    adt_date_liqplat,
+    othertrial_liqplat,
+    randomselect_liqplat,
+    select_date_liqplat,
+    screenclose_liqplat___1,
+    treatstartcheck_liqplat,
+    treatstartdate_liqplat,
+    treatmentstart_ctdna_date,
+    diagnosischeck_liqplat,
+    ctdnadatechecked_1_liqplat,
+    secop,
+    screening_limit,              # Indicates weekly enrollment limit reached
+    screening_complete,
+    icf_reg                       # Informed consent for SAT acceptance
+  )
+```
+
+## Hierarchy for Screening
+
+Exclusion criteria (applied in order):
+
+1. If consent not explicitly signed → screened out
+2. If enrolled in other trial & not randomized → screened out (competing trial)
+3. If no solid tumor (explicit "No") → screened out
+4. If brain tumor (explicit "Yes") → screened out
+5. If tumor resectable (explicit "No" on "not resectable") → screened out
+6. If treatment not indicated (explicit "No") → screened out
+7. If prior treatment for metastatic disease (explicit "Yes") → screened out
+8. **If any eligibility criterion is "Unclear" or NA and not randomized → screened out**
+9. **If screening limit reached (weekly cap) and not randomized → screened out**
+
+**Trial Design Note:** The study randomly selected up to 3 eligible patients per week for invitation to the single-arm trial (SAT). Those selected were offered the ctDNA-guided intervention (`randomselect_liqplat == "ctDNA + SOC"`), which they could accept (`icf_reg == "Yes"`) or decline (`icf_reg == "No"`). The comparison groups are:
+
+- **Intervention arm:** All patients selected for SAT invitation (regardless of acceptance)
+- **Control arm:** Eligible patients not selected for SAT invitation (`randomselect_liqplat == "SOC"`)
+
+## Apply Screening Hierarchy
+
+```{r}
+# Apply screening hierarchy to classify patients
+d_consort <- d |>
+  mutate(
+    # Check for "Unclear" or NA in any eligibility criterion
+    has_unclear_criterion = (elig_pre_solid_tumor == "Unclear" | is.na(elig_pre_solid_tumor)) |
+                            (elig_4_brain_tumor == "Unclear" | is.na(elig_4_brain_tumor)) |
+                            (elig_1_not_resectable == "Unclear" | is.na(elig_1_not_resectable)) |
+                            (elig_2_tx_indicated == "Unclear" | is.na(elig_2_tx_indicated)) |
+                            (elig_5_prior_meta_tx == "Unclear" | is.na(elig_5_prior_meta_tx)) |
+                            (elig_3_consent_signed == "Unclear" | is.na(elig_3_consent_signed)),
+
+    # Apply exclusion hierarchy
+    screen_out_reason = case_when(
+      # Explicit exclusion criteria
+      elig_3_consent_signed == "No consent given" ~ "No consent signed",
+      othertrial_liqplat == "Yes" & is.na(randomselect_liqplat) ~ "Enrolled in competing trial",
+      elig_pre_solid_tumor == "No" ~ "No solid tumor",
+      elig_4_brain_tumor == "Yes" ~ "Primary brain tumor",
+      elig_1_not_resectable == "No" ~ "Tumor resectable",
+      elig_2_tx_indicated == "No" ~ "Treatment not indicated",
+      elig_5_prior_meta_tx == "Yes" ~ "Prior treatment for metastatic disease",
+
+      # Screen out those with unclear eligibility who weren't randomized
+      has_unclear_criterion & is.na(randomselect_liqplat) ~ "Unclear eligibility",
+
+      # Screen out those who hit the screening limit
+      screening_limit == TRUE & is.na(randomselect_liqplat) ~ "Screening limit reached",
+
+      TRUE ~ NA_character_
+    ),
+    screened_out = !is.na(screen_out_reason),
+    random_selection = !is.na(randomselect_liqplat),
+
+    # Classify final status
+    status = case_when(
+      screened_out ~ "Screened out",
+      random_selection ~ "Randomized",
+      TRUE ~ "Eligible but not randomized"
+    )
+  )
+
+# Create summary counts for CONSORT
+consort_summary <- list(
+  total_assessed = nrow(d_consort),
+  screened_out = sum(d_consort$screened_out),
+  eligible = sum(!d_consort$screened_out),
+  randomized = sum(d_consort$random_selection),
+  eligible_not_randomized = sum(!d_consort$screened_out & !d_consort$random_selection),
+
+  # SAT-specific counts
+  invited_to_sat = sum(d_consort$randomselect_liqplat == "ctDNA + SOC", na.rm = TRUE),
+  accepted_sat = sum(d_consort$randomselect_liqplat == "ctDNA + SOC" &
+                     d_consort$icf_reg == "Yes", na.rm = TRUE),
+  declined_sat = sum(d_consort$randomselect_liqplat == "ctDNA + SOC" &
+                     d_consort$icf_reg == "No", na.rm = TRUE),
+  control_group = sum(d_consort$randomselect_liqplat == "SOC", na.rm = TRUE)
+)
+
+# Display summary
+cat("CONSORT Flowchart Counts:\n")
+cat(strrep("=", 60), "\n")
+cat("Total patients assessed:", consort_summary$total_assessed, "\n")
+cat("Screened out:", consort_summary$screened_out, "\n")
+cat("Eligible:", consort_summary$eligible, "\n")
+cat("  - Selected for randomization:", consort_summary$randomized, "\n")
+cat("    • Invited to SAT (ctDNA + SOC):", consort_summary$invited_to_sat, "\n")
+cat("      - Accepted:", consort_summary$accepted_sat, "\n")
+cat("      - Declined:", consort_summary$declined_sat, "\n")
+cat("    • Control (SOC):", consort_summary$control_group, "\n")
+cat("  - Eligible but not randomized:", consort_summary$eligible_not_randomized, "\n\n")
+
+cat("Screen-out reasons breakdown:\n")
+d_consort |>
+  filter(screened_out) |>
+  count(screen_out_reason, sort = TRUE) |>
+  mutate(pct = scales::percent(n / sum(n), accuracy = 0.1))
+```
+
+**Note:** There are `r consort_summary$eligible_not_randomized` patients who passed all screening criteria but were not selected for randomization. Among the `r consort_summary$invited_to_sat` patients invited to the SAT, `r consort_summary$accepted_sat` accepted and `r consort_summary$declined_sat` declined the intervention.
+
+## Create CONSORT Flowchart
+
+```{r}
+#| label: fig-consort-screening
+#| fig-cap: "CONSORT flowchart for screening and randomization phase"
+#| fig-width: 10
+#| fig-height: 10
+
+# Create detailed exclusion data frame
+exclusions <- d_consort |>
+  filter(screened_out) |>
+  count(screen_out_reason, sort = TRUE) |>
+  rename(reason = screen_out_reason, count = n)
+
+# Format exclusion reasons for display with bullet points
+exclusion_text <- exclusions |>
+  mutate(text = glue("• {reason} (n={count})")) |>
+  pull(text) |>
+  paste(collapse = "\n")
+
+# Build the CONSORT diagram
+consort_diagram <- consort::add_box(
+  txt = glue("Patients assessed for eligibility\n(n = {consort_summary$total_assessed})")
+) |>
+  consort::add_side_box(
+    txt = glue("Excluded (n = {consort_summary$screened_out}):\n{exclusion_text}")
+  ) |>
+  consort::add_box(
+    txt = glue("Eligible\n(n = {consort_summary$eligible})")
+  ) |>
+  consort::add_side_box(
+    txt = glue("Eligible, but already 3 patients \nselected for invitation that week\n(n = {consort_summary$eligible_not_randomized})")
+  ) |>
+  consort::add_box(
+    txt = glue("Random Selection\n(n = {consort_summary$randomized})")
+  ) |>
+  consort::add_split(
+    txt = c(
+      as.character(glue("Allocated to SAT\n(n = {consort_summary$invited_to_sat})\n
+      \nNot invited: {consort_summary$invited_to_sat - consort_summary$accepted_sat - consort_summary$declined_sat}
+      \nAccepted: {consort_summary$accepted_sat}
+      \nDeclined: {consort_summary$declined_sat}")),
+      as.character(glue("Allocated to Usual Care\n(n = {consort_summary$control_group})"))
+    )
+  )
+
+# Display the diagram
+plot(consort_diagram)
+
+# Save the diagram as SVG and PNG
+svg(here::here("0-main-analysis", "img", "consort_flowchart.svg"), width = 10, height = 10)
+plot(consort_diagram)
+dev.off()
+
+png(here::here("0-main-analysis", "img", "consort_flowchart.png"), width = 10, height = 10, units = "in", res = 300)
+plot(consort_diagram)
+dev.off()
+```
+
+## Summary
+
+### Screening Results
+
+- **Total assessed:** `r consort_summary$total_assessed`
+- **Excluded:** `r consort_summary$screened_out` (`r scales::percent(consort_summary$screened_out / consort_summary$total_assessed, accuracy = 0.1)`)
+- **Eligible:** `r consort_summary$eligible` (`r scales::percent(consort_summary$eligible / consort_summary$total_assessed, accuracy = 0.1)`)
+
+### Randomization Results
+
+Of the `r consort_summary$eligible` eligible patients:
+
+- **Randomized:** `r consort_summary$randomized` (`r scales::percent(consort_summary$randomized / consort_summary$eligible, accuracy = 0.1)`)
+  - **SAT arm (invited for ctDNA + SOC):** `r consort_summary$invited_to_sat`
+    - Accepted intervention: `r consort_summary$accepted_sat` (`r scales::percent(consort_summary$accepted_sat / consort_summary$invited_to_sat, accuracy = 0.1)`)
+    - Declined intervention: `r consort_summary$declined_sat` (`r scales::percent(consort_summary$declined_sat / consort_summary$invited_to_sat, accuracy = 0.1)`)
+  - **Control arm (SOC only):** `r consort_summary$control_group`
+- **Not selected:** `r consort_summary$eligible_not_randomized`
+
+### Exclusion Reasons
+
+```{r}
+#| label: tbl-exclusions
+#| tbl-cap: "Reasons for exclusion from trial"
+
+d_consort |>
+  filter(screened_out) |>
+  count(screen_out_reason, sort = TRUE) |>
+  mutate(
+    pct = n / sum(n),
+    pct_text = scales::percent(pct, accuracy = 0.1)
+  ) |>
+  select(
+    `Exclusion Reason` = screen_out_reason,
+    `N` = n,
+    `%` = pct_text
+  ) |>
+  knitr::kable()
+```
+
+**Note:** The "Unclear eligibility" category includes patients with incomplete or ambiguous responses to eligibility criteria who were not ultimately randomized. These cases require database review and clarification before final database lock.

@@ -1,0 +1,102 @@
+---
+title: "Overall survival — primary imputation"
+subtitle: "50 independent one-imputation MICE branches"
+format: html
+execute:
+  freeze: false
+---
+
+This is the primary OS imputation stage. Every branch is independent and is
+checkpointed separately, so an interrupted run resumes without silently
+reducing the required `m = 50`.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "data-validation.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("R", "survival-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+input_path <- project_path("artifacts", "primary", "overall-survival", "prepared.parquet")
+indices <- module_exact_indices(config)
+if (length(indices) != 50L) stop("Primary OS requires exactly 50 imputation branches.")
+branch_dir <- ensure_directory(project_path("artifacts", "primary", "overall-survival", "imputations"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "imputation.R"),
+  here::here("R", "survival-helpers.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: impute-os
+#| include: false
+prepared <- module_read_parquet(input_path)
+module_require_columns(
+  prepared,
+  c("id", "tx", "survival_time_days", "event_death", "ecog_binary",
+    "ecog_fstcnt", "stage_binary", "lung", "mgps", "age", "gender", "albumin",
+    "c_reactive_protein"),
+  "prepared OS data"
+)
+init <- mice::mice(prepared, m = 0, maxit = 0, printFlag = FALSE)
+methods <- init$method
+predictors <- init$predictorMatrix
+fixed_columns <- intersect(
+  c("id", "tx", "survival_time_days", "event_death"), names(prepared)
+)
+methods[fixed_columns] <- ""
+predictors[, fixed_columns] <- 0
+predictors[fixed_columns, ] <- 0
+methods["mgps"] <- ""
+predictors[, "mgps"] <- 0
+predictors["mgps", ] <- 0
+# ECOG binary is a deterministic analysis derivative of ecog_fstcnt; keep the
+# source variable in the stochastic imputation model and recompute this flag
+# after every completed branch.
+methods["ecog_binary"] <- ""
+predictors[, "ecog_binary"] <- 0
+predictors["ecog_binary", ] <- 0
+validate_mice_spec(prepared, methods, predictors)
+
+for (index in indices) {
+  output_path <- file.path(branch_dir, sprintf("imputation-%02d.parquet", index))
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-os-imputation-%02d", index),
+    input_paths = input_path,
+    output_paths = output_path,
+    code_paths = code_paths,
+    metadata = list(endpoint = "overall_survival", imputation = index, m = 50L, maxit = 50L),
+    worker = function() {
+      fitted <- mice::mice(
+        data = prepared,
+        method = methods,
+        predictorMatrix = predictors,
+        m = 1L,
+        maxit = as.integer(config$imputation$main$maxit),
+        donors = as.integer(config$imputation$main$donors),
+        seed = analysis_seed(config, "imputation", index),
+        printFlag = FALSE
+      )
+      completed <- mice::complete(fitted, action = 1L)
+      completed$ecog_binary <- derive_ecog_binary(completed$ecog_fstcnt)
+      completed$mgps <- derive_mgps(completed$albumin, completed$c_reactive_protein)
+      assert_ecog_binary_consistent(completed)
+      assert_mgps_consistent(completed)
+      module_save_parquet(completed, output_path)
+    }
+  )
+}
+created <- file.exists(file.path(branch_dir, sprintf("imputation-%02d.parquet", indices)))
+if (length(created) != 50L || !all(created)) {
+  stop("OS imputation stage did not produce all 50 required branches.")
+}
+```

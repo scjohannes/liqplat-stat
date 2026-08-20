@@ -1,0 +1,172 @@
+---
+title: "Baseline ctDNA detection"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Baseline is the earliest valid ctDNA sample collected strictly before
+treatment initiation. No randomization-day window is used. Patients without a
+qualifying sample remain in the selected-patient accounting with an explicit
+“no qualifying sample” status; they are not coded as ctDNA-negative.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_baseline_detection"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+summary_path <- file.path(result_dir, "baseline-detection-summary.parquet")
+patient_path <- file.path(result_dir, "baseline-detection-patient-status.parquet")
+figure_path <- file.path(result_dir, "baseline-detection-status.svg")
+ctdna_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-ctdna-samples.parquet")
+cohort_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                         "analysis-cohort.parquet")
+if (!file.exists(ctdna_path) || !file.exists(cohort_path)) {
+  stop("Baseline detection requires the built ctDNA sample table and cohort.")
+}
+input_paths <- c(ctdna_path, cohort_path,
+                 private_domain_path(config, "ctdna_samples"),
+                 schema_domain_path(config, "ctdna_samples"),
+                 schema_domain_path(config, "cohort_follow_up"))
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(summary_path, patient_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "04-baseline-detection.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  baseline_summary <- read_result_table(summary_path)
+} else {
+  samples <- read_result_table(ctdna_path)
+  cohort <- read_result_table(cohort_path)
+  require_public_columns(samples, c("sample_id", "id", "sample_date", "ctdna_detected"),
+                         "baseline detection")
+  if (!all(c("lod_q1", "lod_q3") %in% names(samples))) {
+    stop("Baseline detection requires LOD-derived validity; `lod_q1` and `lod_q3` are missing.")
+  }
+  sample_date <- parse_analysis_date(samples$sample_date, "sample_date")
+  lod_q1 <- suppressWarnings(as.numeric(as.character(samples$lod_q1)))
+  lod_q3 <- suppressWarnings(as.numeric(as.character(samples$lod_q3)))
+  samples$attempted_sample <- !is.na(sample_date)
+  samples$ctdna_error_derived <- as.integer(
+    samples$attempted_sample & is.na(lod_q1) & is.na(lod_q3)
+  )
+  samples$valid_ctdna_result <- samples$attempted_sample &
+    samples$ctdna_error_derived == 0L
+  if (!"treatment_start_date" %in% names(samples)) {
+    if ("treatment_start_date" %in% names(cohort)) {
+      treatment <- cohort[, c("id", "treatment_start_date"), drop = FALSE]
+      samples <- merge(samples, treatment, by = "id", all.x = TRUE,
+                       suffixes = c("", ".cohort"))
+    } else {
+      stop("Baseline definition is pending: treatment_start_date is unavailable in the public interface.")
+    }
+  }
+  samples$treatment_start_date <- parse_analysis_date(
+    samples$treatment_start_date, "treatment_start_date"
+  )
+  sample_date <- parse_analysis_date(samples$sample_date, "sample_date")
+  if (!"id" %in% names(cohort) || !"tx" %in% names(cohort)) {
+    stop("Baseline detection requires canonical cohort columns `id` and `tx`.")
+  }
+  selected <- cohort[validate_binary(cohort$tx, "tx", allow_missing = FALSE) == 1,
+                     , drop = FALSE]
+  qualifying <- !is.na(samples$id) & !is.na(sample_date) &
+    !is.na(samples$treatment_start_date) &
+    sample_date < samples$treatment_start_date &
+    !is.na(samples$valid_ctdna_result) & samples$valid_ctdna_result
+  baseline <- samples[qualifying, , drop = FALSE]
+  if (nrow(baseline) > 0L) {
+    baseline$.sample_date_order <- sample_date[qualifying]
+    tie_columns <- intersect(c("sample_id", "alteration_id"), names(baseline))
+    tie_values <- if (length(tie_columns) == 0L) {
+      rep("", nrow(baseline))
+    } else {
+      do.call(paste, c(baseline[tie_columns], sep = "\r"))
+    }
+    baseline <- baseline[order(baseline$id, baseline$.sample_date_order,
+                               tie_values, na.last = TRUE, method = "radix"), ,
+                         drop = FALSE]
+    baseline <- baseline[!duplicated(baseline$id), , drop = FALSE]
+    baseline$.sample_date_order <- NULL
+  }
+  selected_ids <- unique(as.character(selected$id[!is.na(selected$id)]))
+  baseline_ids <- as.character(baseline$id)
+  detection <- validate_binary(baseline$ctdna_detected, "ctdna_detected")
+  detection_lookup <- stats::setNames(detection, baseline_ids)
+  patient_detection <- unname(detection_lookup[selected_ids])
+  patient_status <- data.frame(
+    id = selected_ids,
+    baseline_status = ifelse(is.na(patient_detection),
+                             "no_qualifying_sample", "valid_baseline"),
+    ctdna_detected = patient_detection,
+    stringsAsFactors = FALSE
+  )
+  detected <- patient_status$ctdna_detected
+  valid_baseline <- !is.na(detected)
+  baseline_summary <- data.frame(
+    n_selected = nrow(patient_status),
+    n_valid_baseline = sum(valid_baseline),
+    n_no_qualifying_sample = sum(!valid_baseline),
+    n_detected = sum(detected == 1, na.rm = TRUE),
+    n_not_detected = sum(detected == 0, na.rm = TRUE),
+    detection_proportion_valid_baseline = if (sum(valid_baseline) == 0L) NA_real_ else
+      mean(detected[valid_baseline] == 1),
+    stringsAsFactors = FALSE
+  )
+  write_module_table(baseline_summary, summary_path)
+  write_module_table(patient_status, patient_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the baseline-detection figure.")
+  }
+  status_counts <- as.data.frame(table(patient_status$baseline_status,
+                                       useNA = "ifany"), stringsAsFactors = FALSE)
+  names(status_counts) <- c("baseline_status", "n")
+  observed_detected <- patient_status$ctdna_detected[valid_baseline]
+  status_counts <- rbind(
+    status_counts,
+    data.frame(baseline_status = "valid_not_detected",
+               n = sum(observed_detected == 0, na.rm = TRUE),
+               stringsAsFactors = FALSE)
+  )
+  plot <- ggplot2::ggplot(status_counts, ggplot2::aes(baseline_status, n)) +
+    ggplot2::geom_col() +
+    ggplot2::labs(x = NULL, y = "Selected patients") +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 7, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built", baseline_definition = "earliest_valid_pre_treatment"),
+    code_paths = here::here("analysis", "04-implementation", "04-baseline-detection.qmd")
+  )
+}
+```
+
+```{r}
+#| label: baseline-summary
+#| tbl-cap: "Baseline ctDNA detection summary"
+
+baseline_summary |>
+  knitr::kable()
+```

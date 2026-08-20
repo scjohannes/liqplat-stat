@@ -1,0 +1,22 @@
+project:
+  type: default
+  output-dir: _site
+  # Analysis notebooks are rendered explicitly by scripts/run-all.R.  The
+  # default project therefore does not enumerate them as implicit targets.
+  resources:
+    - sap/SAP.qmd
+    - sap
+    - reports
+
+execute:
+  freeze: auto
+  echo: false
+
+format:
+  html:
+    toc: true
+    number-sections: true
+    html-math-method: katex
+
+bibliography: references.bib
+csl: chicago-author-date-16th-edition.csl

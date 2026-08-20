@@ -1,0 +1,14 @@
+name: treatment_lines
+version: 1
+description: Future-ready anticancer treatment-line records.
+primary_key: [treatment_id]
+privacy_boundary: Treatment names and dates are pseudonymized clinical data.
+columns:
+  treatment_id: {type: string, required: true, unit: "", coding: unique pseudonymized treatment record, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  treatment_line: {type: integer, required: true, unit: line, coding: positive treatment-line number, sensitive: true, private: false}
+  treatment_name: {type: string, required: true, unit: "", coding: controlled treatment name, sensitive: true, private: false}
+  start_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  stop_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  targeted_therapy: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = targeted therapy", sensitive: true, private: false}
+  treatment_switch_date: {type: date, required: false, unit: date, coding: ISO-8601 first qualifying switch, sensitive: true, private: false}

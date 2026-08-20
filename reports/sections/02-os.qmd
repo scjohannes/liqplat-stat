@@ -1,0 +1,12 @@
+# Overall survival
+
+The primary OS estimand is the posterior difference in restricted mean
+survival time at 182 days.  The report reads the OS result artifact and any
+declared figures; it does not refit the survival model.
+
+```{r}
+#| label: os-results
+#| results: asis
+
+report_render_section("os", root = report_root)
+```

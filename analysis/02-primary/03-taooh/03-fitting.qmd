@@ -1,0 +1,127 @@
+---
+title: "TAOOH — primary model fitting"
+subtitle: "Second-order Bayesian ordinal transition models with random intercepts"
+format: html
+execute:
+  freeze: false
+---
+
+The primary model conditions on `yprev` and `ypprev` and includes the
+patient-level random intercept specified in the SAP. All 50 models are fitted
+through the reviewed `markov.misc::blrm_markov()` API.
+The numeric weekly time scale infers its starting profile from week 1; those
+rows remain in every completed branch.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "markov-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config)
+data_dir <- project_path("artifacts", "primary", "taooh", "imputations")
+model_dir <- ensure_directory(project_path("artifacts", "primary", "taooh", "models"))
+diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "taooh", "diagnostics"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "markov-helpers.R"),
+  here::here("R", "checkpoints.R"),
+  here::here("analysis", "module-runtime.R"), knitr::current_input()
+)
+```
+
+```{r}
+#| label: fit-taooh-models
+#| include: false
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  diagnostic_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
+  if (!file.exists(data_path)) stop("Missing TAOOH imputation branch: ", data_path)
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-taooh-fitting-%02d", index),
+    input_paths = data_path,
+    output_paths = c(model_path, diagnostic_path),
+    code_paths = code_paths,
+    metadata = list(endpoint = "taooh", imputation = index, order = 2L,
+                   random_intercept = "id", chains = 4L, iterations = 1000L,
+                   warmup = 500L),
+    worker = function() {
+      data <- module_read_parquet(data_path)
+      module_require_columns(data, c("id", "tx", "y", "yprev", "ypprev", "week"), "TAOOH imputation branch")
+      data$y <- factor(data$y, levels = 1:5, ordered = TRUE)
+      data$yprev <- factor(data$yprev, levels = 1:5, ordered = FALSE)
+      data$ypprev <- factor(data$ypprev, levels = 1:5, ordered = FALSE)
+      dd <- rms::datadist(data)
+      old_datadist <- getOption("datadist")
+      options(datadist = "dd")
+      on.exit(options(datadist = old_datadist), add = TRUE)
+      model_formula <- y ~ tx + rms::rcs(week, 4) + yprev + ypprev +
+        week %ia% yprev + week %ia% ypprev +
+        ecog_fstcnt + factor(diagnosis) + rms::rcs(albumin, 3) +
+        rms::rcs(c_reactive_protein, 3)
+      fit_seed <- analysis_seed(config, "taooh", index)
+      fit <- tryCatch(
+        markov.misc::blrm_markov(
+          formula = model_formula,
+          ppo = ~week,
+          cppo = function(y) y,
+          data = data,
+          id_var = "id",
+          time_var = "week",
+          random_intercept = "id",
+          p_var = "yprev",
+          p2_var = "ypprev",
+          chains = as.integer(config$markov$chains),
+          iter = as.integer(config$markov$iterations),
+          warmup = as.integer(config$markov$warmup),
+          seed = fit_seed,
+          refresh = 0L
+        ),
+        error = identity
+      )
+      diagnostics <- if (inherits(fit, "error")) {
+        fit
+      } else {
+        tryCatch(markov_diagnostics(fit, config$diagnostics), error = identity)
+      }
+      retry <- inherits(fit, "error") || inherits(diagnostics, "error") ||
+        !isTRUE(diagnostics$passed)
+      if (retry) {
+        if (!isTRUE(config$diagnostics$retry_on_failure)) {
+          stop("TAOOH primary Markov fit failed and retries are disabled for imputation ", index, ".")
+        }
+        fit <- markov.misc::blrm_markov(
+          formula = model_formula,
+          ppo = ~week,
+          cppo = function(y) y,
+          data = data,
+          id_var = "id",
+          time_var = "week",
+          random_intercept = "id",
+          p_var = "yprev",
+          p2_var = "ypprev",
+          chains = as.integer(config$markov$chains),
+          iter = as.integer(config$markov$retry_iterations),
+          warmup = as.integer(config$markov$retry_iterations / 2L),
+          seed = as.integer(fit_seed + 500000L),
+          refresh = 0L
+        )
+        diagnostics <- markov_diagnostics(fit, config$diagnostics)
+      }
+      assert_markov_diagnostics(diagnostics)
+      module_save_rds(fit, model_path)
+      module_save_parquet(as.data.frame(diagnostics$summary), diagnostic_path)
+    }
+  )
+}
+model_paths <- file.path(model_dir, sprintf("model-%02d.rds", indices))
+if (length(model_paths) != 50L || !all(file.exists(model_paths))) {
+  stop("TAOOH fitting stage did not produce all 50 model branches.")
+}
+```

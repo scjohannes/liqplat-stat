@@ -1,0 +1,195 @@
+---
+title: "LIQPLAT CONSORT-style participant accounting"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Participant accounting follows the trial's screening and random-selection
+definitions. Assignment to the invitation strategy is retained for ITT
+accounting; acceptance is summarized only when an approved acceptance field is
+present and is never inferred from a missing value.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "population_consort"
+result_dir <- module_result_dir(file.path("analysis", "01-population"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+consort_path <- file.path(result_dir, "consort-accounting.parquet")
+figure_path <- file.path(result_dir, "consort-accounting.svg")
+input_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-cohort.parquet")
+recruitment_input_path <- file.path(
+  module_result_dir(file.path("analysis", "00-data")),
+  "analysis-recruitment.parquet"
+)
+if (!file.exists(input_path) || !file.exists(recruitment_input_path)) {
+  stop("CONSORT accounting requires the built analysis cohort and recruitment Parquet.")
+}
+input_paths <- c(input_path, recruitment_input_path)
+output_paths <- c(consort_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "01-population", "02-consort.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  consort_accounting <- read_result_table(consort_path)
+} else {
+  recruitment_raw <- read_result_table(recruitment_input_path)
+  require_public_columns(recruitment_raw, c("id", "screened_date", "eligible"),
+                         "CONSORT recruitment accounting")
+  recruitment_raw$screened_date <- parse_analysis_date(
+    recruitment_raw$screened_date, "screened_date", allow_missing = FALSE
+  )
+  recruitment_raw$eligible <- validate_binary(
+    recruitment_raw$eligible, "eligible", allow_missing = FALSE
+  )
+  if ("randomization_date" %in% names(recruitment_raw)) {
+    recruitment_raw$randomization_date <- parse_analysis_date(
+      recruitment_raw$randomization_date, "randomization_date"
+    )
+  }
+  if ("tx" %in% names(recruitment_raw)) {
+    recruitment_raw$tx <- validate_binary(recruitment_raw$tx, "tx")
+  }
+  id_groups <- split(seq_len(nrow(recruitment_raw)),
+                     as.character(recruitment_raw$id), drop = TRUE)
+  recruitment_rows <- lapply(id_groups, function(index) {
+    part <- recruitment_raw[index, , drop = FALSE]
+    result <- data.frame(
+      id = as.character(part$id[[1L]]),
+      screened_date = min(part$screened_date, na.rm = TRUE),
+      eligible = as.integer(max(part$eligible, na.rm = TRUE)),
+      stringsAsFactors = FALSE
+    )
+    if ("randomization_date" %in% names(part)) {
+      values <- part$randomization_date[!is.na(part$randomization_date)]
+      result$randomization_date <- if (length(values) == 0L) as.Date(NA) else min(values)
+    }
+    if ("tx" %in% names(part)) {
+      values <- unique(part$tx[!is.na(part$tx)])
+      if (length(values) > 1L) stop("Conflicting recruitment assignment for patient.")
+      result$tx <- if (length(values) == 0L) NA_integer_ else as.integer(values[[1L]])
+    }
+    result
+  })
+  recruitment <- do.call(rbind, recruitment_rows)
+  rownames(recruitment) <- NULL
+  eligible <- validate_binary(recruitment$eligible, "eligible", allow_missing = FALSE)
+  randomized <- if ("randomization_date" %in% names(recruitment)) {
+    !is.na(parse_analysis_date(recruitment$randomization_date, "randomization_date"))
+  } else {
+    rep(FALSE, nrow(recruitment))
+  }
+  assignment <- if ("tx" %in% names(recruitment)) validate_binary(recruitment$tx, "tx") else
+    rep(NA_real_, nrow(recruitment))
+  offered_col <- intersect(c("invitation_offered", "offered_invitation"),
+                           names(recruitment_raw))[1L]
+  accepted_col <- intersect(c("invitation_accepted", "accepted_invitation"),
+                            names(recruitment_raw))[1L]
+  if (is.na(offered_col)) {
+    offered <- rep(NA_real_, nrow(recruitment))
+  } else {
+    raw_offered <- validate_binary(recruitment_raw[[offered_col]], offered_col)
+    offered_by_id <- tapply(raw_offered, recruitment_raw$id,
+                            function(value) if (all(is.na(value))) NA_real_ else
+                              as.numeric(any(value == 1, na.rm = TRUE)))
+    offered <- unname(offered_by_id[recruitment$id])
+  }
+  if (is.na(accepted_col)) {
+    accepted <- rep(NA_real_, nrow(recruitment))
+  } else {
+    raw_accepted <- validate_binary(recruitment_raw[[accepted_col]], accepted_col)
+    accepted_by_id <- tapply(raw_accepted, recruitment_raw$id,
+                             function(value) if (all(is.na(value))) NA_real_ else
+                               as.numeric(any(value == 1, na.rm = TRUE)))
+    accepted <- unname(accepted_by_id[recruitment$id])
+  }
+  consort_accounting <- data.frame(
+    step = c(
+      "screened",
+      "eligible",
+      "screened_out",
+      "random_selection_recorded",
+      "selected_for_invitation",
+      "not_selected",
+      "invitation_offered",
+      "invitation_accepted"
+    ),
+    n = c(
+      nrow(recruitment),
+      sum(eligible == 1),
+      sum(eligible == 0),
+      sum(randomized),
+      sum(randomized & assignment == 1, na.rm = TRUE),
+      sum(randomized & assignment == 0, na.rm = TRUE),
+      sum(offered == 1, na.rm = TRUE),
+      sum(accepted == 1, na.rm = TRUE)
+    ),
+    denominator = c(
+      nrow(recruitment), nrow(recruitment), nrow(recruitment),
+      sum(eligible == 1), sum(eligible == 1), sum(eligible == 1),
+      sum(offered == 1, na.rm = TRUE), sum(offered == 1, na.rm = TRUE)
+    ),
+    status = c(
+      rep("observed", 6),
+      if (is.na(offered_col)) "pending_field" else "observed",
+      if (is.na(accepted_col)) "pending_field" else "observed"
+    ),
+    stringsAsFactors = FALSE
+  )
+  consort_accounting$proportion <- with(
+    consort_accounting,
+    ifelse(denominator > 0, n / denominator, NA_real_)
+  )
+  write_module_table(consort_accounting, consort_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the CONSORT accounting figure.")
+  }
+  plot <- ggplot2::ggplot(
+    consort_accounting[consort_accounting$step %in% c("screened", "eligible",
+                                                       "screened_out", "selected_for_invitation",
+                                                       "not_selected"), , drop = FALSE],
+    ggplot2::aes(x = stats::reorder(step, n), y = n)
+  ) +
+    ggplot2::geom_col() +
+    ggplot2::coord_flip() +
+    ggplot2::labs(x = NULL, y = "Patients") +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 8, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built"),
+    code_paths = here::here("analysis", "01-population", "02-consort.qmd")
+  )
+}
+```
+
+```{r}
+#| label: consort-table
+#| tbl-cap: "Aggregate CONSORT-style accounting"
+
+consort_accounting |>
+  transform(proportion = round(proportion, 4)) |>
+  knitr::kable()
+```

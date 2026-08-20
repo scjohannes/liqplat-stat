@@ -1,0 +1,12 @@
+name: trial_referral
+version: 1
+description: Molecular tumour board and trial-referral events.
+primary_key: [referral_id]
+privacy_boundary: Referral records are pseudonymized; free-text referral notes remain private.
+columns:
+  referral_id: {type: string, required: true, unit: "", coding: unique pseudonymized referral event, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  referral_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  mtb_referral: {type: integer, required: true, unit: binary, coding: "0 = no; 1 = referred to MTB", sensitive: true, private: false}
+  trial_referred: {type: integer, required: false, unit: binary, coding: "0 = no; 1 = referred to trial", sensitive: true, private: false}
+  referral_status: {type: string, required: false, unit: category, coding: controlled referral status, sensitive: true, private: false}

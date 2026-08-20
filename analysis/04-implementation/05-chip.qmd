@@ -1,0 +1,178 @@
+---
+title: "CHIP summaries"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+CHIP is analyzed at the variant level among valid ctDNA results using the SAP
+model: a Bayesian logistic regression with an age spline and patient and gene
+random intercepts. A separate patient summary counts any CHIP variant during
+follow-up among patients with detectable, valid ctDNA.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_chip"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+variant_summary_path <- file.path(result_dir, "chip-variant-summary.parquet")
+patient_summary_path <- file.path(result_dir, "chip-patient-summary.parquet")
+draws_path <- file.path(result_dir, "chip-age-draws.parquet")
+figure_path <- file.path(result_dir, "chip-age-posterior.svg")
+model_dir <- ensure_directory(project_path("analysis", "04-implementation", "models"))
+model_path <- file.path(model_dir, "chip-variant-model.rds")
+alterations_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                              "analysis-alterations.parquet")
+cohort_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                         "analysis-cohort.parquet")
+if (!file.exists(alterations_path) || !file.exists(cohort_path)) {
+  stop("CHIP analysis requires the built alteration table and cohort.")
+}
+input_paths <- c(alterations_path, cohort_path,
+                 private_domain_path(config, "alterations"),
+                 private_domain_path(config, "cohort_follow_up"),
+                 schema_domain_path(config, "alterations"),
+                 schema_domain_path(config, "cohort_follow_up"))
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(variant_summary_path, patient_summary_path, draws_path, figure_path, model_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "05-chip.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  chip_variant_summary <- read_result_table(variant_summary_path)
+  chip_patient_summary <- read_result_table(patient_summary_path)
+} else {
+  alterations <- read_result_table(alterations_path)
+  cohort <- read_result_table(cohort_path)
+  require_public_columns(alterations,
+                         c("id", "variant_id", "gene_id", "chip_suspicion",
+                           "valid_ctdna_result", "ctdna_detected"),
+                         "CHIP variant analysis")
+  require_public_columns(cohort, c("id", "age"), "CHIP age covariate")
+  chip_data <- merge(
+    alterations,
+    cohort[, c("id", "age"), drop = FALSE],
+    by = "id", all.x = TRUE, suffixes = c("", ".cohort")
+  )
+  chip_data$age <- suppressWarnings(as.numeric(as.character(chip_data$age)))
+  chip_data$chip_suspicion <- validate_binary(chip_data$chip_suspicion,
+                                              "chip_suspicion")
+  chip_data$ctdna_detected <- validate_binary(chip_data$ctdna_detected,
+                                              "ctdna_detected")
+  valid <- !is.na(chip_data$valid_ctdna_result) &
+    as.logical(chip_data$valid_ctdna_result) &
+    !is.na(chip_data$chip_suspicion) & !is.na(chip_data$age) &
+    !is.na(chip_data$gene_id) & nzchar(as.character(chip_data$gene_id))
+  model_data <- chip_data[valid, , drop = FALSE]
+  if (nrow(model_data) == 0L) stop("No complete valid variants support the CHIP model.")
+  if (!requireNamespace("brms", quietly = TRUE)) {
+    stop("Package 'brms' is required for the variant-level CHIP model.")
+  }
+  fit <- brms::brm(
+    chip_suspicion ~ splines::ns(age, df = 2) + (1 | id) + (1 | gene_id),
+    data = model_data,
+    family = brms::bernoulli(link = "logit"),
+    iter = 2000,
+    chains = 4,
+    cores = 1,
+    seed = analysis_seed(config, "supporting", offset = 3L),
+    refresh = 0,
+    file = model_path
+  )
+  chip <- validate_binary(model_data$chip_suspicion, "chip_suspicion")
+  observed_chip <- !is.na(chip)
+  chip_variant_summary <- data.frame(
+    variants = length(unique(model_data$variant_id[
+      observed_chip & !is.na(model_data$variant_id)
+    ])),
+    patients = length(unique(model_data$id[
+      observed_chip & !is.na(model_data$id)
+    ])),
+    chip_variants = sum(chip == 1, na.rm = TRUE),
+    chip_rate = if (sum(observed_chip) == 0L) NA_real_ else
+      mean(chip[observed_chip] == 1),
+    stringsAsFactors = FALSE
+  )
+  chip_variant_summary$n_valid_variants <- nrow(model_data)
+  chip_variant_summary$n_valid_patients <- length(unique(model_data$id))
+  valid_detected <- !is.na(chip_data$valid_ctdna_result) &
+    as.logical(chip_data$valid_ctdna_result) &
+    !is.na(chip_data$ctdna_detected) & chip_data$ctdna_detected == 1 &
+    !is.na(chip_data$id)
+  chip_values <- validate_binary(chip_data$chip_suspicion, "chip_suspicion")
+  follow_up_ids <- unique(chip_data$id[valid_detected])
+  any_chip <- vapply(follow_up_ids, function(identifier) {
+    any(chip_values[valid_detected & chip_data$id == identifier] == 1,
+        na.rm = TRUE)
+  }, logical(1))
+  chip_patient_summary <- data.frame(
+    denominator = length(follow_up_ids),
+    patients_with_chip = sum(any_chip),
+    proportion_with_chip = if (length(follow_up_ids) == 0L) NA_real_ else
+      mean(any_chip),
+    stringsAsFactors = FALSE
+  )
+  age_grid <- data.frame(age = seq(
+    min(model_data$age), max(model_data$age), length.out = 50L
+  ))
+  age_draw_matrix <- brms::posterior_epred(fit, newdata = age_grid, re_formula = NA)
+  age_draws <- do.call(rbind, lapply(seq_len(nrow(age_draw_matrix)), function(index) {
+    data.frame(age = age_grid$age, draw = as.numeric(age_draw_matrix[index, ]),
+               draw_id = index, stringsAsFactors = FALSE)
+  }))
+  write_module_table(chip_variant_summary, variant_summary_path)
+  write_module_table(chip_patient_summary, patient_summary_path)
+  write_module_draws(age_draws, draws_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the CHIP figure.")
+  }
+  plot <- ggplot2::ggplot(age_draws, ggplot2::aes(age, draw)) +
+    ggplot2::stat_summary(fun = stats::median, geom = "line") +
+    ggplot2::labs(x = "Age at random selection (years)",
+                  y = "Posterior probability of CHIP") +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 7, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "fit", model = "variant_age_spline_patient_gene_random_intercepts"),
+    code_paths = here::here("analysis", "04-implementation", "05-chip.qmd")
+  )
+}
+```
+
+```{r}
+#| label: chip-summary
+#| tbl-cap: "CHIP variant-level summary"
+
+chip_variant_summary |>
+  knitr::kable()
+```
+
+```{r}
+#| label: chip-patient-summary
+#| tbl-cap: "CHIP patient-level follow-up summary"
+
+chip_patient_summary |>
+  knitr::kable()
+```

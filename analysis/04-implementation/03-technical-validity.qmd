@@ -1,0 +1,147 @@
+---
+title: "ctDNA technical validity"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+An attempted sample must have a recorded sampling date. The analysis error is
+one exactly when both LOD Q1 and LOD Q3 are missing. The explicitly entered
+technical-error flag is retained for QC comparison only. The Bayesian model is
+sample-level with a patient random intercept, and the compact summary reports
+the attempted-sample denominator.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_technical_validity"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+summary_path <- file.path(result_dir, "technical-validity-summary.parquet")
+draws_path <- file.path(result_dir, "technical-validity-draws.parquet")
+figure_path <- file.path(result_dir, "technical-validity-posterior.svg")
+model_dir <- ensure_directory(project_path("analysis", "04-implementation", "models"))
+model_path <- file.path(model_dir, "technical-validity.rds")
+ctdna_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-ctdna-samples.parquet")
+if (!file.exists(ctdna_path)) stop("Technical-validity analysis requires the built ctDNA sample table.")
+input_paths <- c(ctdna_path, private_domain_path(config, "ctdna_samples"),
+                 schema_domain_path(config, "ctdna_samples"))
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(summary_path, draws_path, figure_path, model_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "03-technical-validity.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  technical_summary <- read_result_table(summary_path)
+} else {
+  samples <- read_result_table(ctdna_path)
+  require_public_columns(samples, c("sample_id", "id", "sample_date", "lod_q1", "lod_q3"),
+                         "technical validity")
+  sample_dates <- parse_analysis_date(samples$sample_date, "sample_date")
+  attempted_sample <- !is.na(sample_dates)
+  lod_q1 <- suppressWarnings(as.numeric(as.character(samples$lod_q1)))
+  lod_q3 <- suppressWarnings(as.numeric(as.character(samples$lod_q3)))
+  samples$attempted_sample <- attempted_sample
+  samples$ctdna_error_derived <- as.integer(
+    attempted_sample & is.na(lod_q1) & is.na(lod_q3)
+  )
+  if ("ctdna_error" %in% names(samples)) {
+    samples$ctdna_error_qc <- validate_binary(samples$ctdna_error, "ctdna_error")
+  } else {
+    samples$ctdna_error_qc <- NA_real_
+  }
+  attempted <- samples[samples$attempted_sample, , drop = FALSE]
+  if (nrow(attempted) == 0L) stop("No attempted samples have a recorded sampling date.")
+  model_data <- attempted
+  error_values <- validate_binary(model_data$ctdna_error_derived,
+                                  "ctdna_error_derived")
+  observed_summary <- data.frame(
+    samples = length(unique(model_data$sample_id[!is.na(model_data$sample_id)])),
+    patients = length(unique(model_data$id[!is.na(model_data$id)])),
+    errors = sum(error_values == 1),
+    no_error = sum(error_values == 0),
+    error_rate = mean(error_values == 1),
+    stringsAsFactors = FALSE
+  )
+  if (!requireNamespace("brms", quietly = TRUE)) {
+    stop("Package 'brms' is required for the clustered technical-validity model.")
+  }
+  fit <- brms::brm(
+    stats::as.formula("ctdna_error_derived ~ 1 + (1 | id)"),
+    data = model_data,
+    family = brms::bernoulli(link = "logit"),
+    iter = 2000,
+    chains = 4,
+    cores = 1,
+    seed = analysis_seed(config, "supporting", offset = 2L),
+    refresh = 0,
+    file = model_path
+  )
+  epred <- brms::posterior_epred(fit, newdata = model_data, re_formula = NA)
+  draws <- data.frame(
+    draw = rowMeans(epred),
+    stringsAsFactors = FALSE
+  )
+  technical_summary <- data.frame(
+    outcome = "technical_error_probability",
+    posterior_mean = mean(draws$draw),
+    posterior_median = stats::median(draws$draw),
+    lower_95 = stats::quantile(draws$draw, 0.025),
+    upper_95 = stats::quantile(draws$draw, 0.975),
+    stringsAsFactors = FALSE
+  )
+  technical_summary$n_attempted_samples <- observed_summary$samples
+  technical_summary$n_attempted_patients <- observed_summary$patients
+  technical_summary$n_derived_errors <- observed_summary$errors
+  technical_summary$n_derived_no_error <- observed_summary$no_error
+  technical_summary$qc_flag_observed <- sum(!is.na(model_data$ctdna_error_qc))
+  technical_summary$qc_flag_discordant <- sum(
+    !is.na(model_data$ctdna_error_qc) &
+      model_data$ctdna_error_qc != model_data$ctdna_error_derived
+  )
+  write_module_draws(draws, draws_path)
+  write_module_table(technical_summary, summary_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the technical-validity figure.")
+  }
+  plot <- ggplot2::ggplot(draws, ggplot2::aes(draw)) +
+    ggplot2::geom_density() +
+    ggplot2::labs(x = "Posterior technical-error probability", y = "Density") +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 7, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "fit", error_definition = "both_lod_quartiles_missing"),
+    code_paths = here::here("analysis", "04-implementation", "03-technical-validity.qmd")
+  )
+}
+```
+
+```{r}
+#| label: technical-summary
+#| tbl-cap: "Technical validity summary"
+
+technical_summary |>
+  knitr::kable()
+```

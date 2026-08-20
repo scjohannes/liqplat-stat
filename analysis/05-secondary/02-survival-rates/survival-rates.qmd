@@ -1,0 +1,91 @@
+---
+title: "Secondary outcome: survival rates"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Survival rates
+
+Six- and 12-month OS survival rates are derived from the posterior survival
+curves produced by the OS analysis.  This module never refits OS.  It reads
+the compact OS curve artifact and the accompanying follow-up sufficiency
+metadata, then reports posterior medians and credible intervals by randomized
+group.
+
+The 12-month rate is gated: when the OS metadata do not confirm sufficient
+follow-up at 365 days, the result is explicitly `blocked` and no rate is
+printed.  Missing curves or missing gate metadata are unavailable, not zero.
+The same contract can be used for PFS curves once the PFS module produces a
+posterior survival artifact.
+
+```{r}
+#| eval: false
+
+source(here::here("analysis", "05-secondary", "secondary-helpers.R"))
+source(here::here("R", "report-reader.R"))
+source(here::here("R", "paths-artifacts.R"))
+
+# Survival rates consume OS posterior curves; they do not refit OS.  The
+# compact artifact contract uses one row per posterior draw, treatment, and
+# time point.  Follow-up sufficiency is a separate OS metadata artifact.
+os_curves <- read_result_table(
+  here::here("results", "primary", "overall-survival", "survival-curves.parquet")
+)
+follow_up_sufficiency <- yaml::read_yaml(
+  here::here("results", "primary", "overall-survival", "follow-up-sufficiency.yml")
+)
+follow_up_sufficiency <- as.data.frame(follow_up_sufficiency,
+                                       stringsAsFactors = FALSE)
+
+rate_rows <- list()
+for (horizon in c(182L, 365L)) {
+  gate <- follow_up_sufficiency[
+    follow_up_sufficiency$horizon_days == horizon, , drop = FALSE
+  ]
+  sufficient <- horizon == 182L ||
+    (nrow(gate) == 1L && isTRUE(as.logical(gate$sufficient[[1L]])))
+  if (horizon > 182L && !sufficient) {
+    rate_rows[[length(rate_rows) + 1L]] <- data.frame(
+      draw = NA_integer_, tx = NA_integer_, horizon_days = horizon,
+      survival_rate = NA_real_, status = "blocked",
+      reason = if (nrow(gate) == 1L) as.character(gate$reason[[1L]]) else
+        "No follow-up sufficiency metadata.", stringsAsFactors = FALSE
+    )
+    next
+  }
+  split_key <- interaction(os_curves$draw, os_curves$tx,
+                           drop = TRUE, lex.order = TRUE)
+  for (piece in split(os_curves, split_key)) {
+    if (max(piece$time, na.rm = TRUE) < horizon) {
+      stop("OS curves do not cover the requested survival-rate horizon.")
+    }
+    rate <- approx(piece$time, piece$survival, xout = horizon, rule = 1)$y
+    rate_rows[[length(rate_rows) + 1L]] <- data.frame(
+      draw = piece$draw[[1L]], tx = piece$tx[[1L]], horizon_days = horizon,
+      survival_rate = rate, status = "available",
+      reason = "Derived from OS posterior survival curves.",
+      stringsAsFactors = FALSE
+    )
+  }
+}
+survival_rates <- do.call(rbind, rate_rows)
+available <- survival_rates[survival_rates$status == "available", , drop = FALSE]
+if (nrow(available) > 0L) {
+  rate_key <- interaction(available$horizon_days, available$tx,
+                          drop = TRUE, lex.order = TRUE)
+  rate_summary <- do.call(rbind, lapply(split(available, rate_key), function(piece) {
+    values <- quantile(piece$survival_rate, c(0.025, 0.5, 0.975), names = FALSE)
+    data.frame(horizon_days = piece$horizon_days[[1L]],
+               tx = piece$tx[[1L]], median = values[[2L]],
+               lower_95 = values[[1L]], upper_95 = values[[3L]])
+  }))
+} else {
+  rate_summary <- data.frame()
+}
+write_atomic_parquet(
+  rate_summary,
+  project_path("results", "secondary", "survival-rates", "summary.parquet")
+)
+```

@@ -1,0 +1,162 @@
+---
+title: "OS Model Fitting"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(rstanarm)
+```
+
+## Load data
+
+```{r}
+data_path <- here("0-main-analysis", "OS", "imp-data")
+m <- length(dir_ls(data_path))
+```
+
+## Create output directory
+
+```{r}
+output_dir <- here("0-main-analysis", "OS", "results")
+# dir_create(output_dir)
+# dir_create(path(output_dir, "models"))
+# dir_create(path(output_dir, "survival_curves"))
+# dir_create(path(output_dir, "diagnostics"))
+# dir_create(path(output_dir, "rmst"))
+```
+
+## Fit models and calculate estimand
+
+```{r}
+for(i in 1:m) {
+    cat("Processing imputation", i, "of", m, "\n")
+
+    data <- read_parquet(here("0-main-analysis", "OS", "imp-data", paste0("os-data-", i, ".parquet")))
+
+    # Calculate mGPS
+    data <- data |>
+        mutate(
+            mgps = factor(case_when(
+                c_reactive_protein  <= 10 ~ 0,
+                albumin >= 35 ~ 1,
+                TRUE ~ 2)),
+            ecog_binary = case_when(
+                ecog_fstcnt == 0 | ecog_fstcnt == 1 ~ 0,
+                TRUE ~ 1
+            )
+        )
+
+    # Define priors
+    tx_scale <- 0.55
+    default_scale <- 2.5
+
+    prior <- normal(
+        location = c(rep(0, 5)),
+        scale = c(tx_scale, rep(default_scale, 4))
+    )
+
+    # Fit the model
+    model <- stan_surv(
+        formula = Surv(surv_time, status_death) ~ tx + ecog_binary + lung +
+                    mgps,
+        data = data,
+        basehaz = "ms",
+        basehaz_ops = list(df = 5),
+        prior = prior,
+        prior_intercept = normal(0, 20),
+        prior_aux = dirichlet(1),
+        chains = 4,
+        cores = 4,
+        seed = 68818,
+        iter = 4000
+    )
+
+    # Save model object
+    saveRDS(model, file = path(output_dir, "models", paste0("model_imp_", i, ".rds")))
+
+    # Generate diagnostic plots
+    trace_plot <- plot(model, plotfun = "trace")
+    ggsave(path(output_dir, "diagnostics", paste0("trace_imp_", i, ".png")),
+           plot = trace_plot,
+           width = 10, height = 8, dpi = 300)
+
+    dens_plot <- plot(model, plotfun = "dens")
+    ggsave(path(output_dir, "diagnostics", paste0("posterior_imp_", i, ".png")),
+           plot = dens_plot,
+           width = 10, height = 8, dpi = 300)
+
+    # --- Calculate RMST and survival curves ---
+    # Get posterior survival curves for tx=0
+    ps_0_list <- posterior_survfit(
+        model,
+        newdata = data |> mutate(tx = 0),
+        times = 0,
+        extrapolate = TRUE,
+        standardise = TRUE,
+        control = list(edist = 182, epoints = 200),
+        return_matrix = TRUE,
+        draws = 4000
+    )
+
+    std_surv_matrix_0 <- do.call(cbind, ps_0_list)
+    time_points <- sapply(ps_0_list, attr, "times")
+
+    # Get posterior survival curves for tx=1
+    ps_1_list <- posterior_survfit(
+        model,
+        newdata = data |> mutate(tx = 1),
+        times = 0,
+        extrapolate = TRUE,
+        standardise = TRUE,
+        control = list(edist = 182, epoints = 200),
+        return_matrix = TRUE,
+        draws = 4000
+    )
+    std_surv_matrix_1 <- do.call(cbind, ps_1_list)
+
+    # Save survival curves
+    survival_data <- list(
+        time_points = time_points,
+        surv_tx0 = std_surv_matrix_0,
+        surv_tx1 = std_surv_matrix_1
+    )
+    saveRDS(survival_data,
+            file = path(output_dir, "survival_curves", paste0("surv_curves_imp_", i, ".rds")))
+
+    # Calculate RMST for tx=0 using trapezoidal rule
+    delta_t <- diff(time_points)
+    s_t1_0 <- std_surv_matrix_0[, -ncol(std_surv_matrix_0)]
+    s_t2_0 <- std_surv_matrix_0[, -1]
+    trapezoid_areas_0 <- 0.5 * (s_t1_0 + s_t2_0) *
+        matrix(delta_t, nrow = nrow(s_t1_0), ncol = length(delta_t), byrow = TRUE)
+    rmst_0 <- rowSums(trapezoid_areas_0)
+
+    # Calculate RMST for tx=1
+    s_t1_1 <- std_surv_matrix_1[, -ncol(std_surv_matrix_1)]
+    s_t2_1 <- std_surv_matrix_1[, -1]
+    trapezoid_areas_1 <- 0.5 * (s_t1_1 + s_t2_1) *
+        matrix(delta_t, nrow = nrow(s_t1_1), ncol = length(delta_t), byrow = TRUE)
+    rmst_1 <- rowSums(trapezoid_areas_1)
+
+    # Calculate the difference
+    rmst_diff <- rmst_1 - rmst_0
+
+    # Combine and save RMST results
+    rmst_results <- data.frame(
+        imputation = i,
+        rmst_0 = rmst_0,
+        rmst_1 = rmst_1,
+        rmst_diff = rmst_diff
+    )
+    write_parquet(rmst_results,
+                  path(output_dir, "rmst", paste0("rmst_imp_", i, ".parquet")))
+
+    cat("Completed imputation", i, "\n\n")
+}
+```

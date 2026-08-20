@@ -1,0 +1,11 @@
+name: weekly_treatment
+version: 1
+description: Future-ready weekly treatment exposure records.
+primary_key: [id, week, treatment_line]
+privacy_boundary: Weekly exposure data are pseudonymized and contain no free text.
+columns:
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  week: {type: integer, required: true, unit: weeks, coding: study week, sensitive: false, private: false}
+  treatment_line: {type: integer, required: true, unit: line, coding: positive treatment-line number, sensitive: true, private: false}
+  treatment_name: {type: string, required: false, unit: "", coding: controlled treatment name, sensitive: true, private: false}
+  exposed: {type: integer, required: true, unit: binary, coding: "0 = not exposed; 1 = exposed", sensitive: true, private: false}

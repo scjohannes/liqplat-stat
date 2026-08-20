@@ -1,0 +1,309 @@
+---
+title: "Sensitivity Analysis Including Death - MICE"
+---
+
+## Setup
+
+```{r}
+#| output: false
+#| label: setup
+library(here)
+library(tidyverse)
+library(arrow)
+library(patchwork)
+library(markov.misc)
+library(data.table)
+library(Hmisc)
+library(rms)
+library(VGAM)
+library(mice)
+library(miceadds)
+```
+
+## Load Data
+
+```{r}
+data_raw <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_long.parquet")) |>
+  mutate(
+    death = if_else(y_taooh == 5, 1, 0)
+  )
+
+data_wide <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_wide.parquet")) |>
+  select(id, age, albumin, c_reactive_protein, status_death, surv_time) |>
+  mutate(
+    albumin_std = as.numeric(scale(albumin)),
+    crp_std = as.numeric(scale(c_reactive_protein)),
+    age_std = as.numeric(scale(age))
+    )
+
+data_wide$na_est <- nelsonaalen(data_wide, timevar = surv_time, statusvar = status_death)
+data_wide <- data_wide |> select(-status_death, surv_time)
+```
+
+Invert QoL Data for modelling
+
+```{r}
+data_raw <- data_raw |>
+  mutate(
+    baseline_q30 = case_when(
+      baseline_q30 == 1 ~ 7,
+      baseline_q30 == 2 ~ 6,
+      baseline_q30 == 3 ~ 5,
+      baseline_q30 == 4 ~ 4,
+      baseline_q30 == 5 ~ 3,
+      baseline_q30 == 6 ~ 2,
+      baseline_q30 == 7 ~ 1,
+      TRUE ~ baseline_q30
+    ),
+    y_qol = case_when(
+      y_qol == 1 ~ 7,
+      y_qol == 2 ~ 6,
+      y_qol == 3 ~ 5,
+      y_qol == 4 ~ 4,
+      y_qol == 5 ~ 3,
+      y_qol == 6 ~ 2,
+      y_qol == 7 ~ 1,
+      TRUE ~ y_qol
+    )
+  )
+```
+
+## Data Preprocessing
+
+### Inclusion Criteria
+
+The substantive analysis model includes only patients who survived beyond 182 days.
+
+### Variable Transformations
+
+```{r}
+imputation_vars <- c(
+  "id",
+  "tx",
+  "y_qol",
+  "yprev",
+  "baseline_q30",
+  "gender",
+  "age_std",
+  "ecog_fstcnt",
+  "diagnosis",
+  # "plan_fstcnt_coded",
+  "week",
+  "crp_std",
+  "albumin_std",
+  "status_death",
+  "death",
+  "na_est"
+)
+
+data <- data_raw |>
+  left_join(data_wide, by = "id") |>
+  filter(day > 0) |>
+  mutate(
+    week = ceiling(day / 7),
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),
+    y_qol       = factor(y_qol), # try keeping as factor
+    tx = factor(tx),
+    gender = factor(gender)
+    ) |>
+  group_by(id, week) |>
+  mutate(death = max(death)) |>
+  arrange(desc(y_qol)) |>
+  slice_head(n = 1) |>
+  distinct() |>
+  group_by(id) |>
+  mutate(
+    yprev = as.numeric(as.character(lag(y_qol, 1, order_by = week))),
+    yprev = if_else(week == 1, baseline_q30, yprev)) |>
+  fill(yprev, .direction = "down") |>
+  ungroup() |>
+  select(all_of(imputation_vars))
+
+# Model non-linear time effects using restricted cubic splines with 4 knots
+basis_rcs <- rms::rcs(data$week, 4)
+
+data$week <- as.vector(basis_rcs[, 1])
+data$week_nl1 <- as.vector(basis_rcs[, 2])
+data$week_nl2 <- as.vector(basis_rcs[, 3])
+
+# model yprev non-linearly (but not as dummy variable, because that causes convergences issues)
+basis_yprev <- rms::rcs(data$yprev, 3)
+data$yprev <- as.vector(basis_yprev[, 1])
+data$yprev_nl1 <- as.vector(basis_yprev[, 2])
+```
+
+## MICE
+
+## Multiple Imputation
+
+### Predictor Matrix Configuration
+
+```{r}
+#| output: false
+md.pattern(data)
+
+init <- mice(data, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# Don't use death event to predict anything (we just use na_est and status_death)
+pred_matrix["death", ] <- 0
+pred_matrix[ ,"death"] <- 0
+# Set patient ID as clustering variable
+pred_matrix["id", ] <- 0
+pred_matrix[, "id"] <- -2
+
+# Time variables should not predict static baseline variables
+baseline_vars <- c("tx", "age_std", "gender", "diagnosis", "ecog_fstcnt", "baseline_q30")
+pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
+
+# Longitudinal variables: multilevel PMM
+meth["y_qol"] <- "2l.pmm"
+meth["yprev"] <- "2l.pmm"
+meth["yprev_nl1"] <- "2l.pmm"
+
+# Baseline variables: cluster-level PMM
+meth["ecog_fstcnt"] <- "2lonly.pmm"
+meth["diagnosis"] <- "2lonly.pmm"
+meth["baseline_q30"] <- "2lonly.pmm"
+meth["albumin_std"] <- "2lonly.pmm"
+meth["crp_std"] <- "2lonly.pmm"
+
+imputed_data <- mice(data,
+                     m = 10,        # 50 in final analysis
+                     maxit = 50,    # 50 in final analysis
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     donors = 10, # for this analysis we choose then to increase variability
+                     seed = 78109823)
+```
+
+
+## Convergence Diagnostics
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
+plot(imputed_data)
+```
+
+## Distribution Diagnostics
+
+```{r}
+week_bin <- cut(data$week,
+                breaks = seq(0, max(data$week) + 5, by = 5),
+                include.lowest = TRUE)
+
+# 2. Add this new variable to your mice object
+# mice::cbind works safely with mids objects
+imp_with_bins <- cbind(imputed_data, week_bin = week_bin)
+
+# 3. Plot using the new variable
+densityplot(imp_with_bins, ~ y_qol | week_bin,
+            main = "Imputed y_qol by 5-Week Packets")
+```
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for baseline variables and QoL."
+densityplot(imputed_data)
+```
+
+```{r}
+#| fig-cap: "Strip plots of imputed values for baseline variables across imputed datasets."
+stripplot(imputed_data, ecog_fstcnt + diagnosis ~ .imp)
+```
+
+```{r}
+#| fig-cap: "Scatter plots of QoL against time, by imputed dataset and treatment group, and against baseline QoL."
+xyplot(imputed_data, y_qol ~ week | .imp, pch = c(1, 20))
+xyplot(imputed_data, y_qol ~ week | tx, pch = c(1, 20))
+```
+
+## Convert MICE Output
+
+```{r}
+# Process imputations efficiently
+process_imputation <- function(i) {
+  completed_qol <- complete(imputed_data, i)
+  completed_qol$ecog_fstcnt <- factor(completed_qol$ecog_fstcnt)
+  completed_qol$diagnosis <- factor(completed_qol$diagnosis)
+  completed_qol |>
+    select(
+      id,
+      tx,
+      week,
+      y = y_qol,
+      death,
+      baseline_q30,
+      ecog_fstcnt,
+      diagnosis) |>
+    group_by(id) |>
+    mutate(
+      y = if_else(death == 1, "8", y),
+      yprev = as.numeric(as.character(lag(y, 1, order_by = week))),
+      yprev = if_else(week == 1, baseline_q30, yprev)
+    ) |>
+    ungroup() |>
+    mutate(.imp = i)  # Add imputation identifier
+}
+
+# Combine all imputations
+all_imputations <- bind_rows(lapply(1:imputed_data$m, process_imputation))
+
+# For visualization, use the first imputation
+df_cf <- all_imputations |>
+  group_by(.imp, id) |>
+  complete(week = 1:26) |>
+  fill(c(y, tx), .direction = "down") |>
+  filter(!(is.na(yprev) & y != 8)) |>
+  ungroup() |>
+  mutate(.imp = factor(.imp))
+
+df_cf |>
+  group_by(.imp, week, tx) |>
+  count(y) |>
+  mutate(
+    prop = n / sum(n)
+  ) |>
+  group_by(week, tx, y) |>
+  mutate(
+    max = quantile(prop, 0.9),
+    min = quantile(prop, 0.1)
+  ) |>
+  ungroup() |>
+  mutate(tx = factor(tx)) |>
+  ggplot(aes(x = week, fill = y, color = y)) +
+  geom_ribbon(aes(ymin = min, ymax = max, group = interaction(y, tx)), alpha = 0.2) +
+  facet_wrap(~y)
+
+markov.misc::plot_sops(df_cf, time_var = "week", facet_var = ".imp", linetype_var = "tx", geom = "line") +
+  scale_fill_brewer(palette = "Dark2")
+```
+
+```{r}
+for(i in 1:imputed_data$m){
+    complete_data <- complete(imputed_data, i)
+
+    # format for QoL analysis
+    complete_data <- complete_data |>
+      rename(y = y_qol) |>
+      arrange(id, week) |>
+      group_by(id) |>
+      mutate(
+          y = as.numeric(as.character(y)),
+          y = if_else(death == 1, 8, y),
+          yprev = lag(y, n = 1, order_by = week),
+          yprev = if_else(is.na(yprev), baseline_q30, yprev),
+          yprev = factor(yprev, levels = 1:7, ordered = FALSE),
+          ecog_fstcnt = factor(ecog_fstcnt, levels = 0:4),
+          tx = as.numeric(as.character(tx))
+      ) |>
+      ungroup()
+
+    write_parquet(complete_data, sink = here("0-main-analysis", "QOL", "sens-1", "imp-data", paste0("qol-data-", i, ".parquet")))
+}
+```

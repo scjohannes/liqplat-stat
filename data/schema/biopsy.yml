@@ -1,0 +1,13 @@
+name: biopsy
+version: 1
+description: Event-level non-liquid pathology and biopsy utilization records.
+primary_key: [biopsy_id]
+privacy_boundary: Source pathology/order identifiers are pseudonymized before export.
+columns:
+  biopsy_id: {type: string, required: true, unit: "", coding: unique pseudonymized biopsy record, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  sample_code: {type: string, required: true, unit: "", coding: pseudonymized pathology sample code, sensitive: false, private: false}
+  sample_date: {type: date, required: true, unit: date, coding: ISO-8601 extraction/sampling date, sensitive: true, private: false}
+  material_type_code: {type: string, required: true, unit: code, coding: controlled pathology material type, sensitive: true, private: false}
+  order_id: {type: string, required: false, unit: "", coding: pseudonymized pathology order identifier, sensitive: true, private: false}
+  topography_code: {type: string, required: false, unit: code, coding: controlled topography, sensitive: true, private: false}

@@ -1,0 +1,163 @@
+---
+title: "Secondary outcome: progression-free survival"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Progression-free survival
+
+This module defines the exploratory PFS analysis.  The analysis population is
+the randomized ITT cohort, with time zero at randomization.  PFS is the first
+recorded disease progression or death, whichever occurs first.  Participants
+without either event are censored at their last evaluable disease assessment
+or the fixed administrative end of follow-up.
+
+The primary PFS contrast is the posterior hazard ratio (SAT invitation versus
+external comparator) from a Bayesian proportional-hazards model with the same
+M-spline baseline-hazard construction used for OS.  The adjustment contract is
+treatment, linear age, diagnosis, and ECOG collapsed to 0, 1, 2, and 3+ when
+those fields are available.  Missing fields remain missing and must be handled
+by the approved analysis input stage; this module does not impute data.
+
+```{r}
+#| eval: false
+
+source(here::here("analysis", "05-secondary", "secondary-helpers.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "data-validation.R"))
+
+# The production stage supplies these schema-validated tables.  They are not
+# present in the public checkout, so this complete analysis chunk is a
+# non-executing contract until the private preparation stage provides them.
+cohort <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-cohort.parquet"),
+  schema = here::here("data", "schema", "cohort_follow_up.yml")
+)
+imaging <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-imaging.parquet"),
+  schema = here::here("data", "schema", "imaging.yml")
+)
+progression_events <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-progression-bsc.parquet"),
+  schema = here::here("data", "schema", "progression_bsc.yml")
+)
+
+cohort$randomization_date <- secondary_parse_date(
+  cohort$randomization_date, "randomization_date", allow_missing = FALSE
+)
+imaging$imaging_date <- secondary_parse_date(
+  imaging$imaging_date, "imaging_date", allow_missing = FALSE
+)
+progression_events$event_date <- secondary_parse_date(
+  progression_events$event_date, "event_date", allow_missing = FALSE
+)
+
+# Earliest progression from either an imaging assessment or the event table.
+imaging_progression <- imaging[
+  !is.na(imaging$progression) & imaging$progression == 1L,
+  c("id", "imaging_date"), drop = FALSE
+]
+names(imaging_progression)[2L] <- "progression_date"
+event_progression <- progression_events[
+  tolower(progression_events$event_type) == "progression" |
+    (!is.na(progression_events$progression) & progression_events$progression == 1L),
+  c("id", "event_date"), drop = FALSE
+]
+names(event_progression)[2L] <- "progression_date"
+all_progression <- unique(rbind(imaging_progression, event_progression))
+first_progression <- if (nrow(all_progression) > 0L) {
+  aggregate(progression_date ~ id, all_progression, FUN = min)
+} else {
+  data.frame(id = character(), progression_date = as.Date(character()),
+             stringsAsFactors = FALSE)
+}
+last_assessment <- if (nrow(imaging) > 0L) {
+  aggregate(imaging_date ~ id, imaging, FUN = max)
+} else {
+  data.frame(id = character(), imaging_date = as.Date(character()),
+             stringsAsFactors = FALSE)
+}
+names(last_assessment)[2L] <- "last_assessment_date"
+
+# Death is the competing PFS event; a cohort death date is supplemented by a
+# coded death event when supplied by the event table.
+cohort_death <- cohort[!is.na(cohort$death_date), c("id", "death_date"), drop = FALSE]
+event_death <- progression_events[
+  tolower(progression_events$event_type) == "death",
+  c("id", "event_date"), drop = FALSE
+]
+names(event_death)[2L] <- "death_date"
+first_death <- unique(rbind(cohort_death, event_death))
+if (nrow(first_death) > 0L) first_death <- aggregate(death_date ~ id, first_death, min)
+
+pfs_data <- merge(cohort, first_progression, by = "id", all.x = TRUE, sort = FALSE)
+pfs_data <- merge(pfs_data, first_death, by = "id", all.x = TRUE, sort = FALSE)
+pfs_data <- merge(pfs_data, last_assessment, by = "id", all.x = TRUE, sort = FALSE)
+pfs_data$ecog_3_plus <- secondary_collapse_ecog(pfs_data$ecog_fstcnt)
+pfs_data$administrative_end <- secondary_date_column(
+  pfs_data, "follow_up_end_date", "follow_up_end_date"
+)
+pfs_data$administrative_end[is.na(pfs_data$administrative_end)] <- as.Date("2026-08-21")
+pfs_data$administrative_end <- pmin(
+  pfs_data$administrative_end,
+  pfs_data$randomization_date + 182L,
+  as.Date("2026-08-21")
+)
+pfs_data$pfs_event_date <- as.Date(NA)
+pfs_data$pfs_event_type <- "censored"
+pfs_data$event_pfs <- 0L
+pfs_data$pfs_censor_date <- pfs_data$administrative_end
+pfs_data$pfs_censor_date[!is.na(pfs_data$last_assessment_date)] <- pmin(
+  pfs_data$pfs_censor_date[!is.na(pfs_data$last_assessment_date)],
+  pfs_data$last_assessment_date[!is.na(pfs_data$last_assessment_date)]
+)
+for (row in seq_len(nrow(pfs_data))) {
+  event_dates <- c(pfs_data$progression_date[row], pfs_data$death_date[row])
+  event_date <- if (all(is.na(event_dates))) as.Date(NA) else min(event_dates, na.rm = TRUE)
+  if (!is.na(event_date) && event_date >= pfs_data$randomization_date[row] &&
+      event_date <= pfs_data$administrative_end[row]) {
+    pfs_data$pfs_event_date[row] <- event_date
+    pfs_data$event_pfs[row] <- 1L
+    pfs_data$pfs_event_type[row] <- if (!is.na(pfs_data$death_date[row]) &&
+                                         pfs_data$death_date[row] <= event_date) "death" else "progression"
+    pfs_data$pfs_censor_date[row] <- event_date
+  }
+}
+pfs_data$pfs_time_days <- as.numeric(
+  pfs_data$pfs_censor_date - pfs_data$randomization_date
+)
+
+# Primary PFS model: Bayesian PH with the OS M-spline baseline construction.
+pfs_formula <- survival::Surv(pfs_time_days, event_pfs) ~
+  tx + age + ecog_3_plus + diagnosis
+pfs_fit <- rstanarm::stan_surv(
+  formula = pfs_formula,
+  data = pfs_data,
+  basehaz = "ms",
+  basehaz_ops = list(df = 5),
+  chains = 4,
+  iter = 1000,
+  warmup = 500,
+  seed = 17005
+)
+pfs_log_hazard_ratio_draws <- as.numeric(as.matrix(pfs_fit)[, "tx"])
+pfs_hazard_ratio_draws <- exp(pfs_log_hazard_ratio_draws)
+pfs_summary <- data.frame(
+  estimand = "hazard_ratio",
+  median = median(pfs_hazard_ratio_draws),
+  lower_95 = quantile(pfs_hazard_ratio_draws, 0.025),
+  upper_95 = quantile(pfs_hazard_ratio_draws, 0.975),
+  posterior_probability_benefit = mean(pfs_hazard_ratio_draws < 1),
+  stringsAsFactors = FALSE
+)
+write_atomic_parquet(
+  pfs_summary,
+  project_path("results", "secondary", "pfs", "summary.parquet")
+)
+```
+
+No PFS model is run while this contract is rendered without locked analysis
+data.  Results are consumed by the assembled report from a compact result
+artifact and status manifest.

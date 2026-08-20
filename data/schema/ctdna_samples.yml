@@ -1,0 +1,14 @@
+name: ctdna_samples
+version: 1
+description: Event-level liquid-biopsy sample and assay records.
+primary_key: [sample_id]
+privacy_boundary: Laboratory identifiers are replaced with pseudonyms before export.
+columns:
+  sample_id: {type: string, required: true, unit: "", coding: unique pseudonymized sample identifier, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  sample_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  analysis_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  baseline: {type: integer, required: false, unit: binary, coding: "0 = follow-up; 1 = baseline", sensitive: false, private: false}
+  ctdna_error: {type: integer, required: false, unit: binary, coding: "0 = no technical error; 1 = technical error; not collected remains missing", sensitive: true, private: false}
+  ctdna_detected: {type: integer, required: false, unit: binary, coding: "0 = not detected; 1 = detected", sensitive: true, private: false}
+  assay: {type: string, required: false, unit: "", coding: validated assay name/version, sensitive: false, private: false}

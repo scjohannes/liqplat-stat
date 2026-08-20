@@ -1,0 +1,12 @@
+# Time alive and out of hospital
+
+TAOOH is reported from its compact posterior estimand and figure artifacts.
+Its ordinal states include alive/out of hospital, planned admission, ER,
+unplanned admission, and death.
+
+```{r}
+#| label: taooh-results
+#| results: asis
+
+report_render_section("taooh", root = report_root)
+```

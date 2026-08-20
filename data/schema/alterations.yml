@@ -1,0 +1,15 @@
+name: alterations
+version: 1
+description: Variant-level ctDNA alterations and actionability annotations.
+primary_key: [alteration_id]
+privacy_boundary: Variant data are exported only with pseudonymized sample and patient IDs.
+columns:
+  alteration_id: {type: string, required: true, unit: "", coding: unique alteration record, sensitive: false, private: false}
+  sample_id: {type: string, required: true, unit: "", coding: pseudonymized sample identifier, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  variant_id: {type: string, required: false, unit: "", coding: pseudonymized variant identifier, sensitive: true, private: false}
+  gene_id: {type: string, required: false, unit: "", coding: gene symbol or controlled identifier, sensitive: true, private: false}
+  sensitivity: {type: string, required: false, unit: level, coding: "sensitive | not_sensitive | unknown | not_assessed", sensitive: true, private: false}
+  resistance: {type: string, required: false, unit: level, coding: "resistant | not_resistant | unknown | not_assessed", sensitive: true, private: false}
+  chip_suspicion: {type: integer, required: false, unit: binary, coding: "0 = no suspicion; 1 = suspected CHIP", sensitive: true, private: false}
+  actionability_level: {type: string, required: false, unit: level, coding: prespecified actionability category, sensitive: true, private: false}

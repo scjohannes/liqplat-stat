@@ -1,0 +1,90 @@
+---
+title: "Secondary outcome: imaging"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Imaging
+
+The total imaging count is analyzed with the same adjusted Bayesian
+negative-binomial rate model as tissue biopsy: randomized treatment, linear
+age, ECOG 0/1/2/3+, and `log(observed_survival_days)` as offset.  Each imaging
+examination is counted once by its event identifier.
+
+Descriptive summaries are shown for CT, MRI, and PET-CT.  Missing or
+unrecognized modalities are retained in an explicit `missing_or_unknown`
+category and do not alter the total-count denominator.
+
+```{r}
+#| eval: false
+
+source(here::here("analysis", "05-secondary", "secondary-helpers.R"))
+source(here::here("R", "count-helpers.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "data-validation.R"))
+
+cohort <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-cohort.parquet"),
+  schema = here::here("data", "schema", "cohort_follow_up.yml")
+)
+imaging <- read_pseudonymized_parquet(
+  here::here("analysis", "00-data", "results", "analysis-imaging.parquet"),
+  schema = here::here("data", "schema", "imaging.yml")
+)
+
+imaging_data <- secondary_observed_follow_up(
+  cohort, origin_col = "randomization_date", horizon_days = 182L,
+  output_col = "observed_survival_days"
+)
+# Count only examinations observed between randomization and each participant's
+# fixed-lock/182-day observed end.  Unknown modalities remain in the event
+# table and are classified descriptively below.
+imaging_lookup <- imaging_data[, c("id", "randomization_date", "observed_end_date"),
+                               drop = FALSE]
+imaging <- merge(imaging, imaging_lookup, by = "id", all = FALSE)
+imaging <- imaging[imaging$imaging_date >= imaging$randomization_date &
+                     imaging$imaging_date <= imaging$observed_end_date, , drop = FALSE]
+unique_imaging <- imaging[!duplicated(imaging$imaging_id), , drop = FALSE]
+imaging_counts <- as.data.frame(table(as.character(unique_imaging$id)),
+                                 stringsAsFactors = FALSE)
+names(imaging_counts) <- c("id", "imaging_count")
+imaging_counts$imaging_count <- as.integer(imaging_counts$imaging_count)
+imaging_data <- secondary_join_count(imaging_data, imaging_counts, "imaging_count")
+imaging_data$ecog_3_plus <- secondary_collapse_ecog(imaging_data$ecog_fstcnt)
+secondary_count_ready(imaging_data, "imaging_count", "observed_survival_days")
+
+modality <- toupper(trimws(as.character(unique_imaging$modality)))
+modality <- gsub("[ _]+", "-", modality)
+modality[modality %in% c("PETCT", "PET/CT")] <- "PET-CT"
+modality_group <- ifelse(
+  is.na(modality) | modality == "", "missing_modality",
+  ifelse(modality %in% c("CT", "MRI", "PET-CT"), modality, "other_or_unknown")
+)
+modality_summary <- as.data.frame(table(modality_group), stringsAsFactors = FALSE)
+names(modality_summary) <- c("modality", "n_examinations")
+modality_summary$missing_or_unknown <- modality_summary$modality %in% c(
+  "missing_modality", "other_or_unknown"
+)
+
+imaging_formula <- imaging_count ~ tx + age + ecog_3_plus +
+  offset(log(observed_survival_days))
+imaging_fit <- rstanarm::stan_glm(
+  formula = imaging_formula,
+  data = imaging_data,
+  family = rstanarm::neg_binomial_2(),
+  chains = 4,
+  iter = 1000,
+  warmup = 500,
+  seed = 17006
+)
+write_atomic_parquet(
+  modality_summary,
+  project_path("results", "secondary", "imaging", "modality-summary.parquet")
+)
+```
+
+Admissions and emergency-room visits have no standalone model here: they are
+already represented by the TAOOH ordinal states (planned admission, ER,
+unplanned admission, alive/out of hospital, and death).

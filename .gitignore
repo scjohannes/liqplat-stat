@@ -1,108 +1,78 @@
-# History files
+# R session and editor state
 .Rhistory
 .Rapp.history
-
-# Session Data files
 .RData
 .RDataTmp
-
-# User-specific files
 .Ruserdata
-
-# Example code in package build process
-*-Ex.R
-
-# Output files from R CMD build
-/*.tar.gz
-
-# Output files from R CMD check
-/*.Rcheck/
-
-# RStudio files
 .Rproj.user/
-
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
-
-# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
-.httr-oauth
-
-# knitr and R markdown default cache directories
-*_cache/
-/cache/
-
-# Temporary files created by R markdown
-*.utf8.md
-*.knit.md
-
-# R Environment Variables
 .Renviron
-
-# pkgdown site
-docs/
-
-# translation temp files
-po/*~
-
-# RStudio Connect folder
-rsconnect/
-
-# data or large output
-data/
-1-qol/output
-1-qol/models
-1-qol/sim-data
-models/
-img/
-qol-sap_files/
-2-hosp/output
-2-hosp/models
-2-hosp/sim-data
-stan-progress.txt
-2-hosp/8.1-sim-resampling-markov-H0-no-int_files
-2-hosp/8.2-sim-resampling-markov-H0-linear-int_files
-2-hosp/8.3-sim-resampling-markov-H0-full-int_files
-2-hosp/8.4-sim-resampling-markov-H0-no-int-cluster_files
-nohup.out
-2-hosp/8.1-sim-resampling-markov-H0-no-int.html
-2-hosp/8.2-sim-resampling-markov-H0-linear-int.html
-2-hosp/8.3-sim-resampling-markov-H0-full-int.html
-2-hosp/output.zip
-
-2-hosp/8.2-sim-resampling-markov-H0-linear-int.rmarkdown
-2-hosp/8.1-sim-resampling-markov-H0-no-int.rmarkdown
-2-hosp/8.3-sim-resampling-markov-H0-full-int.rmarkdown
-2-hosp/8.4-sim-resampling-markov-H0-no-int-cluster.html
-2-hosp/9-markov-H0-matching-sim_files
-2-hosp/9-markov-H0-misspec-clustered_files
-2-hosp/9-markov-H0-misspec_files
-
 .vscode/settings.json
 
-9-markov-tests/data
-9-markov-tests/output
-99-code-dump/
-copilot-instructions.md
-2-hosp/9-markov-H0-matching-sim.html
-2-hosp/9-markov-H0-misspec-clustered.html
-2-hosp/9-markov-H0-matching-sim.rmarkdown
-2-hosp/9-markov-H0-misspec.html
-sim-H0-cluster-misspec.zip
-sim-H0-correct-spec.zip
-sim-H0-misspec.zip
-2-hosp/10-power-or-08.rmarkdown
-2-hosp/10-power-or-09.html
-2-hosp/10-power-or-09_files
-2-hosp/10-power-or-08_files
-2-hosp/10-power-or-07_files
-2-hosp/10-power-or-07.rmarkdown
-2-hosp/10-power-or-08.html
-3-survival/sim-data
-3-survival/output
-chicago-author-date-16th-edition.csl
-GEMINI.md
-SAP.docx
-1-qol/9-test.qmd
-9-markov-tests/
-AGENTS.md
+# Private, raw, and derived data. Public schemas and compact public artifacts
+# remain trackable; do not add a blanket *.parquet or *.rds rule.
+/data/private/*
+!/data/private/.gitkeep
+/data/raw/
+/data/derived/
+/data/analysis/
+/data/cache/
+*.duckdb
+
+# Pipeline artifacts and model outputs
+/artifacts/*
+/results/
+/logs/
+/analysis/**/results/
+/analysis/**/models/
+/analysis/**/diagnostics/
+/analysis/**/output/
+/analysis/**/artifacts/
+/analysis/**/_files/
+/reports/_files/
+/reports/_freeze/
+
+# Quarto, knitr, and notebook renders
+/_site/
+/_freeze/
+/.quarto/
+*_cache/
+*_files/
+*.utf8.md
+*.knit.md
+*.rmarkdown
+/analysis/**/*.html
+/analysis/**/*.pdf
+
+# Logs, caches, and local temporary files
+*.log
+*.out
+*.tmp
+*.bak
+stan-progress.txt
+nohup.out
+
+# renv's machine-local library and staging area
+/renv/library/
+/renv/staging/
+/renv/local/
+
+# Package build/check products
+/*.tar.gz
+/*.Rcheck/
+
+**/*.quarto_ipynb
+
+# Local agent instructions and state
+/AGENTS.md
+/.agents/
+
+# Obsolete root SAP/office/render leftovers (the current SAP lives under sap/)
+/render-all.sh
+/process-evluation-sap.pdf
+/SAP.docx
+/SAP.pdf
+
+# Typst/HTML intermediates beside the trackable SAP source and PDF
+/sap/SAP.pdf
+/sap/SAP.typ
+/sap/SAP_files/

@@ -1,0 +1,155 @@
+---
+title: "Invitation accepted among offered patients"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Among selected patients with a recorded invitation offer, acceptance is
+modeled with the same Bayesian age/sex-adjusted logistic specification as the
+offered outcome. Standardization averages posterior probabilities over the
+observed complete covariate rows in this offered denominator.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_invitation_accepted"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+summary_path <- file.path(result_dir, "invitation-accepted-summary.parquet")
+draws_path <- file.path(result_dir, "invitation-accepted-draws.parquet")
+model_dir <- ensure_directory(project_path("analysis", "04-implementation", "models"))
+model_path <- file.path(model_dir, "invitation-accepted.rds")
+cohort_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                         "analysis-cohort.parquet")
+recruitment_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                              "analysis-recruitment.parquet")
+if (!file.exists(cohort_path) || !file.exists(recruitment_path)) {
+  stop("Invitation-accepted analysis requires the built cohort and recruitment domain.")
+}
+input_paths <- c(cohort_path, recruitment_path)
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(summary_path, draws_path, model_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "02-invitation-accepted.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  accepted_summary <- read_result_table(summary_path)
+} else {
+  recruitment_raw <- read_result_table(recruitment_path)
+  offered_col <- intersect(c("invitation_offered", "offered_invitation",
+                             "invitation_offer", "offered"),
+                           names(recruitment_raw))[1L]
+  accepted_col <- intersect(c("invitation_accepted", "accepted_invitation",
+                              "invitation_acceptance", "accepted"),
+                            names(recruitment_raw))[1L]
+  if (is.na(offered_col) || is.na(accepted_col)) {
+    stop("Invitation acceptance requires both `invitation_offered` and `invitation_accepted`.")
+  }
+  require_public_columns(recruitment_raw, c("id", offered_col, accepted_col),
+                         "invitation-acceptance process outcomes")
+  id_values <- as.character(recruitment_raw$id)
+  if (anyNA(id_values) || any(!nzchar(id_values))) {
+    stop("Invitation-acceptance process outcome has a missing pseudonymized id.")
+  }
+  id_groups <- split(seq_len(nrow(recruitment_raw)), id_values, drop = TRUE)
+  collapse_indicator <- function(column_name) {
+    indicator <- validate_binary(recruitment_raw[[column_name]], column_name)
+    rows <- lapply(id_groups, function(index) {
+      values <- indicator[index]
+      data.frame(
+        id = id_values[index[[1L]]],
+        process_outcome = if (all(is.na(values))) NA_real_ else
+          as.numeric(any(values == 1, na.rm = TRUE)),
+        stringsAsFactors = FALSE
+      )
+    })
+    result <- do.call(rbind, rows)
+    names(result)[names(result) == "process_outcome"] <- column_name
+    rownames(result) <- NULL
+    result
+  }
+  offered <- collapse_indicator(offered_col)
+  accepted <- collapse_indicator(accepted_col)
+  process <- merge(offered, accepted, by = "id", all = FALSE)
+  cohort <- read_result_table(cohort_path)
+  require_public_columns(cohort, c("id", "tx", "age", "gender"),
+                         "invitation-acceptance covariates")
+  process <- merge(
+    cohort[, c("id", "tx", "age", "gender"), drop = FALSE],
+    process[, c("id", offered_col, accepted_col), drop = FALSE],
+    by = "id", all = FALSE
+  )
+  process$age <- suppressWarnings(as.numeric(as.character(process$age)))
+  process$gender <- as.factor(process$gender)
+  process <- process[process$tx == 1 & process[[offered_col]] == 1, , drop = FALSE]
+  model_data <- process[stats::complete.cases(
+    process[, c(accepted_col, "age", "gender"), drop = FALSE]
+  ), , drop = FALSE]
+  if (nrow(model_data) == 0L) stop("No complete offered-patient rows support the acceptance model.")
+  if (!requireNamespace("brms", quietly = TRUE)) {
+    stop("Package 'brms' is required for the invitation-accepted model.")
+  }
+  model_formula <- stats::reformulate(c("age", "gender"), response = accepted_col)
+  fit <- brms::brm(
+    model_formula,
+    data = model_data,
+    family = brms::bernoulli(link = "logit"),
+    iter = 2000,
+    chains = 4,
+    cores = 1,
+    seed = analysis_seed(config, "supporting", offset = 1L),
+    refresh = 0,
+    file = model_path
+  )
+  epred <- brms::posterior_epred(fit, newdata = model_data, re_formula = NA)
+  standardized_draws <- data.frame(
+    draw = rowMeans(epred),
+    stringsAsFactors = FALSE
+  )
+  accepted_summary <- data.frame(
+    outcome = "standardized_invitation_accepted_probability",
+    posterior_mean = mean(standardized_draws$draw),
+    posterior_median = stats::median(standardized_draws$draw),
+    lower_95 = stats::quantile(standardized_draws$draw, 0.025),
+    upper_95 = stats::quantile(standardized_draws$draw, 0.975),
+    stringsAsFactors = FALSE
+  )
+  write_module_draws(standardized_draws, draws_path)
+  accepted_summary$n_model <- nrow(model_data)
+  accepted_summary$n_offered <- nrow(process)
+  write_module_table(accepted_summary, summary_path)
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "fit"),
+    code_paths = here::here("analysis", "04-implementation", "02-invitation-accepted.qmd")
+  )
+}
+```
+
+```{r}
+#| label: acceptance-summary
+#| tbl-cap: "Posterior standardized probability of invitation acceptance"
+
+accepted_summary |>
+  knitr::kable()
+```

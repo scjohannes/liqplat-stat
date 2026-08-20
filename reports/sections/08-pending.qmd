@@ -1,0 +1,17 @@
+# Pending outcomes
+
+The following outcomes appear inline with their readiness reason.  They are
+not hidden in an appendix and no current aggregate field is substituted.
+
+| Outcome | Status | Readiness reason |
+| --- | --- | --- |
+| Weekly time under treatment | Blocked | The future schema must distinguish planned no-treatment, treatment, and death in mutually exclusive weekly states, with interval completeness. |
+| Time to next treatment line | Blocked | Treatment-line records lack an approved transition reason, line-change rule, and censoring/completeness fields. |
+| Time to switch/stop | Blocked | The current optional switch/stop dates do not define event type, reason, competing death, or complete observation. |
+| Targeted therapy | Blocked | A targeted-therapy flag lacks the qualifying agent/class, alteration linkage, exposure dates, and observation rule. |
+| Trial referral/recruitment | Blocked | Referral, offer, acceptance, recruitment, and enrolment are separate steps without approved denominators and dates. |
+| Physical function | Blocked | No instrument/version, score direction, schedule, or death-inclusive estimand is approved. |
+
+The exact required fields are documented in the non-executing contracts under
+`analysis/90-pending/`.  Once those schemas are approved, each contract can
+produce a status manifest before any model is considered.

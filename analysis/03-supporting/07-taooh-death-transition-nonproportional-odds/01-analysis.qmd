@@ -1,0 +1,163 @@
+---
+title: "TAOOH death-transition non-proportional odds — computationally reduced supporting/sensitivity analysis (5 imputations)"
+format: html
+execute:
+  freeze: false
+---
+
+This computationally reduced supporting/sensitivity analysis (5 imputations)
+adds a separate treatment-by-death-transition term to the second-order TAOOH
+model. Fixed imputations 1–5 and 200 posterior standardized draws per
+imputation are used; standardization remains over observed participants using
+patient-specific random-intercept draws, not empirical Bayes.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "markov-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config, supporting = TRUE)
+if (!identical(indices, 1:5)) stop("Supporting TAOOH death-transition analysis requires exactly imputations 1:5.")
+data_dir <- project_path("artifacts", "primary", "taooh", "imputations")
+output_dir <- ensure_directory(project_path("artifacts", "supporting", "taooh-death-transition-nonproportional-odds"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "markov-helpers.R"),
+  here::here("R", "checkpoints.R"),
+  here::here("analysis", "module-runtime.R"), knitr::current_input()
+)
+```
+
+```{r}
+#| label: fit-taooh-death-transition
+#| include: false
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(output_dir, sprintf("model-%02d.rds", index))
+  sops_path <- file.path(output_dir, sprintf("sops-%02d.rds", index))
+  comparison_path <- file.path(output_dir, sprintf("comparisons-%02d.rds", index))
+  if (!file.exists(data_path)) stop("Missing fixed TAOOH imputation ", index, ".")
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("supporting-taooh-death-transition-%02d", index),
+    input_paths = data_path,
+    output_paths = c(model_path, sops_path, comparison_path),
+    code_paths = code_paths,
+    metadata = list(label = "computationally reduced supporting/sensitivity analysis (5 imputations)",
+                   imputation = index, imputations = 1:5, posterior_draws = 200L,
+                   order = 2L, death_transition_term = TRUE,
+                   standardization = "observed participants; patient-specific random-intercept draws"),
+    worker = function() {
+      data <- module_read_parquet(data_path)
+      data$death_transition <- as.integer(as.character(data$y) == "5" & as.character(data$yprev) != "5")
+      data$y <- factor(data$y, levels = 1:5, ordered = TRUE)
+      data$yprev <- factor(data$yprev, levels = 1:5, ordered = FALSE)
+      data$ypprev <- factor(data$ypprev, levels = 1:5, ordered = FALSE)
+      dd <- rms::datadist(data)
+      old_datadist <- getOption("datadist")
+      options(datadist = "dd")
+      on.exit(options(datadist = old_datadist), add = TRUE)
+      model_formula <- y ~ tx + tx:death_transition + rms::rcs(week, 4) +
+        yprev + ypprev + week %ia% yprev + week %ia% ypprev +
+        ecog_fstcnt + factor(diagnosis) + rms::rcs(albumin, 3) +
+        rms::rcs(c_reactive_protein, 3)
+      fit_seed <- analysis_seed(config, "supporting", index)
+      fitted <- tryCatch(
+        markov.misc::blrm_markov(
+          formula = model_formula,
+          ppo = ~week,
+          cppo = function(y) y,
+          data = data,
+          id_var = "id",
+          time_var = "week",
+          random_intercept = "id",
+          p_var = "yprev",
+          p2_var = "ypprev",
+          chains = as.integer(config$markov$chains),
+          iter = as.integer(config$markov$iterations),
+          warmup = as.integer(config$markov$warmup),
+          seed = fit_seed,
+          refresh = 0L
+        ),
+        error = identity
+      )
+      diagnostics <- if (inherits(fitted, "error")) {
+        fitted
+      } else {
+        tryCatch(markov_diagnostics(fitted, config$diagnostics), error = identity)
+      }
+      retry <- inherits(fitted, "error") || inherits(diagnostics, "error") ||
+        !isTRUE(diagnostics$passed)
+      if (retry) {
+        if (!isTRUE(config$diagnostics$retry_on_failure)) {
+          stop("Supporting TAOOH death-transition fit failed and retries are disabled.")
+        }
+        fitted <- markov.misc::blrm_markov(
+          formula = model_formula,
+          ppo = ~week,
+          cppo = function(y) y,
+          data = data,
+          id_var = "id",
+          time_var = "week",
+          random_intercept = "id",
+          p_var = "yprev",
+          p2_var = "ypprev",
+          chains = as.integer(config$markov$chains),
+          iter = as.integer(config$markov$retry_iterations),
+          warmup = as.integer(config$markov$retry_iterations / 2L),
+          seed = as.integer(fit_seed + 500000L),
+          refresh = 0L
+        )
+        diagnostics <- markov_diagnostics(fitted, config$diagnostics)
+      }
+      assert_markov_diagnostics(diagnostics)
+      observed <- data[!duplicated(data$id), c("id", "tx", "diagnosis", "ecog_fstcnt", "albumin", "c_reactive_protein", "yprev", "ypprev"), drop = FALSE]
+      observed$yprev <- factor(observed$yprev, levels = 1:5, ordered = FALSE)
+      observed$ypprev <- factor(observed$ypprev, levels = 1:5, ordered = FALSE)
+      sops <- markov.misc::avg_sops(
+        model = fitted,
+        newdata = observed,
+        variables = list(tx = c(0, 1)),
+        times = 1:26,
+        y_levels = 1:5,
+        absorb = 5L,
+        p_var = "yprev",
+        p2_var = "ypprev",
+        id_var = "id",
+        time_var = "week",
+        include_re = TRUE,
+        n_draws = 200L,
+        seed = fit_seed,
+        posterior_summary = "mean",
+        return_draws = TRUE
+      )
+      comparison <- markov.misc::avg_comparisons(
+        model = fitted,
+        newdata = observed,
+        variables = list(tx = c(0, 1)),
+        estimand = "time_in_state",
+        state_sets = 1L,
+        times = 1:26,
+        y_levels = 1:5,
+        absorb = 5L,
+        id_var = "id",
+        time_var = "week",
+        p_var = "yprev",
+        p2_var = "ypprev",
+        include_re = TRUE,
+        n_draws = 200L,
+        seed = fit_seed,
+        posterior_summary = "mean",
+        return_draws = TRUE
+      )
+      module_save_rds(fitted, model_path)
+      module_save_rds(sops, sops_path)
+      module_save_rds(comparison, comparison_path)
+    }
+  )
+}
+```

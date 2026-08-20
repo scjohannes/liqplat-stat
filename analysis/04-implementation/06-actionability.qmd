@@ -1,0 +1,242 @@
+---
+title: "ctDNA alteration actionability"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Mutation, CNV, and fusion records are retained in a long actionability table.
+Exact sensitivity and resistance levels are counted without ranking or
+collapsing source labels. Alteration counts exclude CHIP records. Patient
+proportions use all patients with at least one valid ctDNA result as the
+denominator, allow a patient to occupy multiple levels, and explicitly report
+no actionable finding when no non-CHIP alteration has recorded evidence.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "implementation_actionability"
+result_dir <- module_result_dir(file.path("analysis", "04-implementation"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+long_path <- file.path(result_dir, "actionability-long.parquet")
+level_path <- file.path(result_dir, "actionability-level-summary.parquet")
+patient_path <- file.path(result_dir, "actionability-patient-summary.parquet")
+summary_path <- file.path(result_dir, "actionability-summary.parquet")
+figure_path <- file.path(result_dir, "actionability-levels.svg")
+alterations_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                              "analysis-alterations.parquet")
+ctdna_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-ctdna-samples.parquet")
+if (!file.exists(alterations_path) || !file.exists(ctdna_path)) {
+  stop("Actionability analysis requires the built ctDNA and alteration tables.")
+}
+input_paths <- c(alterations_path, ctdna_path,
+                 private_domain_path(config, "ctdna_samples"),
+                 private_domain_path(config, "alterations"),
+                 schema_domain_path(config, "ctdna_samples"),
+                 schema_domain_path(config, "alterations"))
+input_paths <- input_paths[file.exists(input_paths)]
+output_paths <- c(long_path, level_path, patient_path, summary_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "04-implementation", "06-actionability.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  actionability_summary <- read_result_table(summary_path)
+  actionability_levels <- read_result_table(level_path)
+} else {
+  alterations <- read_result_table(alterations_path)
+  ctdna <- read_result_table(ctdna_path)
+  require_public_columns(
+    ctdna, c("id", "sample_id", "valid_ctdna_result"),
+    "valid ctDNA-result denominator"
+  )
+  require_public_columns(
+    alterations,
+    c("id", "alteration_id", "sensitivity", "resistance", "chip_suspicion",
+      "valid_ctdna_result"),
+    "actionability analysis"
+  )
+  type_col <- intersect(c("alteration_type", "alteration_class", "variant_type"),
+                        names(alterations))[1L]
+  if (is.na(type_col)) {
+    stop("Actionability requires an alteration_type column identifying mutation, CNV, or fusion.")
+  }
+  valid_values <- alterations$valid_ctdna_result
+  valid_ctdna <- !is.na(ctdna$valid_ctdna_result) &
+    as.logical(ctdna$valid_ctdna_result) & !is.na(ctdna$id)
+  if (!any(valid_ctdna)) {
+    stop("Actionability is pending because no valid ctDNA-result patient is recorded.")
+  }
+  chip <- validate_binary(alterations$chip_suspicion, "chip_suspicion")
+  valid <- !is.na(valid_values) & as.logical(valid_values) &
+    !is.na(alterations$id)
+  valid_patient_ids <- unique(ctdna$id[valid_ctdna])
+  denominator <- length(valid_patient_ids)
+  type_values <- tolower(trimws(as.character(alterations[[type_col]])))
+  type_values[type_values %in% c("snv", "snp", "indel", "small_variant")] <- "mutation"
+  type_values[type_values %in% c("copy_number", "copy number", "copy-number")] <- "cnv"
+  type_values[type_values %in% c("structural_variant", "structural variant")] <- "fusion"
+  if (nrow(alterations) > 0L &&
+      !any(type_values %in% c("mutation", "cnv", "fusion"), na.rm = TRUE)) {
+    stop("Actionability alteration_type has no mutation, CNV, or fusion records.")
+  }
+  sensitivity <- trimws(as.character(alterations$sensitivity))
+  resistance <- trimws(as.character(alterations$resistance))
+  long <- rbind(
+    data.frame(
+      id = alterations$id,
+      alteration_id = alterations$alteration_id,
+      alteration_type = type_values,
+      actionability_type = "sensitivity",
+      actionability_level = sensitivity,
+      recorded_exact_level = !is.na(sensitivity) & nzchar(sensitivity),
+      non_chip = !is.na(chip) & chip == 0,
+      valid_ctdna_result = valid_values,
+      stringsAsFactors = FALSE
+    ),
+    data.frame(
+      id = alterations$id,
+      alteration_id = alterations$alteration_id,
+      alteration_type = type_values,
+      actionability_type = "resistance",
+      actionability_level = resistance,
+      recorded_exact_level = !is.na(resistance) & nzchar(resistance),
+      non_chip = !is.na(chip) & chip == 0,
+      valid_ctdna_result = valid_values,
+      stringsAsFactors = FALSE
+    )
+  )
+  long <- long[!is.na(long$valid_ctdna_result) &
+                 as.logical(long$valid_ctdna_result) & long$non_chip &
+                 long$alteration_type %in% c("mutation", "cnv", "fusion"), ,
+               drop = FALSE]
+  long_evidence <- long[long$recorded_exact_level, , drop = FALSE]
+  level_key <- paste(long_evidence$id, long_evidence$alteration_id,
+                     long_evidence$actionability_type,
+                     long_evidence$actionability_level, sep = "\r")
+  long_unique <- long_evidence[!duplicated(level_key), , drop = FALSE]
+  level_groups <- split(
+    seq_len(nrow(long_unique)),
+    interaction(long_unique$actionability_type, long_unique$actionability_level,
+                drop = TRUE, lex.order = TRUE)
+  )
+  if (nrow(long_unique) == 0L) {
+    actionability_levels <- data.frame(
+      actionability_type = character(), actionability_level = character(),
+      alteration_count = integer(), patient_count = integer(),
+      patient_proportion = numeric(), stringsAsFactors = FALSE
+    )
+  } else {
+    actionability_levels <- do.call(rbind, lapply(level_groups, function(index) {
+      values <- long_unique[index, , drop = FALSE]
+      patient_count <- length(unique(values$id))
+      data.frame(
+        actionability_type = values$actionability_type[[1L]],
+        actionability_level = values$actionability_level[[1L]],
+        alteration_count = nrow(values),
+        patient_count = patient_count,
+        patient_proportion = if (denominator == 0L) NA_real_ else
+          patient_count / denominator,
+        stringsAsFactors = FALSE
+      )
+    }))
+    rownames(actionability_levels) <- NULL
+  }
+  patient_rows <- lapply(valid_patient_ids, function(identifier) {
+    patient_rows <- valid & alterations$id == identifier & !is.na(chip) & chip == 0 &
+      type_values %in% c("mutation", "cnv", "fusion")
+    sensitivity_evidence <- any(is_recorded_actionability_evidence(
+      alterations$sensitivity[patient_rows]
+    ))
+    resistance_evidence <- any(is_recorded_actionability_evidence(
+      alterations$resistance[patient_rows]
+    ))
+    data.frame(
+      id = identifier,
+      any_sensitivity = sensitivity_evidence,
+      any_resistance = resistance_evidence,
+      any_actionable = sensitivity_evidence || resistance_evidence,
+      neither = !sensitivity_evidence && !resistance_evidence,
+      no_actionable_finding = !sensitivity_evidence && !resistance_evidence,
+      stringsAsFactors = FALSE
+    )
+  })
+  patient_summary <- if (length(patient_rows) == 0L) {
+    data.frame(
+      id = alterations$id[FALSE], any_sensitivity = logical(),
+      any_resistance = logical(), any_actionable = logical(),
+      neither = logical(),
+      no_actionable_finding = logical(), stringsAsFactors = FALSE
+    )
+  } else {
+    do.call(rbind, patient_rows)
+  }
+  write_module_table(long, long_path)
+  write_module_table(actionability_levels, level_path)
+  write_module_table(patient_summary, patient_path)
+  actionability_summary <- data.frame(
+    denominator_valid_ctdna_patients = nrow(patient_summary),
+    patients_any_sensitivity = sum(patient_summary$any_sensitivity),
+    patients_any_resistance = sum(patient_summary$any_resistance),
+    patients_any_actionable = sum(patient_summary$any_actionable),
+    patients_neither = sum(patient_summary$neither),
+    patients_no_actionable_finding = sum(patient_summary$no_actionable_finding),
+    stringsAsFactors = FALSE
+  )
+  write_module_table(actionability_summary, summary_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the actionability figure.")
+  }
+  plot <- ggplot2::ggplot(
+    actionability_levels,
+    ggplot2::aes(x = actionability_level, y = alteration_count,
+                 fill = actionability_type)
+  ) +
+    ggplot2::geom_col(position = "dodge") +
+    ggplot2::coord_flip() +
+    ggplot2::labs(x = "Exact recorded level", y = "Alteration count", fill = NULL) +
+    ggplot2::theme_minimal()
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 8, height = 5, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built", denominator = "patients_with_valid_ctdna"),
+    code_paths = here::here("analysis", "04-implementation", "06-actionability.qmd")
+  )
+}
+```
+
+```{r}
+#| label: actionability-summary
+#| tbl-cap: "Patient-level actionability summary"
+
+actionability_summary |>
+  knitr::kable()
+```
+
+```{r}
+#| label: actionability-levels
+#| tbl-cap: "Exact alteration-level actionability counts"
+
+actionability_levels |>
+  knitr::kable()
+```

@@ -1,0 +1,84 @@
+---
+title: "TAOOH — primary preparation"
+subtitle: "Validated five-state weekly history with first- and second-order lags"
+format: html
+execute:
+  freeze: false
+---
+
+The weekly ordinal outcome is coded 1 = alive/out of hospital, 2 = planned
+admission, 3 = ER, 4 = unplanned admission, and 5 = dead. State 5 is checked
+as absorbing before incomplete weekly grids are handed to MICE.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "data-validation.R"))
+source(here::here("R", "data-helpers.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+cohort_path <- project_path("analysis", "00-data", "results", "analysis-cohort.parquet")
+taooh_path <- project_path("analysis", "00-data", "results", "analysis-taooh.parquet")
+cohort_schema_path <- project_path("data", "schema", "cohort_follow_up.yml")
+taooh_schema_path <- project_path("data", "schema", "taooh.yml")
+output_path <- project_path("artifacts", "primary", "taooh", "prepared.parquet")
+stage_id <- "primary-taooh-preparation"
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "data-validation.R"),
+  here::here("R", "data-helpers.R"), here::here("R", "checkpoints.R"),
+  here::here("analysis", "module-runtime.R"), knitr::current_input()
+)
+```
+
+```{r}
+#| label: prepare-taooh-data
+#| include: false
+module_branch(
+  runtime = runtime,
+  stage_id = stage_id,
+  input_paths = c(cohort_path, taooh_path, cohort_schema_path, taooh_schema_path),
+  output_paths = output_path,
+  code_paths = code_paths,
+  metadata = list(endpoint = "taooh", horizon_weeks = 26L, states = 1:5,
+                 death_absorbing = TRUE),
+  worker = function() {
+    cohort <- module_input(cohort_path, cohort_schema_path)
+    taooh <- module_input(taooh_path, taooh_schema_path)
+    module_require_columns(cohort, c("id", "tx", "diagnosis", "ecog_fstcnt", "albumin", "c_reactive_protein"), "cohort_follow_up")
+    module_require_columns(taooh, c("id", "week", "y_taooh"), "taooh")
+    if (any(!taooh$y_taooh %in% 1:5)) stop("TAOOH states must be exactly 1 = home, 2 = planned, 3 = ER, 4 = unplanned, 5 = dead.")
+    taooh <- taooh[order(taooh$id, taooh$week), , drop = FALSE]
+    bad_absorbing <- any(unlist(tapply(taooh$y_taooh, taooh$id, function(value) {
+      death <- which(value == 5L)
+      length(death) > 0L && any(value[seq.int(death[1L], length(value))] != 5L)
+    })))
+    if (bad_absorbing) stop("TAOOH death state 5 must be absorbing within every patient.")
+    cohort$diagnosis <- as.integer(factor(cohort$diagnosis, levels = sort(unique(cohort$diagnosis))))
+    base <- cohort[, c("id", "tx", "diagnosis", "ecog_fstcnt", "albumin", "c_reactive_protein"), drop = FALSE]
+    grid <- merge(base, data.frame(week = 1:26), by = NULL)
+    observed <- taooh[, c("id", "week", "y_taooh"), drop = FALSE]
+    observed <- observed[observed$week >= 1 & observed$week <= 26, , drop = FALSE]
+    observed <- observed[!duplicated(observed[c("id", "week")], fromLast = TRUE), , drop = FALSE]
+    grid <- merge(grid, observed, by = c("id", "week"), all.x = TRUE, sort = FALSE)
+    grid <- grid[order(grid$id, grid$week), , drop = FALSE]
+    grid$y <- grid$y_taooh
+    grid$tx <- as.integer(grid$tx)
+    grid <- grid |>
+      dplyr::group_by(id) |>
+      dplyr::mutate(
+        yprev = dplyr::lag(y, 1L, default = dplyr::first(y)),
+        ypprev = dplyr::lag(y, 2L, default = dplyr::first(y))
+      ) |>
+      dplyr::ungroup()
+    grid$yprev <- as.integer(grid$yprev)
+    grid$ypprev <- as.integer(grid$ypprev)
+    module_save_parquet(grid, output_path)
+  }
+)
+```

@@ -1,0 +1,270 @@
+---
+title: "Table 1"
+---
+
+```{r}
+library(here)
+library(tidyverse)
+library(arrow)
+library(ggplot2)
+library(tinytable)
+library(table1)
+```
+
+```{r}
+data <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_wide.parquet"))
+
+data_long <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_long.parquet"))
+
+new_baseline_q30 <- data_long |>
+  filter(day < 14) |>
+  mutate(baseline_q30 = if_else(is.na(baseline_q30) & !is.na(y_qol), y_qol, baseline_q30)) |>
+  select(id, baseline_q30) |>
+  distinct() |>
+  filter(!is.na(baseline_q30))
+
+new_baseline_q30 <- data |>
+  select(id) |>
+  left_join(new_baseline_q30, by = "id")
+
+data$baseline_q30 <- new_baseline_q30$baseline_q30
+```
+
+```{r}
+# Create inverse function to convert SNOMED codes to readable text
+snomed_to_diagnosis <- function(snomed_code) {
+  case_when(
+    snomed_code == "SNM_126952004" ~ "Primary brain tumor",
+    snomed_code == "SNM_255055008" ~ "Head and neck",
+    snomed_code == "SNM_93880001" ~ "Lung tumor (including mesothelioma)",
+    snomed_code == "SNM_254837009" ~ "Breast cancer",
+    snomed_code == "SNM_363349007_363402007" ~ "Stomach/esophagus cancer",
+    snomed_code == "SNM_363402007" ~ "Esophageal cancer",
+    snomed_code == "SNM_363349007" ~ "Stomach cancer",
+    snomed_code == "SNM_363418001_312104005" ~ "Pancreatic cancer / Cholangiocarcinoma",
+    snomed_code == "SNM_363418001" ~ "Pancreatic cancer",
+    snomed_code == "SNM_312104005" ~ "Cholangiocarcinoma",
+    snomed_code == "SNM_109841003" ~ "Hepatocellular carcinoma",
+    snomed_code == "SNM_363509000" ~ "Small intestine cancer",
+    snomed_code == "SNM_781382000" ~ "Colorectal cancer",
+    snomed_code == "SNM_702391001" ~ "Kidney tumour",
+    snomed_code == "SNM_448233000" ~ "Cancer of the urinary tract",
+    snomed_code == "SNM_399068003" ~ "Prostate cancer",
+    snomed_code == "SNM_363514001" ~ "Gynecological tumors",
+    snomed_code == "SNM_372130007" ~ "Primary skin tumor",
+    snomed_code == "SNM_424413001" ~ "Soft tissue sarcoma",
+    snomed_code == "SNM_448710000" ~ "Bone sarcoma",
+    snomed_code == "SNM_118600007" ~ "Lymphoma",
+    snomed_code == "SNM_109989006" ~ "Multiple myeloma",
+    snomed_code == "SNM_93143009" ~ "Leukemia",
+    snomed_code == "SNM_255046005" ~ "Neuroendocrine tumors",
+    snomed_code == "SNM_126900000" ~ "Testicular cancer",
+    snomed_code == "SNM_255052006" ~ "Cancer of unknown primary",
+    snomed_code == "SNM_74964007" ~ "Other",
+    snomed_code == "SNM_261665006" ~ "Unclear",
+    snomed_code == "SNM_110396000" ~ "No malignant disease",
+    TRUE ~ snomed_code  # Return as-is if no match found
+  )
+}
+```
+
+```{r}
+#| echo: false
+#| label: tbl-baseline-table1
+#| tbl-cap: "Baseline characteristics by treatment group (table1 package)"
+
+# Prepare diagnosis variable: top 4 most common + other
+diagnosis_summary <- data |>
+  count(diagnosis, sort = TRUE) |>
+  slice_head(n = 6) |>
+  pull(diagnosis)
+
+# Prepare data for table1
+data_for_table1 <- data |>
+  mutate(
+    tx_label = factor(tx, levels = c(1, 0), labels = c("Single-Arm Trial", "External Comparator")),
+    gender_label = factor(gender, levels = c(0, 1), labels = c("Female", "Male")),
+    diagnosis_grouped = fct_infreq(if_else(
+      diagnosis %in% diagnosis_summary,
+      snomed_to_diagnosis(diagnosis),
+      "Other"
+    ))
+  )
+
+# Create labels for variables
+label(data_for_table1$age) <- "Age, years"
+label(data_for_table1$gender_label) <- "Sex"
+label(data_for_table1$ecog_fstcnt) <- "ECOG Performance Status"
+label(data_for_table1$baseline_q30) <- "Quality of Life (Q30)*"
+label(data_for_table1$diagnosis_grouped) <- "Diagnosis"
+
+# Create the table
+baseline_table <- table1(~ age + gender_label + ecog_fstcnt + baseline_q30 + diagnosis_grouped | tx_label,
+       data = data_for_table1,
+       overall = FALSE)
+
+baseline_table
+
+# Save table with footnote
+t1flex(baseline_table) |>
+  flextable::add_footer_lines("*Baseline quality of life (Q30) is measured from the questionnaire completed before 14 days after the date of random selection.") |>
+  flextable::save_as_docx(path = here("0-main-analysis", "tables", "baseline_characteristics.docx"))
+```
+
+
+
+```{r}
+library(tidyverse)
+library(patchwork) # For arranging the plots together
+
+# --- 1. DATA PREPARATION & THEME SETTING ---
+
+# Define custom colors to match the blue/orange style
+cols <- c("Single-Arm Trial" = "#0072B2", "External Comparator" = "#E69F00")
+
+# Set a minimalist theme
+my_theme <- theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  )
+
+# Prepare the main dataset
+plot_data <- data_for_table1 |>
+  # Ensure the tx_label is set correctly (Adjust levels if needed based on your actual data)
+  mutate(group = tx_label)
+
+# --- 2. PLOT 1: STACKED BAR CHART FOR SEX DISTRIBUTION ---
+
+data_sex <- plot_data |>
+  count(group, gender_label) |>
+  group_by(group) |>
+  mutate(
+    fraction = n / sum(n),
+    ymax = cumsum(fraction),
+    ymin = c(0, head(ymax, n = -1)),
+    label_pos = (ymax + ymin) / 2,
+    label = paste0(gender_label, "\n", round(fraction * 100, 1), "%")
+  )
+
+p_sex <- ggplot(data_sex, aes(x = group, y = fraction, fill = interaction(gender_label, group))) +
+  geom_bar(stat = "identity", position = "stack", alpha = 0.8, show.legend = FALSE) +
+  scale_fill_manual(values = c(
+    "Female.Single-Arm Trial" = "#b3e6cc",
+    "Male.Single-Arm Trial" = "#009e73",
+    "Female.External Comparator" = "#b3d9ff",
+    "Male.External Comparator" = "#56b4e9"
+  )) +
+  labs(title = "Sex", x = NULL, y = "Proportion") +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    legend.position = "none",
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+# --- 3. PLOT 2: DENSITY PLOT FOR AGE DISTRIBUTION ---
+
+p_age <- ggplot(plot_data, aes(x = age, fill = group, color = group)) +
+  geom_density(alpha = 0.5, size = 1) +
+  scale_fill_manual(values = c("Single-Arm Trial" = "#009e73",
+                                "External Comparator" = "#56b4e9")) +
+  scale_color_manual(values = c("Single-Arm Trial" = "#009e73",
+                                 "External Comparator" = "#56b4e9")) +
+  labs(title = "Age", x = "Age (years)", y = "Density") +
+  my_theme +
+  theme(legend.position = "")
+
+# --- 4. PLOT 3: STACKED BAR CHART FOR ECOG PERFORMANCE STATUS ---
+
+data_ecog <- plot_data |>
+  count(group, ecog_fstcnt) |>
+  group_by(group) |>
+  mutate(
+    ecog_fstcnt = if_else(is.na(ecog_fstcnt), "Missing", as.character(ecog_fstcnt)),
+    # Create ordered factor with reversed levels (4, 3, 2, 1, 0, then Missing at top)
+    ecog_fstcnt = factor(ecog_fstcnt, levels = c("4", "3", "2", "1", "0", "Missing"))
+  ) |>
+  arrange(group, ecog_fstcnt) |>
+  mutate(
+    fraction = n / sum(n),
+    ymax = cumsum(fraction),
+    ymin = c(0, head(ymax, n = -1)),
+    label_pos = (ymax + ymin) / 2
+  )
+
+p_ecog <- ggplot(data_ecog, aes(x = group, y = fraction, fill = interaction(ecog_fstcnt, group))) +
+  geom_bar(stat = "identity", position = "stack", alpha = 0.8, show.legend = FALSE) +
+  scale_fill_manual(values = c(
+    "0.Single-Arm Trial" = "#b3e6cc",
+    "1.Single-Arm Trial" = "#80d4aa",
+    "2.Single-Arm Trial" = "#4dc288",
+    "3.Single-Arm Trial" = "#009e73",
+    "4.Single-Arm Trial" = "#007d5c",
+    "Missing.Single-Arm Trial" = "#cccccc",
+    "0.External Comparator" = "#e6f2ff",
+    "1.External Comparator" = "#b3d9ff",
+    "2.External Comparator" = "#80c1ff",
+    "3.External Comparator" = "#56b4e9",
+    "4.External Comparator" = "#3a9ad9",
+    "Missing.External Comparator" = "#cccccc"
+  )) +
+  labs(title = "ECOG Performance Status", x = NULL, y = "Proportion") +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    legend.position = "none",
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+# --- 5. PLOT 4: BUTTERFLY PLOT FOR DIAGNOSIS ---
+
+data_diag <- plot_data |>
+  count(group, diagnosis_grouped) |>
+  group_by(group) |>
+  mutate(fraction = n / sum(n)) |>
+  ungroup() |>
+  mutate(
+    fraction_signed = if_else(group == "External Comparator", fraction, -fraction),
+    diagnosis_grouped = fct_reorder(diagnosis_grouped, abs(fraction_signed), .fun = sum)
+  )
+
+p_diag <- ggplot(data_diag, aes(x = fraction_signed, y = diagnosis_grouped,
+                                 fill = group)) +
+  geom_col(alpha = 0.8) +
+  scale_fill_manual(values = c("Single-Arm Trial" = "#009e73",
+                                "External Comparator" = "#56b4e9")) +
+  scale_x_continuous(
+    labels = function(x) paste0(abs(round(x, 3)) * 100, "%"),
+    breaks = seq(-0.3, 0.3, by = 0.1),
+    limits = c(-0.3, 0.3)
+  ) +
+  labs(title = "Primary Diagnosis", x = "Proportion", y = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) +
+  geom_vline(xintercept = 0, color = "gray30", linetype = "solid", size = 0.5)
+
+# --- 6. COMBINE PLOTS USING PATCHWORK ---
+
+layout <- (p_sex | p_age) / (p_ecog | p_diag)
+
+final_plot <- layout +
+  plot_annotation(
+    # title = "Baseline Characteristics Comparison",
+    theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5))
+  )
+
+final_plot
+```

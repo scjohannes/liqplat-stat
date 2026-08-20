@@ -1,0 +1,325 @@
+---
+title: "Sensitivity Analysis Including Death - Quality of Life Estimands"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(data.table)
+library(ggdist)
+library(patchwork)
+library(duckdb)
+```
+
+## Read marginalized SOPs
+
+```{r}
+sop_dir <- here("0-main-analysis", "QOL", "sens-1", "results", "sops")
+if (FALSE) {
+# directory of stored SOPs
+
+# Create a temporary on-disk database
+db_path <- here(sop_dir, "qol-sens-1-scratch.duckdb")
+con <- dbConnect(duckdb(), dbdir = db_path)
+
+# Get number of imputations
+m <- length(list.dirs(sop_dir, full.names = FALSE, recursive = FALSE)[grep("^imp_", list.dirs(sop_dir, full.names = FALSE, recursive = FALSE))])
+
+# Prepare list of all file patterns and metadata for DuckDB to read directly
+queries <- character()
+for (imp_idx in 1:m) {
+  # Use glob patterns - DuckDB reads all matching files at once
+  dir_0 <- normalizePath(here(sop_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_0"), winslash = "/")
+  dir_1 <- normalizePath(here(sop_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_1"), winslash = "/")
+
+  queries <- c(queries,
+    glue::glue("SELECT state, time, draw, 0 as tx, {imp_idx} as imp, sop FROM read_parquet('{dir_0}/*.parquet')"),
+    glue::glue("SELECT state, time, draw, 1 as tx, {imp_idx} as imp, sop FROM read_parquet('{dir_1}/*.parquet')")
+  )
+}
+
+# Read all parquets and aggregate in one pass
+full_query <- glue::glue("
+  WITH all_data AS (
+    {paste(queries, collapse = '\n    UNION ALL\n    ')}
+  )
+  SELECT
+    state,
+    time,
+    draw,
+    tx,
+    imp,
+    AVG(sop) as sop
+  FROM all_data
+  GROUP BY state, time, draw, tx, imp
+")
+
+message("Processing all imputations with DuckDB...")
+sop_summary <- dbGetQuery(con, full_query) |> as_tibble()
+
+# Clean up
+dbDisconnect(con, shutdown = TRUE)
+duckdb::duckdb_shutdown(duckdb::duckdb())  # Fully release file locks
+if (file.exists(db_path)) file.remove(db_path)
+
+# Format for plotting
+setDT(sop_summary)
+sop_summary[, state := as.factor(state)]
+sop_summary[, tx := factor(tx, levels = c(0, 1), labels = c("UC", "SAT"))]
+
+write_parquet(sop_summary, here(sop_dir, "sop_combined.parquet"))
+rm(sop_summary)
+}
+```
+
+
+## Plotting
+
+### Marginalized SOPs
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+fig_marginalized <-
+  read_parquet(here(sop_dir, "sop_combined.parquet")) |>
+  # sop_df |>
+  ggplot() +
+  aes(x = time, y = sop) +
+  stat_lineribbon(
+    aes(fill = state, linetype = tx),
+    linewidth = 0.6,
+    alpha = 0.4,
+    .width = 0.95
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by = 4)) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1)) +
+  coord_cartesian(ylim = c(0, 0.5)) +
+  labs(
+    x = "Study Week",
+    y = "SOP",
+    subtitle = "Marginalized state occupancy probabilities",
+    fill = "State",
+    linetype = "Group"
+  )
+
+ggsave(
+  here("0-main-analysis", "img", "qol_sens_1_marginalized_sops.svg"),
+  plot = fig_marginalized,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+### Grouped SOPs
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+fig_marginalized_grouped <-
+  open_dataset(here(sop_dir, "sop_combined.parquet")) |>
+  mutate(group = case_when(
+    state == "1" | state == "2" | state == "3" ~ "Good",
+    state == "7" | state == "6" | state == "5" ~ "Bad",
+    state == "8" ~ "Dead",
+    TRUE ~ "Average")) |>
+  group_by(group, draw, tx, time, imp) |>
+  summarise(sop = sum(sop), .groups = "drop") |>
+  collect() |>
+  mutate(
+    group = factor(group, levels = c("Good", "Average", "Bad", "Dead"))
+  ) |>
+  ggplot() +
+  aes(x = time, y = sop) +
+  stat_lineribbon(
+    aes(fill = group, linetype = tx),
+    linewidth = 0.6,
+    alpha = 0.5,
+    .width = c(0.95)
+  ) +
+  scale_color_brewer(palette = "Dark2", guide = "none") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 26, by = 4)) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    x = "Study Week",
+    y = "SOP",
+    subtitle = "Marginalized state occupancy probabilities",
+    fill = "State",
+    linetype = "Group"
+  ) +
+  theme(legend.position = "bottom")
+
+
+
+ggsave(
+  here("0-main-analysis", "img", "qol_sens_1_grouped_sops.svg"),
+  plot = fig_marginalized_grouped,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+Table for SOPS
+
+```{r}
+open_dataset(here(sop_dir, "sop_combined.parquet")) |>
+  mutate(group = case_when(
+    state == "1" | state == "2" | state == "3" ~ "Good",
+    state == "7" | state == "6" | state == "5" ~ "Bad",
+    state == "8" ~ "Dead",
+    TRUE ~ "Average")) |>
+  group_by(group, draw, tx, time, imp) |>
+  summarise(sop = sum(sop), .groups = "drop") |>
+  collect() |>
+  mutate(
+    group = factor(group, levels = c("Good", "Average", "Bad", "Dead"))
+  ) |>
+  group_by(group, tx, draw, imp) |>
+  summarise(
+    time_in = sum(sop),
+  ) |>
+  group_by(group, tx) |>
+  summarise(
+    mean_weeks_in = mean(time_in),
+    median_weeks_in = median(time_in),
+    sd_weeks_in = sd(time_in),
+    q025_weeks_in = quantile(time_in, 0.025),
+    q975_weeks_in = quantile(time_in, 0.975)
+  )
+```
+
+## Primary Estimand
+
+### Difference in Weeks with >= Good Quality of Life
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+# Marginalized difference in weeks for >= good QoL
+posterior <- open_dataset(here(sop_dir, "sop_combined.parquet")) |>
+  mutate(group = case_when(
+    state == "1" | state == "2" | state == "3" ~ "Good",
+    state == "7" | state == "6" | state == "5" ~ "Bad",
+    state == "8" ~ "Dead",
+    TRUE ~ "Average")) |>
+  group_by(tx, group, draw, imp) |>
+  summarise(mean_weeks = sum(sop), .groups = "drop") |>
+  collect() |>
+  group_by(group) |>
+  pivot_wider(names_from = tx, values_from = mean_weeks, names_prefix = "tx_") |>
+  mutate(difference = tx_SAT - tx_UC) |>
+  rename(state = group)
+
+# Summary statistics
+posterior_summary <- posterior |>
+  group_by(state) |>
+  summarise(
+    mean_weeks_UC = mean(tx_UC),
+    median_weeks_UC = median(tx_UC),
+    sd_weeks_UC = sd(tx_UC),
+    q025_weeks_UC = quantile(tx_UC, 0.025),
+    q975_weeks_UC = quantile(tx_UC, 0.975),
+    mean_weeks_SAT = mean(tx_SAT),
+    median_weeks_SAT = median(tx_SAT),
+    sd_weeks_SAT = sd(tx_SAT),
+    q025_weeks_SAT = quantile(tx_SAT, 0.025),
+    q975_weeks_SAT = quantile(tx_SAT, 0.975),
+    mean_difference = mean(difference),
+    median_difference = median(difference),
+    sd_difference = sd(difference),
+    q025_difference = quantile(difference, 0.025),
+    q975_difference = quantile(difference, 0.975),
+    p_any_diff = mean(difference > 0)
+  )
+
+
+posterior_summary
+```
+
+```{r}
+posterior_long <- posterior |>
+  pivot_longer(
+    cols = c(tx_UC, tx_SAT, difference),
+    names_to = "measure",
+    values_to = "weeks"
+  ) |>
+  mutate(
+    measure = recode(
+      measure,
+      tx_UC = "UC",
+      tx_SAT = "SAT",
+      difference = "SAT - UC"
+    )
+  )
+
+summary_tbl <- posterior_long |>
+  group_by(state, measure) |>
+  summarise(
+    mean = mean(weeks),
+    sd = sd(weeks),
+    median = median(weeks),
+    q025 = quantile(weeks, 0.025),
+    q975 = quantile(weeks, 0.975),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `Mean (SD)` = sprintf("%.1f (%.1f)", mean, sd),
+    `Median [95% CrI]` = sprintf("%.1f [%.1f, %.1f]", median, q025, q975)
+  ) |>
+  select(state, measure, `Mean (SD)`, `Median [95% CrI]`) |>
+  pivot_wider(
+    names_from = measure,
+    values_from = c(`Mean (SD)`, `Median [95% CrI]`),
+    names_glue = "{measure}_{.value}"
+  ) |>
+  select(1, 2, 4, 3, 5, 7, 6)
+
+prob_tbl <- posterior |>
+  group_by(state) |>
+  summarise(
+    `Posterior Pr(SAT > UC)` = sprintf("%.1f%%", 100 * mean(difference > 0)),
+    .groups = "drop"
+  )
+
+final_tbl <- summary_tbl |>
+  left_join(prob_tbl, by = "state")
+
+# save table
+write_parquet(final_tbl, here("0-main-analysis", "QOL", "sens-1", "results", "qol_estimands_summary.parquet"))
+```
+
+### Posterior Distribution Plot
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+plot_posterior <- posterior |>
+  ggplot(aes(x = difference)) +
+  stat_dots(side = "bottom") +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = bquote(paste("Treatment Difference in Weeks spent with ", "" >= "", " Good Quality of Life (SAT - UC)")),
+    y = "Density"
+  )
+
+
+ggsave(
+  here("0-main-analysis", "img", "qol_sens_1_posterior_distribution.svg"),
+  plot = plot_posterior,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```

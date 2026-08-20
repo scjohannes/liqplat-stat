@@ -1,0 +1,12 @@
+name: blood_products
+version: 1
+description: Event-level blood-product and transfusion records.
+primary_key: [product_id]
+privacy_boundary: Pseudonymized clinical event records; no direct identifiers.
+columns:
+  product_id: {type: string, required: true, unit: "", coding: unique pseudonymized product event, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  product_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  product_type: {type: string, required: true, unit: category, coding: controlled blood-product category, sensitive: true, private: false}
+  units: {type: number, required: false, unit: units, coding: non-negative quantity, sensitive: true, private: false}
+  transfusion: {type: integer, required: true, unit: binary, coding: "0 = no; 1 = transfused", sensitive: true, private: false}

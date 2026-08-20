@@ -1,0 +1,146 @@
+---
+title: "LIQPLAT baseline population table"
+date: 2026-08-20
+format:
+  html:
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+The baseline table is descriptive and uses the ITT assignment defined by
+random selection for invitation. Missing covariates remain visible as
+missing; no imputation or zero conversion is performed here.
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("analysis", "_module-common.R"), local = FALSE)
+liqplat_source_public_helpers()
+config <- read_analysis_config()
+force <- module_force()
+stage_id <- "population_baseline_table"
+result_dir <- module_result_dir(file.path("analysis", "01-population"))
+checkpoint_path <- module_checkpoint_path(stage_id)
+table_path <- file.path(result_dir, "baseline-characteristics.parquet")
+figure_path <- file.path(result_dir, "baseline-age.svg")
+input_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
+                        "analysis-cohort.parquet")
+if (!file.exists(input_path)) stop("Baseline table requires the built analysis cohort.")
+input_paths <- c(input_path, schema_domain_path(config, "cohort_follow_up"))
+output_paths <- c(table_path, figure_path)
+decision <- checkpoint_decision(
+  checkpoint_path, stage_id, input_paths = input_paths,
+  output_paths = output_paths,
+  code_paths = here::here("analysis", "01-population", "03-baseline-table.qmd"),
+  config = config, force = force
+)
+
+if (identical(decision, "skip")) {
+  baseline_table <- read_result_table(table_path)
+} else {
+  cohort <- read_result_table(input_path)
+  require_public_columns(cohort, c("id", "tx"), "baseline cohort")
+  tx <- validate_binary(cohort$tx, "tx", allow_missing = FALSE)
+  cohort$group <- factor(tx, levels = c(1, 0),
+                         labels = c("Selected for invitation", "External comparator"))
+  continuous <- intersect(c("age", "albumin", "c_reactive_protein"), names(cohort))
+  categorical <- intersect(c("gender", "ecog_fstcnt", "diagnosis"), names(cohort))
+  rows <- list()
+  for (column_name in continuous) {
+    values <- suppressWarnings(as.numeric(as.character(cohort[[column_name]])))
+    for (group_name in levels(cohort$group)) {
+      group_values <- values[cohort$group == group_name]
+      observed <- group_values[is.finite(group_values)]
+      rows[[length(rows) + 1L]] <- data.frame(
+        variable = column_name,
+        level = "median [Q1, Q3]",
+        group = group_name,
+        n = length(observed),
+        denominator = length(group_values),
+        missing = sum(!is.finite(group_values)),
+        estimate = if (length(observed) == 0L) NA_real_ else stats::median(observed),
+        q1 = if (length(observed) == 0L) NA_real_ else stats::quantile(observed, 0.25),
+        q3 = if (length(observed) == 0L) NA_real_ else stats::quantile(observed, 0.75),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  for (column_name in categorical) {
+    values <- as.character(cohort[[column_name]])
+    values[is.na(values) | !nzchar(trimws(values))] <- "Missing"
+    for (group_name in levels(cohort$group)) {
+      group_values <- values[cohort$group == group_name]
+      levels_observed <- sort(unique(group_values), method = "radix")
+      for (level_name in levels_observed) {
+        n <- sum(group_values == level_name)
+        rows[[length(rows) + 1L]] <- data.frame(
+          variable = column_name,
+          level = level_name,
+          group = group_name,
+          n = n,
+          denominator = length(group_values),
+          missing = if (identical(level_name, "Missing")) n else 0L,
+          estimate = if (length(group_values) == 0L) NA_real_ else n / length(group_values),
+          q1 = NA_real_,
+          q3 = NA_real_,
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+  if (length(rows) == 0L) {
+    baseline_table <- data.frame(
+      variable = character(), level = character(), group = character(),
+      n = integer(), denominator = integer(), missing = integer(),
+      estimate = numeric(), q1 = numeric(), q3 = numeric(),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    baseline_table <- do.call(rbind, rows)
+  }
+  rownames(baseline_table) <- NULL
+  write_module_table(baseline_table, table_path)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for the baseline figure.")
+  }
+  if ("age" %in% names(cohort)) {
+    age_data <- data.frame(age = suppressWarnings(as.numeric(as.character(cohort$age))),
+                           group = cohort$group)
+    age_data <- age_data[is.finite(age_data$age), , drop = FALSE]
+    plot <- ggplot2::ggplot(age_data, ggplot2::aes(age, fill = group)) +
+      ggplot2::geom_histogram(alpha = 0.5, bins = 20, position = "identity") +
+      ggplot2::labs(x = "Age at random selection (years)", y = "Patients", fill = NULL) +
+      ggplot2::theme_minimal()
+  } else {
+    plot <- ggplot2::ggplot() + ggplot2::labs(
+      x = "Age at random selection (years)", y = "Patients",
+      subtitle = "Age is not available in the public cohort interface."
+    ) + ggplot2::theme_minimal()
+  }
+  assert_artifact_path(figure_path)
+  ggplot2::ggsave(figure_path, plot = plot, width = 8, height = 4, units = "in")
+  finalize_module_checkpoint(
+    stage_id = stage_id,
+    checkpoint_path = checkpoint_path,
+    input_paths = input_paths,
+    output_paths = output_paths,
+    config = config,
+    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
+                    status = "built"),
+    code_paths = here::here("analysis", "01-population", "03-baseline-table.qmd")
+  )
+}
+```
+
+```{r}
+#| label: baseline-table
+#| tbl-cap: "Baseline characteristics by invitation assignment"
+
+baseline_table |>
+  transform(estimate = round(estimate, 4)) |>
+  knitr::kable()
+```

@@ -1,0 +1,81 @@
+---
+title: "Overall survival — primary model fitting"
+subtitle: "Bayesian proportional hazards model with a five-df M-spline baseline"
+format: html
+execute:
+  freeze: false
+---
+
+The SAP model is fitted independently to each of the 50 completed datasets.
+Each Stan fit is its own recoverable branch (four chains, 4,000 iterations).
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "survival-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config)
+input_dir <- project_path("artifacts", "primary", "overall-survival", "imputations")
+model_dir <- ensure_directory(project_path("artifacts", "primary", "overall-survival", "models"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "survival-helpers.R"),
+  here::here("R", "checkpoints.R"),
+  here::here("analysis", "module-runtime.R"), knitr::current_input()
+)
+```
+
+```{r}
+#| label: fit-os-models
+#| include: false
+for (index in indices) {
+  input_path <- file.path(input_dir, sprintf("imputation-%02d.parquet", index))
+  output_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  if (!file.exists(input_path)) stop("Missing OS imputation branch: ", input_path)
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-os-fitting-%02d", index),
+    input_paths = input_path,
+    output_paths = output_path,
+    code_paths = code_paths,
+    metadata = list(endpoint = "overall_survival", imputation = index,
+                   chains = 4L, iterations = 4000L, warmup = 2000L),
+    worker = function() {
+      data <- module_read_parquet(input_path)
+      module_require_columns(
+        data,
+        c("survival_time_days", "event_death", "tx", "ecog_binary",
+          "stage_binary", "lung", "mgps"),
+        "OS imputation branch"
+      )
+      data$mgps <- factor(data$mgps, levels = 0:2)
+      formula <- survival::Surv(survival_time_days, event_death) ~
+        tx + ecog_binary + stage_binary + lung + mgps
+      fit <- rstanarm::stan_surv(
+        formula = formula,
+        data = data,
+        basehaz = "ms",
+        basehaz_ops = list(df = 5),
+        prior = rstanarm::normal(location = rep(0, 6), scale = c(0.55, rep(2.5, 5))),
+        prior_intercept = rstanarm::normal(0, 20),
+        prior_aux = rstanarm::dirichlet(1),
+        chains = 4L,
+        cores = 4L,
+        iter = 4000L,
+        warmup = 2000L,
+        seed = analysis_seed(config, "survival", index)
+      )
+      module_save_rds(fit, output_path)
+    }
+  )
+}
+model_paths <- file.path(model_dir, sprintf("model-%02d.rds", indices))
+if (length(model_paths) != 50L || !all(file.exists(model_paths))) {
+  stop("OS fitting stage did not produce all 50 model branches.")
+}
+```

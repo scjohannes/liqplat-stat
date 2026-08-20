@@ -1,0 +1,12 @@
+name: imaging
+version: 1
+description: Event-level imaging and progression assessments.
+primary_key: [imaging_id]
+privacy_boundary: Source report identifiers and free text remain private.
+columns:
+  imaging_id: {type: string, required: true, unit: "", coding: unique pseudonymized imaging record, sensitive: false, private: false}
+  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  imaging_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  modality: {type: string, required: false, unit: category, coding: controlled imaging modality, sensitive: false, private: false}
+  progression: {type: integer, required: false, unit: binary, coding: "0 = no progression; 1 = progression", sensitive: true, private: false}
+  target_lesion: {type: string, required: false, unit: category, coding: controlled lesion assessment, sensitive: true, private: false}

@@ -1,0 +1,21 @@
+---
+title: "Pending outcome: treatment switch or stop"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Time to treatment switch or stop
+
+**Status: blocked — switch/stop event definition not ready.**
+
+The required future fields are `id`, `treatment_id`, `treatment_line`,
+`start_date`, `event_date`, controlled `event_type` (`switch` or `stop`),
+`event_reason`, `death_date`, `follow_up_end_date`, and an indicator that the
+event history is complete through the censoring date.
+
+The current `treatment_lines` interface exposes only an optional
+`treatment_switch_date` and a `stop_date`; it does not establish the first
+qualifying event, reason, competing death rule, or observation completeness.
+Those fields cannot be inferred safely, so this endpoint remains pending.

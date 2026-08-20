@@ -1,0 +1,80 @@
+---
+title: "Fixed 26-week death — computationally reduced supporting/sensitivity analysis (5 imputations)"
+format: html
+execute:
+  freeze: false
+---
+
+This computationally reduced supporting/sensitivity analysis (5 imputations)
+fits an unadjusted binary death model at day 182 using fixed imputations 1–5.
+Two hundred posterior draws per imputation are retained for the difference in
+death risk.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("analysis", "module-runtime.R"))
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config, supporting = TRUE)
+if (!identical(indices, 1:5)) stop("Supporting fixed-death analysis requires exactly imputations 1:5.")
+data_dir <- project_path("artifacts", "primary", "overall-survival", "imputations")
+output_dir <- ensure_directory(project_path("artifacts", "supporting", "os-fixed-26-week-death"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"),
+  here::here("R", "checkpoints.R"),
+  here::here("analysis", "module-runtime.R"), knitr::current_input()
+)
+```
+
+```{r}
+#| label: fit-fixed-death
+#| include: false
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(output_dir, sprintf("model-%02d.rds", index))
+  draws_path <- file.path(output_dir, sprintf("draws-%02d.parquet", index))
+  if (!file.exists(data_path)) stop("Missing fixed OS imputation ", index, ".")
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("supporting-os-fixed-death-%02d", index),
+    input_paths = data_path,
+    output_paths = c(model_path, draws_path),
+    code_paths = code_paths,
+    metadata = list(label = "computationally reduced supporting/sensitivity analysis (5 imputations)",
+                   imputation = index, imputations = 1:5, posterior_draws = 200L,
+                   horizon_days = 182L),
+    worker = function() {
+      data <- module_read_parquet(data_path)
+      model <- rstanarm::stan_glm(
+        event_death ~ tx,
+        data = data,
+        family = stats::binomial(),
+        chains = 4,
+        iter = 1000,
+        warmup = 500,
+        cores = 4,
+        seed = analysis_seed(config, "supporting", index)
+      )
+      posterior <- as.matrix(model)
+      if (nrow(posterior) < 200L) stop("Fixed-death posterior has fewer than 200 draws.")
+      posterior <- posterior[seq_len(200L), , drop = FALSE]
+      intercept <- posterior[, "(Intercept)"]
+      treatment <- posterior[, "tx"]
+      draws <- data.frame(
+        draw = seq_len(200L),
+        death_risk_control = stats::plogis(intercept),
+        death_risk_sat = stats::plogis(intercept + treatment),
+        death_risk_difference = stats::plogis(intercept + treatment) - stats::plogis(intercept),
+        imputation = index,
+        stringsAsFactors = FALSE
+      )
+      module_save_rds(model, model_path)
+      module_save_parquet(draws, draws_path)
+    }
+  )
+}
+```

@@ -1,0 +1,136 @@
+---
+title: "TAOOH Model Fitting"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(rmsb)
+library(markov.misc)
+```
+
+## Load data
+
+```{r}
+data_path <- here("0-main-analysis", "TAOOH", "imp-data")
+m <- length(dir_ls(data_path))
+```
+
+## Create output directory
+
+```{r}
+output_dir <- here("0-main-analysis", "TAOOH", "results")
+dir_create(output_dir)
+dir_create(path(output_dir, "models"))
+dir_create(path(output_dir, "sops"))
+dir_create(path(output_dir, "diagnostics"))
+```
+
+## Fit models and calculate estimand
+
+```{r}
+for(i in 1:m) {
+  posterior_file <- path(output_dir, "diagnostics", paste0("posterior_imp_", i, ".png"))
+  model_file <- path(output_dir, "models", paste0("model_imp_", i, ".rds"))
+
+  if (file_exists(posterior_file)) {
+    cat("Skipping imputation", i, "- posterior already saved:", posterior_file, "\n")
+    next
+  }
+
+  cat("Processing imputation", i, "of", m, "\n")
+
+  # If model exists, load it and regenerate diagnostics only
+  if (file_exists(model_file)) {
+    cat("Found existing model for imputation", i, "- regenerating diagnostics\n")
+    model <- readRDS(model_file)
+
+    # ensure environment/options expected by diagnostic functions
+    stanDx(model)
+
+    trace_plot <- stanDxplot(model)
+    ggsave(path(output_dir, "diagnostics", paste0("trace_imp_", i, ".png")),
+      plot = trace_plot,
+      width = 20, height = 16, dpi = 300)
+
+    dens_plot <- plot(model)
+    ggsave(posterior_file,
+      plot = dens_plot,
+      width = 10, height = 8, dpi = 300)
+
+    next
+  }
+
+
+  data <- read_parquet(here("0-main-analysis", "TAOOH", "imp-data", paste0("taooh-data-", i, ".parquet"))) |>
+    mutate(
+      ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+      tx = as.numeric(as.character(tx)))
+
+
+  dd <- datadist(data)
+  options(datadist = 'dd')
+  options(mc.cores = 4)
+
+  pcontrast_po <- list(
+    c1 = list(tx = 1),
+    c2 = list(tx = 0),
+    contrast = expression(c1 - c2),
+    mu = 0,
+    sd = 0.541
+  )
+
+  # Prior on the non-proportional effect (threshold 4 only, for transition to state 5)
+  # Using a narrower prior here
+  # pcontrast_npo <- list(
+  #   c1 = list(tx = 1),
+  #   c2 = list(tx = 0),
+  #   contrast = expression(c1 - c2),
+  #   mu = 0,
+  #   sd = 0.3  # Narrower prior for the non-proportional effect
+  # )
+
+  options(mc.cores = 4)
+  Sys.setenv(RSTUDIO = 1)
+  model <-
+      blrm(
+          formula = y ~ tx + rcs(week, 4) + yprev + ypprev + week %ia% yprev + week %ia% ypprev + ecog_fstcnt + diagnosis + rcs(albumin, 3) + rcs(c_reactive_protein, 3) + cluster(id),
+          data = data,
+          # ppo = ~tx,
+          # cppo = function(y) y,
+          # cppo = function(y) y == 5, # to relax PO for treatment
+          pcontrast = pcontrast_po,    # Prior for PO effect
+          # cpcontrast = pcontrast_npo,  # Prior for non-PO effect (threshold 4)
+          refresh = 5,
+          iter = 2000,
+          chains = 4,
+          seed = 68818,
+          loo = FALSE,
+          method = "sampling",
+          backend = "cmdstan",
+          # sampling.args = list(adapt_delta = 0.95)
+          )
+  Sys.setenv(RSTUDIO = 0)
+
+  stanDx(model)
+
+  # Save model object
+  saveRDS(model, file = path(output_dir, "models", paste0("model_imp_", i, ".rds")))
+
+  # Generate diagnostic plots
+  trace_plot <- stanDxplot(model)
+  ggsave(path(output_dir, "diagnostics", paste0("trace_imp_", i, ".png")),
+    plot = trace_plot,
+    width = 20, height = 16, dpi = 300)
+
+  dens_plot <- plot(model)
+  ggsave(path(output_dir, "diagnostics", paste0("posterior_imp_", i, ".png")),
+    plot = dens_plot,
+    width = 10, height = 8, dpi = 300)
+}
+```

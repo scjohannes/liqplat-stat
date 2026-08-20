@@ -1,0 +1,87 @@
+# Secondary outcomes
+
+Secondary outcomes are exploratory.  The report renders compact artifacts
+when available and keeps each missing/blocked status visible.
+
+```{r}
+#| label: secondary-overview
+#| results: asis
+
+report_render_section("secondary", root = report_root)
+```
+
+## Progression-free survival
+
+PFS uses randomized ITT from randomization, with earliest recorded progression
+or death as the event.  The Bayesian proportional-hazards model's primary
+contrast is the hazard ratio.
+
+```{r}
+#| label: pfs-results
+#| results: asis
+
+report_render_section("pfs", root = report_root)
+```
+
+## Survival rates
+
+Six- and 12-month rates are derived from OS posterior artifacts.  Later
+horizons are shown only when the follow-up sufficiency gate is available.
+
+```{r}
+#| label: survival-rate-results
+#| results: asis
+
+report_render_section("survival_rates", root = report_root)
+```
+
+## Best supportive care
+
+Time to BSC starts at first-line treatment initiation.  A `bsc_date` is
+retained for every participant, and death before BSC is censored at death in
+the cause-specific analysis.
+
+```{r}
+#| label: bsc-results
+#| results: asis
+
+report_render_section("bsc", root = report_root)
+```
+
+## Blood products
+
+Blood-product rates use observed positive exposure and the adjusted Bayesian
+negative-binomial model.  Missing event quantities or unknown product types
+are not recoded as zero.
+
+```{r}
+#| label: blood-product-results
+#| results: asis
+
+report_render_section("blood_products", root = report_root)
+```
+
+## Tissue biopsy
+
+The biopsy outcome counts unique biopsy days and uses the adjusted count model
+with treatment, linear age, ECOG 0/1/2/3+, and observed survival-time offset.
+
+```{r}
+#| label: tissue-biopsy-results
+#| results: asis
+
+report_render_section("tissue_biopsy", root = report_root)
+```
+
+## Imaging
+
+The total imaging count uses the same adjusted model.  CT, MRI, and PET-CT
+summaries are descriptive.  Admissions and ER visits have no standalone model
+because they are already represented by TAOOH states.
+
+```{r}
+#| label: imaging-results
+#| results: asis
+
+report_render_section("imaging", root = report_root)
+```

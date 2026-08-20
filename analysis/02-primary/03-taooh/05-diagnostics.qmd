@@ -1,0 +1,65 @@
+---
+title: "TAOOH — primary diagnostics"
+subtitle: "Compact second-order Markov diagnostics for 50 branches"
+format: html
+execute:
+  freeze: false
+---
+
+The production diagnostic contract is evaluated for every TAOOH model branch;
+posterior standardization over observed participants using patient-specific
+random-intercept draws is kept separate from convergence checking.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "markov-helpers.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+indices <- module_exact_indices(config)
+model_dir <- project_path("artifacts", "primary", "taooh", "models")
+diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "taooh", "diagnostics"))
+result_path <- project_path("results", "primary", "taooh", "diagnostics.parquet")
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "markov-helpers.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: check-taooh-models
+#| include: false
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  output_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
+  if (!file.exists(model_path)) stop("Missing TAOOH model branch: ", model_path)
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-taooh-diagnostics-%02d", index),
+    input_paths = model_path,
+    output_paths = output_path,
+    code_paths = code_paths,
+    metadata = list(endpoint = "taooh", imputation = index, order = 2L),
+    worker = function() {
+      model <- readRDS(model_path)
+      diagnostics <- markov_diagnostics(model, config$diagnostics)
+      assert_markov_diagnostics(diagnostics)
+      output <- as.data.frame(diagnostics$summary)
+      output$imputation <- index
+      output$divergent_transitions <- diagnostics$divergent_transitions
+      output$treedepth_exceeded <- diagnostics$treedepth_exceeded
+      output$min_bfmi <- diagnostics$min_bfmi
+      module_save_parquet(output, output_path)
+    }
+  )
+}
+diagnostic_paths <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", indices))
+if (!all(file.exists(diagnostic_paths))) stop("TAOOH diagnostics are incomplete.")
+module_save_parquet(do.call(rbind, lapply(diagnostic_paths, module_read_parquet)), result_path)
+```

@@ -1,0 +1,110 @@
+---
+title: "Quality of life — primary imputation"
+subtitle: "50 multilevel one-imputation MICE branches"
+format: html
+execute:
+  freeze: false
+---
+
+The primary QoL analysis uses exactly 50 one-imputation branches. Repeated
+weekly rows are clustered by patient for multilevel PMM (`2l.pmm`), while
+patient-level baseline fields use `2lonly.pmm`; the maximum is 50 iterations
+and the donor pool is 5.
+
+```{r}
+#| label: setup
+#| include: false
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "paths-artifacts.R"))
+source(here::here("R", "checkpoints.R"))
+source(here::here("R", "imputation.R"))
+source(here::here("analysis", "module-runtime.R"))
+
+runtime <- module_runtime()
+config <- runtime$config
+if (!requireNamespace("miceadds", quietly = TRUE)) stop("Package 'miceadds' is required for multilevel QoL imputation.")
+library(miceadds)
+indices <- module_exact_indices(config)
+if (length(indices) != 50L) stop("Primary QoL requires exactly 50 imputation branches.")
+input_path <- project_path("artifacts", "primary", "quality-of-life", "prepared.parquet")
+branch_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life", "imputations"))
+code_paths <- module_code_paths(
+  here::here("R", "analysis-config.R"), here::here("R", "imputation.R"),
+  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
+  knitr::current_input()
+)
+```
+
+```{r}
+#| label: impute-qol
+#| include: false
+prepared <- module_read_parquet(input_path)
+module_require_columns(
+  prepared,
+  c("id", "tx", "diagnosis", "ecog_fstcnt", "week", "q30", "baseline_q30"),
+  "prepared QoL data"
+)
+prepared$.cluster <- as.integer(factor(prepared$id))
+init <- mice::mice(prepared, m = 0, maxit = 0, printFlag = FALSE)
+methods <- init$method
+predictors <- init$predictorMatrix
+methods[] <- ""
+methods["q30"] <- "2l.pmm"
+methods["baseline_q30"] <- "2lonly.pmm"
+if ("ecog_fstcnt" %in% names(methods)) methods["ecog_fstcnt"] <- "2lonly.pmm"
+if ("diagnosis" %in% names(methods)) methods["diagnosis"] <- "2lonly.pmm"
+predictors[,] <- 0
+predictors["q30", c("week", "tx", "diagnosis", "ecog_fstcnt", "baseline_q30")] <- 1
+predictors["q30", ".cluster"] <- -2
+predictors["baseline_q30", c("tx", "diagnosis", "ecog_fstcnt")] <- 1
+predictors["baseline_q30", ".cluster"] <- -2
+for (column in intersect(c("ecog_fstcnt", "diagnosis"), rownames(predictors))) {
+  predictors[column, c("tx", "baseline_q30")] <- 1
+  predictors[column, ".cluster"] <- -2
+}
+predictors[, c("id", ".cluster", "y", "baseline_state", "event_death", "survival_time_days", "death_week")] <- 0
+predictors[c("id", ".cluster", "y", "baseline_state", "event_death", "survival_time_days", "death_week"), ] <- 0
+validate_mice_spec(prepared, methods, predictors)
+
+for (index in indices) {
+  output_path <- file.path(branch_dir, sprintf("imputation-%02d.parquet", index))
+  module_branch(
+    runtime = runtime,
+    stage_id = sprintf("primary-qol-imputation-%02d", index),
+    input_paths = input_path,
+    output_paths = output_path,
+    code_paths = code_paths,
+    metadata = list(endpoint = "quality_of_life", imputation = index, m = 50L,
+                   maxit = 50L, method = "multilevel PMM"),
+    worker = function() {
+      fitted <- mice::mice(
+        data = prepared,
+        method = methods,
+        predictorMatrix = predictors,
+        m = 1L,
+        maxit = as.integer(config$imputation$main$maxit),
+        donors = as.integer(config$imputation$main$donors),
+        seed = analysis_seed(config, "imputation", index),
+        printFlag = FALSE
+      )
+      completed <- mice::complete(fitted, action = 1L)
+      completed$y <- q30_to_analysis_state(completed$q30, strict = TRUE)
+      completed$baseline_state <- q30_to_analysis_state(completed$baseline_q30, strict = TRUE)
+      completed <- completed[order(completed$id, completed$week), , drop = FALSE]
+      completed$yprev <- ave(completed$y, completed$id, FUN = function(value) c(NA, head(value, -1L)))
+      first_rows <- !duplicated(completed$id)
+      completed$yprev[first_rows] <- completed$baseline_state[first_rows]
+      completed$gap <- 1L
+      completed <- completed[!is.na(completed$yprev), , drop = FALSE]
+      completed$y <- factor(completed$y, levels = 1:7, ordered = TRUE)
+      completed$yprev <- factor(completed$yprev, levels = 1:7, ordered = FALSE)
+      completed$.cluster <- NULL
+      module_save_parquet(completed, output_path)
+    }
+  )
+}
+branch_paths <- file.path(branch_dir, sprintf("imputation-%02d.parquet", indices))
+if (length(branch_paths) != 50L || !all(file.exists(branch_paths))) {
+  stop("QoL imputation stage did not produce all 50 required branches.")
+}
+```
