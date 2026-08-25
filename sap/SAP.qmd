@@ -1109,7 +1109,11 @@ where $i$ indexes variants, $j$ indexes patients, $k$ indexes genes, $f(\cdot)$ 
 
 We will report descriptive alteration counts and patient counts and proportions, according to OnkoKB classification.
 
-The current OncoKB therapeutic levels are explained in @tbl-oncokb-levels [@OncoKBLevels2026]. Within the sensitivity scale, the evidentiary ordering is Level 1, Level 2, Level 3A, Level 3B, then Level 4. Within the resistance scale, Level R1 represents stronger evidence than Level R2.
+The current OncoKB therapeutic levels are explained in @tbl-oncokb-levels [@OncoKBLevels2026]. The sensitivity levels are 1, 2, 3A, 3B, and 4, ordered from strongest to weakest evidence within that direction. The resistance levels are R1 and R2, with R1 representing stronger evidence than R2.
+
+The alteration-level table will show, for every exact sensitivity and resistance level, the OncoKB category and definition, recorded OncoKB version and update-date range, and separate mutation, CNV, fusion, and total alteration counts. The evidence-level patient table will show patients with at least one mutation, patients with at least one CNV, patients with at least one fusion, and patients with any non-CHIP alteration at that exact level. Each row will use patients with at least one valid ctDNA result as its denominator and will show the patient proportion. These level-specific memberships are non-exclusive, so a patient may occur in several rows and the proportions need not sum to 100%.
+
+A separate patient summary will show any sensitivity evidence, any resistance evidence, either type, both types, and no actionable finding. No actionable finding means that a patient with at least one valid ctDNA result has no non-CHIP alteration carrying any recorded OncoKB sensitivity or resistance evidence. Missing, blank, unknown, and not-assessed annotations will be shown separately as completeness information and will not be counted as evidence. No regression model will be fitted for actionability.
 
 ::: {#tbl-oncokb-levels tbl-colwidths="[8,12,18,18,44]"}
 
@@ -2347,17 +2351,24 @@ This appendix provides illustrative, non-evaluated R code for the Quality of Lif
 #| eval: false
 #| echo: true
 library(markov.misc)
+library(rmsb)
 
 model_qol <- markov.misc::blrm_markov(
   formula = y ~ tx + rcs(week, 4) + yprev * gap +
     ecog_fstcnt + diagnosis,
   data = data_survivors,
   ppo = ~week,
-  cppo = function(y) y,
+  cppo = function(y) as.numeric(as.character(y)),
+  id_var = "id",
+  time_var = "week",
   chains = 4,
   iter = 1000,
   warmup = 500,
-  seed = 68818
+  backend = "cmdstan",
+  sampling.args = list(
+    seed = 68818,
+    parallel_chains = 4
+  )
 )
 ```
 
@@ -2404,20 +2415,26 @@ This appendix provides example R code for the Time Alive and Out of Hospital ana
 #| eval: false
 #| echo: true
 library(markov.misc)
+library(rmsb)
 
 model_taooh <- markov.misc::blrm_markov(
   formula = y ~ tx + rcs(week, 4) + yprev + ypprev +
     week %ia% yprev + week %ia% ypprev +
     ecog_fstcnt + diagnosis + rcs(albumin, 3) +
-    rcs(c_reactive_protein, 3),
+    rcs(c_reactive_protein, 3) + cluster(id),
+  ppo = ~week,
+  cppo = function(y) as.numeric(as.character(y)),
   data = data_taooh,
-  random_intercept = "id",
-  p_var = "yprev",
-  p2_var = "ypprev",
+  id_var = "id",
+  time_var = "week",
   chains = 4,
   iter = 1000,
   warmup = 500,
-  seed = 68818
+  backend = "cmdstan",
+  sampling.args = list(
+    seed = 68818,
+    parallel_chains = 4
+  )
 )
 ```
 
