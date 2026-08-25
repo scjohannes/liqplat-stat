@@ -31,15 +31,21 @@ for (index in indices) {
   output_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
   if (!force && file.exists(output_path)) next
 
-  data <- mice::complete(imputations, index)
-  assert_ecog_binary_consistent(data)
-  assert_mgps_consistent(data)
-  data$mgps <- factor(data$mgps, levels = 0:2)
+  completed_data <- mice::complete(imputations, index)
+  assert_ecog_binary_consistent(completed_data)
+  assert_mgps_consistent(completed_data)
+  completed_data$mgps <- factor(completed_data$mgps, levels = 0:2)
+
+  # One intervention participant was censored on the randomization day. They
+  # remain in the imputed datasets and estimand population but cannot
+  # contribute follow-up time to the survival-model likelihood.
+  fitting_data <- completed_data |>
+    dplyr::filter(survival_time_days > 0)
   model_formula <- survival::Surv(survival_time_days, event_death) ~
     tx + ecog_binary + stage_binary + lung + mgps
   fit <- rstanarm::stan_surv(
     formula = model_formula,
-    data = data |> dplyr::filter_out(survival_time_days == 0), # filter out who has survival time 0
+    data = fitting_data,
     basehaz = "ms",
     basehaz_ops = list(df = 5),
     prior = rstanarm::normal(

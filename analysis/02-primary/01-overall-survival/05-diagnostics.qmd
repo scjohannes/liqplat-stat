@@ -100,8 +100,10 @@ for (index in indices) {
 }
 ```
 
-The observed Kaplan–Meier curves retain censoring marks and are overlaid with
-the pooled standardized posterior survival curves. The Cox–Snell check is
+The observed Kaplan–Meier curves use the complete randomized cohort, retain
+censoring marks, and are overlaid with the pooled standardized posterior
+survival curves. Model-based diagnostics use participants with positive
+follow-up time. The Cox–Snell check is
 calculated directly from posterior survival probabilities from the first
 imputation's `stan_surv` fit. A companion Cox model with the same linear
 predictor is used only for supplemental scaled Schoenfeld and deviance-residual
@@ -197,6 +199,7 @@ imputations <- readRDS(here::here(
 ))
 diagnostic_data <- mice::complete(imputations, 1L)
 diagnostic_data$mgps <- factor(diagnostic_data$mgps, levels = 0:2)
+# Match the primary survival-model fitting population.
 diagnostic_data <- diagnostic_data[diagnostic_data$survival_time_days > 0, ]
 cox_model <- survival::coxph(
   survival::Surv(survival_time_days, event_death) ~

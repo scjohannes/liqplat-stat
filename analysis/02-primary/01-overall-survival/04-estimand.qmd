@@ -47,14 +47,19 @@ for (index in indices) {
   if (!force && all(file.exists(c(curves_path, rmst_path, risk_path)))) next
 
   model <- readRDS(model_path)
-  data <- mice::complete(imputations, index)
-  data$mgps <- factor(data$mgps, levels = 0:2)
+  standardization_data <- mice::complete(imputations, index)
+  standardization_data$mgps <- factor(
+    standardization_data$mgps,
+    levels = 0:2
+  )
   curve_list <- vector("list", 2L)
   # Reuse one seed so treatment and control select identical posterior draws.
   prediction_seed <- analysis_seed(config, "survival", index)
 
   for (treatment in 0:1) {
-    newdata <- data
+    # Standardize over the complete randomized cohort, including the
+    # intervention participant excluded from fitting after day-zero censoring.
+    newdata <- standardization_data
     newdata$tx <- treatment
     raw_curves <- rstanarm::posterior_survfit(
       model,
