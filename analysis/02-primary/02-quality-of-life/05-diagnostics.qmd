@@ -1,65 +1,50 @@
 ---
 title: "Quality of life — primary diagnostics"
-subtitle: "Compact Markov posterior diagnostics and branch completeness"
+subtitle: "Convergence across fifty completed datasets"
 format: html
 execute:
   freeze: false
 ---
 
-Diagnostics are evaluated branch by branch using the configured $\hat R$,
-effective-sample-size, divergence, tree-depth, and BFMI thresholds. A failed
-branch stops the production stage; no branch is silently dropped.
+The primary analysis stops unless every imputation satisfies the configured
+R-hat and effective-sample-size thresholds after the permitted retry.
 
 ```{r}
-#| label: setup
-#| include: false
+#| label: summarize-primary-qol-diagnostics
+#| echo: false
+
 source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "markov-helpers.R"))
-source(here::here("analysis", "module-runtime.R"))
 
-runtime <- module_runtime()
-config <- runtime$config
-indices <- module_exact_indices(config)
-model_dir <- project_path("artifacts", "primary", "quality-of-life", "models")
-diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life", "diagnostics"))
-result_path <- project_path("results", "primary", "quality-of-life", "diagnostics.parquet")
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "markov-helpers.R"),
-  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
-  knitr::current_input()
+config <- read_analysis_config()
+diagnostic_dir <- here::here(
+  "artifacts", "primary", "quality-of-life", "diagnostics"
 )
+diagnostics <- do.call(rbind, lapply(seq_len(config$imputation$main$m), function(index) {
+  path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
+  if (!file.exists(path)) stop("Missing QoL diagnostic artifact: ", path)
+  out <- arrow::read_parquet(path) |>
+    as.data.frame()
+  out$imputation <- index
+  out
+}))
+
+finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+  length(finite_tail) > 0L &&
+  all(finite_rhat <= config$diagnostics$max_rhat) &&
+  all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+  all(finite_tail >= config$diagnostics$min_ess_tail)
+if (!passed) stop("The pooled primary QoL diagnostic check failed.")
+
+diagnostic_summary <- data.frame(
+  models = config$imputation$main$m,
+  maximum_rhat = max(finite_rhat),
+  minimum_ess_bulk = min(finite_bulk),
+  minimum_ess_tail = min(finite_tail),
+  passed = passed
+)
+knitr::kable(diagnostic_summary)
 ```
 
-```{r}
-#| label: check-qol-models
-#| include: false
-for (index in indices) {
-  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
-  output_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
-  if (!file.exists(model_path)) stop("Missing QoL model branch: ", model_path)
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-qol-diagnostics-%02d", index),
-    input_paths = model_path,
-    output_paths = output_path,
-    code_paths = code_paths,
-    metadata = list(endpoint = "quality_of_life", imputation = index),
-    worker = function() {
-      model <- readRDS(model_path)
-      diagnostics <- markov_diagnostics(model, config$diagnostics)
-      assert_markov_diagnostics(diagnostics)
-      output <- as.data.frame(diagnostics$summary)
-      output$imputation <- index
-      output$divergent_transitions <- diagnostics$divergent_transitions
-      output$treedepth_exceeded <- diagnostics$treedepth_exceeded
-      output$min_bfmi <- diagnostics$min_bfmi
-      module_save_parquet(output, output_path)
-    }
-  )
-}
-diagnostic_paths <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", indices))
-if (!all(file.exists(diagnostic_paths))) stop("QoL diagnostics are incomplete.")
-module_save_parquet(do.call(rbind, lapply(diagnostic_paths, module_read_parquet)), result_path)
-```

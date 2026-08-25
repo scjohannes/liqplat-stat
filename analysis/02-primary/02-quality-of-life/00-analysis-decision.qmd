@@ -1,0 +1,69 @@
+---
+title: "Quality of life — primary-analysis decision"
+subtitle: "Apply the prespecified overall-survival RMST rule"
+format: html
+execute:
+  freeze: false
+---
+
+The SAP makes the QoL primary analysis conditional on the 66% credible interval
+for the 182-day overall-survival RMST difference. The principal-stratum analysis
+is primary only when that entire interval lies within the prespecified
+equivalence interval of -7 to 7 days. Otherwise, the adjusted death-inclusive
+six-month ordinal analysis is primary.
+
+```{r}
+#| label: select-qol-primary-analysis
+#| include: false
+
+rmst_path <- here::here(
+  "results", "primary", "overall-survival", "rmst-summary.parquet"
+)
+decision_path <- here::here(
+  "results", "primary", "overall-survival", "qol-decision.yml"
+)
+
+if (!file.exists(rmst_path)) {
+  stop("The OS RMST summary must be available before selecting the QoL primary analysis.")
+}
+
+rmst <- arrow::read_parquet(rmst_path) |>
+  as.data.frame()
+required <- c("ci_66_low", "ci_66_high", "rope_low", "rope_high")
+if (nrow(rmst) != 1L || !all(required %in% names(rmst))) {
+  stop("The OS RMST summary does not contain the prespecified QoL decision inputs.")
+}
+
+equivalent <- is.finite(rmst$ci_66_low) && is.finite(rmst$ci_66_high) &&
+  rmst$ci_66_low >= rmst$rope_low && rmst$ci_66_high <= rmst$rope_high
+primary <- if (equivalent) "principal_stratum" else "death_inclusive_ordinal"
+reason <- if (equivalent) {
+  "The entire 66% credible interval for the 182-day OS RMST difference lies within -7 to 7 days."
+} else {
+  "The 66% credible interval for the 182-day OS RMST difference is not entirely within -7 to 7 days."
+}
+
+decision <- list(
+  status = "available",
+  primary_analysis = primary,
+  supporting_analysis = if (equivalent) {
+    "adjusted death-inclusive six-month ordinal QoL"
+  } else {
+    "principal-stratum and death-inclusive longitudinal Markov QoL"
+  },
+  reason = reason,
+  ci_66_low = unname(rmst$ci_66_low),
+  ci_66_high = unname(rmst$ci_66_high),
+  equivalence_low = unname(rmst$rope_low),
+  equivalence_high = unname(rmst$rope_high)
+)
+dir.create(dirname(decision_path), recursive = TRUE, showWarnings = FALSE)
+writeLines(yaml::as.yaml(decision), decision_path)
+
+if (!identical(primary, "death_inclusive_ordinal")) {
+  stop(
+    "The OS rule selected the principal-stratum analysis. The currently activated ",
+    "primary QoL stages implement the death-inclusive fallback and must not be run."
+  )
+}
+```

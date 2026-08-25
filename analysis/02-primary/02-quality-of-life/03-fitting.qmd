@@ -1,115 +1,117 @@
 ---
 title: "Quality of life — primary model fitting"
-subtitle: "First-order Bayesian ordinal transition models"
+subtitle: "Adjusted death-inclusive proportional-odds models"
 format: html
 execute:
   freeze: false
 ---
 
-Each completed principal-stratum branch calls the reviewed
-`markov.misc::blrm_markov()` API directly. The primary fit is checked and a
-configured retry is run in the same branch when diagnostics fail.
+A Bayesian proportional-odds model is fitted to each completed dataset. The
+outcome is ordered from best QoL (1) through death (8), so a negative treatment
+coefficient favours intervention. The treatment log-odds ratio uses a
+ $N(0, 0.5)$ prior. The model adjusts for baseline QoL as specified
+in the SAP.
 
 ```{r}
-#| label: setup
+#| label: fit-primary-qol-landmark
 #| include: false
+
 source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "markov-helpers.R"))
-source(here::here("analysis", "module-runtime.R"))
 
-runtime <- module_runtime()
-config <- runtime$config
-indices <- module_exact_indices(config)
-data_dir <- project_path("artifacts", "primary", "quality-of-life", "imputations")
-model_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life", "models"))
-diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life", "diagnostics"))
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "markov-helpers.R"),
-  here::here("R", "checkpoints.R"),
-  here::here("analysis", "module-runtime.R"), knitr::current_input()
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+imputation_path <- here::here(
+  "artifacts", "primary", "quality-of-life", "imputations.rds"
 )
-```
+model_dir <- here::here("artifacts", "primary", "quality-of-life", "models")
+diagnostic_dir <- here::here(
+  "artifacts", "primary", "quality-of-life", "diagnostics"
+)
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+imputations <- readRDS(imputation_path)
 
-```{r}
-#| label: fit-qol-models
-#| include: false
-for (index in indices) {
-  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+
+for (index in seq_len(config$imputation$main$m)[1:50]) {
   model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
-  diagnostic_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
-  if (!file.exists(data_path)) stop("Missing QoL imputation branch: ", data_path)
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-qol-fitting-%02d", index),
-    input_paths = data_path,
-    output_paths = c(model_path, diagnostic_path),
-    code_paths = code_paths,
-    metadata = list(endpoint = "quality_of_life", imputation = index,
-                   order = 1L, chains = 4L, iterations = 1000L, warmup = 500L),
-    worker = function() {
-      data <- module_read_parquet(data_path)
-      module_require_columns(data, c("id", "tx", "y", "yprev", "gap", "week"), "QoL imputation branch")
-      data$y <- factor(data$y, levels = 1:7, ordered = TRUE)
-      data$yprev <- factor(data$yprev, levels = 1:7, ordered = FALSE)
-      dd <- rms::datadist(data)
-      old_datadist <- getOption("datadist")
-      options(datadist = "dd")
-      on.exit(options(datadist = old_datadist), add = TRUE)
-      model_formula <- y ~ tx + rms::rcs(week, 4) + yprev * gap +
-        ecog_fstcnt + factor(diagnosis)
-      fit_seed <- analysis_seed(config, "qol", index)
-      fit <- tryCatch(
-        markov.misc::blrm_markov(
-          formula = model_formula,
-          ppo = ~week,
-          cppo = function(y) y,
-          data = data,
-          id_var = "id",
-          time_var = "week",
-          chains = as.integer(config$markov$chains),
-          iter = as.integer(config$markov$iterations),
-          warmup = as.integer(config$markov$warmup),
-          seed = fit_seed,
-          refresh = 0L
-        ),
-        error = identity
-      )
-      diagnostics <- if (inherits(fit, "error")) {
-        fit
-      } else {
-        tryCatch(markov_diagnostics(fit, config$diagnostics), error = identity)
-      }
-      retry <- inherits(fit, "error") || inherits(diagnostics, "error") ||
-        !isTRUE(diagnostics$passed)
-      if (retry) {
-        if (!isTRUE(config$diagnostics$retry_on_failure)) {
-          stop("QoL primary Markov fit failed and retries are disabled for imputation ", index, ".")
-        }
-        fit <- markov.misc::blrm_markov(
-          formula = model_formula,
-          ppo = ~week,
-          cppo = function(y) y,
-          data = data,
-          id_var = "id",
-          time_var = "week",
-          chains = as.integer(config$markov$chains),
-          iter = as.integer(config$markov$retry_iterations),
-          warmup = as.integer(config$markov$retry_iterations / 2L),
-          seed = as.integer(fit_seed + 500000L),
-          refresh = 0L
-        )
-        diagnostics <- markov_diagnostics(fit, config$diagnostics)
-      }
-      assert_markov_diagnostics(diagnostics)
-      module_save_rds(fit, model_path)
-      module_save_parquet(as.data.frame(diagnostics$summary), diagnostic_path)
-    }
+  diagnostic_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
   )
-}
-model_paths <- file.path(model_dir, sprintf("model-%02d.rds", indices))
-if (length(model_paths) != 50L || !all(file.exists(model_paths))) {
-  stop("QoL fitting stage did not produce all 50 model branches.")
+  if (!force && file.exists(model_path) && file.exists(diagnostic_path)) next
+
+  data <- imputations[[index]]
+  data$y_landmark <- factor(data$y_landmark, levels = 1:8, ordered = TRUE)
+  dd <- rms::datadist(data)
+  options(datadist = "dd")
+
+  fit_seed <- analysis_seed(config, "qol", index)
+  model <- rmsb::blrm(
+    y_landmark ~ tx + rms::rcs(baseline_q30, 4),
+    pcontrast = pcontrast_tx,
+    data = data,
+    chains = config$markov$chains,
+    iter = config$markov$iterations,
+    warmup = config$markov$warmup,
+    seed = fit_seed
+  )
+  draws <- posterior::as_draws_df(rmsb::stanGet(model))
+  diagnostics <- posterior::summarise_draws(draws) |>
+    as.data.frame()
+  finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+  finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+  finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+  passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+    length(finite_tail) > 0L && all(
+    finite_rhat <= config$diagnostics$max_rhat
+  ) && all(
+    finite_bulk >=
+      config$diagnostics$min_ess_bulk
+  ) && all(
+    finite_tail >=
+      config$diagnostics$min_ess_tail
+  )
+
+  if (!passed) {
+    model <- rmsb::blrm(
+      y_landmark ~ tx + baseline_q30,
+      pcontrast = pcontrast_tx,
+      data = data,
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      seed = fit_seed + 500000L
+    )
+    draws <- posterior::as_draws_df(rmsb::stanGet(model))
+    diagnostics <- posterior::summarise_draws(draws) |>
+      as.data.frame()
+    finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+    finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+    finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+    passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+      length(finite_tail) > 0L && all(
+      finite_rhat <=
+        config$diagnostics$max_rhat
+    ) && all(
+      finite_bulk >=
+        config$diagnostics$min_ess_bulk
+    ) && all(
+      finite_tail >=
+        config$diagnostics$min_ess_tail
+    )
+  }
+  if (!passed) {
+    stop("Persistent convergence failure in primary QoL imputation ", index, ".")
+  }
+
+  saveRDS(model, model_path, compress = "xz")
+  arrow::write_parquet(diagnostics, diagnostic_path, compression = "zstd")
 }
 ```

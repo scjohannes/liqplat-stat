@@ -1,110 +1,353 @@
 ---
 title: "Quality of life — primary imputation"
-subtitle: "50 multilevel one-imputation MICE branches"
+subtitle: "Fifty MICE imputations of the six-month ordinal endpoint"
 format: html
 execute:
   freeze: false
 ---
 
-The primary QoL analysis uses exactly 50 one-imputation branches. Repeated
-weekly rows are clustered by patient for multilevel PMM (`2l.pmm`), while
-patient-level baseline fields use `2lonly.pmm`; the maximum is 50 iterations
-and the donor pool is 5.
+Missing baseline and living-participant QoL responses are imputed on the
+pre-derived analysis-state scale (1 = best, 7 = worst). For participants
+censored before day 182, vital status at day 182 is drawn from a dedicated
+Bayesian survival model conditional on survival to the recorded censoring day.
+Drawn and observed deaths receive state 8; QoL is imputed only for participants
+classified as alive at day 182.
 
 ```{r}
-#| label: setup
+#| label: impute-primary-qol-landmark
 #| include: false
 source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "imputation.R"))
-source(here::here("analysis", "module-runtime.R"))
 
-runtime <- module_runtime()
-config <- runtime$config
-if (!requireNamespace("miceadds", quietly = TRUE)) stop("Package 'miceadds' is required for multilevel QoL imputation.")
-library(miceadds)
-indices <- module_exact_indices(config)
-if (length(indices) != 50L) stop("Primary QoL requires exactly 50 imputation branches.")
-input_path <- project_path("artifacts", "primary", "quality-of-life", "prepared.parquet")
-branch_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life", "imputations"))
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "imputation.R"),
-  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
-  knitr::current_input()
+config <- read_analysis_config()
+input_path <- here::here(
+  "artifacts", "primary", "quality-of-life", "prepared.parquet"
 )
+output_dir <- here::here("artifacts", "primary", "quality-of-life")
+output_path <- file.path(output_dir, "imputations.rds")
+imputation_fits_path <- file.path(output_dir, "imputation-fits.rds")
+vital_status_model_path <- file.path(output_dir, "vital-status-model.rds")
+vital_status_draws_path <- file.path(output_dir, "vital-status-draws.parquet")
+vital_status_diagnostics_path <- file.path(
+  output_dir,
+  "vital-status-diagnostics.parquet"
+)
+diagnostic_dir <- file.path(output_dir, "imputation-diagnostics")
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(input_path) |>
+  as.data.frame()
+diagnosis_levels <- unique(prepared$diagnosis_group[
+  order(prepared$diagnosis_code)
+])
+prepared$diagnosis_group <- factor(
+  prepared$diagnosis_group,
+  levels = diagnosis_levels
+)
+prepared$gender <- factor(prepared$gender)
+prepared$age_scaled <- scale(prepared$age)
+prepared$ecog_fstcnt <- ifelse(prepared$ecog_fstcnt == 4, 3, prepared$ecog_fstcnt)
+
+
+fit_vital_status_model <- force || !file.exists(vital_status_model_path)
+
+if (fit_vital_status_model) {
+  vital_status_data <- prepared[prepared$survival_time_days > 0, ]
+  
+  vital_status_formula <- survival::Surv(
+    survival_time_days,
+    event_death
+  ) ~ tx + age_scaled + gender + diagnosis_group + stage_binary
+  
+  vital_status_terms <- colnames(stats::model.matrix(
+    ~ tx + age_scaled + gender + diagnosis_group + stage_binary,
+    data = vital_status_data
+  ))[-1L]
+  vital_status_model <- rstanarm::stan_surv(
+    formula = vital_status_formula,
+    data = vital_status_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = rstanarm::normal(
+      location = rep(0, length(vital_status_terms)),
+      scale = ifelse(vital_status_terms == "tx", 0.55, 2.5)
+    ),
+    prior_intercept = rstanarm::normal(0, 20),
+    prior_aux = rstanarm::dirichlet(1),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    seed = analysis_seed(config, "qol", offset = 100L)
+  )
+  saveRDS(vital_status_model, vital_status_model_path, compress = "xz")
+}
+vital_status_model <- readRDS(vital_status_model_path)
+
+vital_status_diagnostics <- summary(vital_status_model) |>
+  as.data.frame()
+
+vital_status_diagnostics$parameter <- rownames(vital_status_diagnostics)
+
+rownames(vital_status_diagnostics) <- NULL
+
+finite_rhat <- vital_status_diagnostics$Rhat[
+  is.finite(vital_status_diagnostics$Rhat)
+]
+finite_ess <- vital_status_diagnostics$n_eff[
+  is.finite(vital_status_diagnostics$n_eff)
+]
+
+if (any(finite_rhat > config$diagnostics$max_rhat) ||
+    any(finite_ess < config$diagnostics$min_ess_bulk)) {
+  stop("The dedicated QoL vital-status survival model did not converge.")
+}
+
+arrow::write_parquet(
+  vital_status_diagnostics,
+  vital_status_diagnostics_path,
+  compression = "zstd"
+)
+
+rerun_imputations <- force || fit_vital_status_model ||
+  !all(file.exists(c(output_path, imputation_fits_path, vital_status_draws_path)))
+if (rerun_imputations) {
+  prepared$gender_code <- as.integer(factor(prepared$gender))
+  prepared$plan_code <- as.integer(factor(prepared$plan_fstcnt_coded))
+
+  completed_datasets <- vector("list", config$imputation$main$m)
+  imputation_fits <- vector("list", config$imputation$main$m)
+  vital_status_draws <- vector("list", config$imputation$main$m)
+  unresolved <- prepared$event_death == 0L &
+    prepared$survival_time_days < config$analysis$horizon_days
+
+  for (index in seq_len(config$imputation$main$m)) {
+    death_182 <- prepared$event_death
+    conditional_survival <- numeric(sum(unresolved))
+    if (any(unresolved)) {
+      predicted_survival <- rstanarm::posterior_survfit(
+        vital_status_model,
+        newdata = prepared[unresolved, ],
+        type = "surv",
+        times = config$analysis$horizon_days,
+        condition = TRUE,
+        last_time = "survival_time_days",
+        standardise = FALSE,
+        extrapolate = FALSE,
+        draws = 1L,
+        seed = analysis_seed(config, "qol", index, offset = 120L),
+        return_matrix = TRUE
+      )
+      conditional_survival <- as.numeric(predicted_survival[[1L]][1L, ])
+      death_probability <- 1 - conditional_survival
+      set.seed(analysis_seed(config, "qol", index, offset = 140L))
+      death_182[unresolved] <- stats::rbinom(
+        n = sum(unresolved),
+        size = 1L,
+        prob = death_probability
+      )
+      vital_status_draws[[index]] <- data.frame(
+        id = prepared$id[unresolved],
+        imputation = index,
+        censoring_day = prepared$survival_time_days[unresolved],
+        conditional_survival = conditional_survival,
+        death_probability = death_probability,
+        death_182 = death_182[unresolved],
+        stringsAsFactors = FALSE
+      )
+    }
+
+    imputation_columns <- intersect(c(
+      "id", "tx", "age", "gender_code", "diagnosis_code", "ecog_fstcnt",
+      "stage_binary", "plan_code", "albumin", "c_reactive_protein", 
+      "baseline_q30", "landmark_q30"
+    ), names(prepared))
+    imputation_data <- prepared[imputation_columns]
+    imputation_data$death_182 <- death_182
+    ordinal_levels <- list(
+      ecog_fstcnt = 0:3,
+      baseline_q30 = 1:7,
+      landmark_q30 = 1:7
+    )
+    ordinal_columns <- intersect(names(ordinal_levels), names(imputation_data))
+    for (variable in ordinal_columns) {
+      imputation_data[[variable]] <- ordered(
+        imputation_data[[variable]],
+        levels = ordinal_levels[[variable]]
+      )
+    }
+    methods <- mice::make.method(imputation_data)
+    # methods[] <- ""
+    imputed_columns <- intersect(
+      c(
+        # "age", "gender_code", "diagnosis_code", "stage_binary", # are complete 
+        "ecog_fstcnt", 
+        "plan_code",
+        "albumin", 
+        "c_reactive_protein", 
+        "baseline_q30", 
+        "landmark_q30"
+      ),
+      names(imputation_data)
+    )
+    # methods[imputed_columns] <- "pmm"
+    # methods[ordinal_columns] <- "polr"
+
+    predictors <- mice::make.predictorMatrix(imputation_data)
+    predictors[,"id"] <- 0L #don't impute anything with id
+    # predictor_columns <- setdiff(names(imputation_data), "id")
+    # predictors[imputed_columns, predictor_columns] <- 1L
+    # diag(predictors) <- 0L
+    # predictors[setdiff(imputed_columns, "landmark_q30"), "landmark_q30"] <- 0L
+
+    # where <- matrix(
+    #   FALSE,
+    #   nrow = nrow(imputation_data),
+    #   ncol = ncol(imputation_data),
+    #   dimnames = dimnames(imputation_data)
+    # )
+    # for (variable in setdiff(imputed_columns, "landmark_q30")) {
+    #   where[, variable] <- is.na(imputation_data[[variable]])
+    # }
+    # where[, "landmark_q30"] <- is.na(imputation_data$landmark_q30) &
+    #   imputation_data$death_182 == 0L
+
+    imputation_fit <- mice::mice(
+      imputation_data,
+      m = 1L,
+      maxit = config$imputation$main$maxit,
+      method = methods,
+      predictorMatrix = predictors,
+      # where = where,
+      donors = config$imputation$main$donors,
+      seed = analysis_seed(config, "imputation", index, offset = 200L),
+      printFlag = FALSE
+    )
+    completed <- mice::complete(imputation_fit, 1L)
+    completed$baseline_q30 <- as.integer(as.character(completed$baseline_q30))
+    completed$landmark_q30 <- as.integer(as.character(completed$landmark_q30))
+    completed$y_landmark <- ifelse(
+      completed$death_182 == 1L,
+      8L,
+      completed$landmark_q30
+    )
+    
+    if (anyNA(completed$baseline_q30) || anyNA(completed$y_landmark)) {
+      stop("QoL imputation left a substantive-model variable missing.")
+    }
+    if (any(!completed$baseline_q30 %in% 1:7) ||
+        any(!completed$y_landmark %in% 1:8)) {
+      stop("QoL imputation produced an invalid ordinal state.")
+    }
+    completed_datasets[[index]] <- completed
+    imputation_fits[[index]] <- imputation_fit
+  }
+
+  saveRDS(completed_datasets, output_path, compress = "xz")
+  saveRDS(imputation_fits, imputation_fits_path, compress = "xz")
+  arrow::write_parquet(
+    do.call(rbind, vital_status_draws),
+    vital_status_draws_path,
+    compression = "zstd"
+  )
+}
 ```
 
 ```{r}
-#| label: impute-qol
-#| include: false
-prepared <- module_read_parquet(input_path)
-module_require_columns(
-  prepared,
-  c("id", "tx", "diagnosis", "ecog_fstcnt", "week", "q30", "baseline_q30"),
-  "prepared QoL data"
-)
-prepared$.cluster <- as.integer(factor(prepared$id))
-init <- mice::mice(prepared, m = 0, maxit = 0, printFlag = FALSE)
-methods <- init$method
-predictors <- init$predictorMatrix
-methods[] <- ""
-methods["q30"] <- "2l.pmm"
-methods["baseline_q30"] <- "2lonly.pmm"
-if ("ecog_fstcnt" %in% names(methods)) methods["ecog_fstcnt"] <- "2lonly.pmm"
-if ("diagnosis" %in% names(methods)) methods["diagnosis"] <- "2lonly.pmm"
-predictors[,] <- 0
-predictors["q30", c("week", "tx", "diagnosis", "ecog_fstcnt", "baseline_q30")] <- 1
-predictors["q30", ".cluster"] <- -2
-predictors["baseline_q30", c("tx", "diagnosis", "ecog_fstcnt")] <- 1
-predictors["baseline_q30", ".cluster"] <- -2
-for (column in intersect(c("ecog_fstcnt", "diagnosis"), rownames(predictors))) {
-  predictors[column, c("tx", "baseline_q30")] <- 1
-  predictors[column, ".cluster"] <- -2
-}
-predictors[, c("id", ".cluster", "y", "baseline_state", "event_death", "survival_time_days", "death_week")] <- 0
-predictors[c("id", ".cluster", "y", "baseline_state", "event_death", "survival_time_days", "death_week"), ] <- 0
-validate_mice_spec(prepared, methods, predictors)
+#| label: plot-primary-qol-imputation-diagnostics
+#| echo: false
+#| fig-cap: "MICE convergence traces and observed-versus-imputed distributions for the primary QoL analysis."
 
-for (index in indices) {
-  output_path <- file.path(branch_dir, sprintf("imputation-%02d.parquet", index))
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-qol-imputation-%02d", index),
-    input_paths = input_path,
-    output_paths = output_path,
-    code_paths = code_paths,
-    metadata = list(endpoint = "quality_of_life", imputation = index, m = 50L,
-                   maxit = 50L, method = "multilevel PMM"),
-    worker = function() {
-      fitted <- mice::mice(
-        data = prepared,
-        method = methods,
-        predictorMatrix = predictors,
-        m = 1L,
-        maxit = as.integer(config$imputation$main$maxit),
-        donors = as.integer(config$imputation$main$donors),
-        seed = analysis_seed(config, "imputation", index),
-        printFlag = FALSE
-      )
-      completed <- mice::complete(fitted, action = 1L)
-      completed$y <- q30_to_analysis_state(completed$q30, strict = TRUE)
-      completed$baseline_state <- q30_to_analysis_state(completed$baseline_q30, strict = TRUE)
-      completed <- completed[order(completed$id, completed$week), , drop = FALSE]
-      completed$yprev <- ave(completed$y, completed$id, FUN = function(value) c(NA, head(value, -1L)))
-      first_rows <- !duplicated(completed$id)
-      completed$yprev[first_rows] <- completed$baseline_state[first_rows]
-      completed$gap <- 1L
-      completed <- completed[!is.na(completed$yprev), , drop = FALSE]
-      completed$y <- factor(completed$y, levels = 1:7, ordered = TRUE)
-      completed$yprev <- factor(completed$yprev, levels = 1:7, ordered = FALSE)
-      completed$.cluster <- NULL
-      module_save_parquet(completed, output_path)
-    }
+completed_datasets <- readRDS(output_path)
+imputation_fits <- readRDS(imputation_fits_path)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+
+trace_variables <- c("baseline_q30", "landmark_q30", "ecog_fstcnt")
+old_par <- graphics::par(mfrow = c(1, length(trace_variables)))
+for (variable in trace_variables) {
+  trace_values <- vapply(
+    imputation_fits,
+    function(fit) as.numeric(fit$chainMean[variable, , 1L]),
+    numeric(config$imputation$main$maxit)
+  )
+  if (variable == "ecog_fstcnt") trace_values <- trace_values - 1
+  graphics::matplot(
+    seq_len(config$imputation$main$maxit),
+    trace_values,
+    type = "l",
+    lty = 1,
+    col = grDevices::adjustcolor("black", alpha.f = 0.2),
+    xlab = "Iteration",
+    ylab = "Mean imputed value",
+    main = variable
   )
 }
-branch_paths <- file.path(branch_dir, sprintf("imputation-%02d.parquet", indices))
-if (length(branch_paths) != 50L || !all(file.exists(branch_paths))) {
-  stop("QoL imputation stage did not produce all 50 required branches.")
-}
+graphics::par(old_par)
+
+imputation_labels <- sprintf(
+  "Imputation %02d",
+  seq_along(completed_datasets)
+)
+
+density_data <- do.call(
+  rbind,
+  lapply(trace_variables, function(variable) {
+    observed <- data.frame(
+      variable = variable,
+      series = "Observed",
+      value = as.numeric(as.character(
+        prepared[[variable]][!is.na(prepared[[variable]])]
+      )),
+      stringsAsFactors = FALSE
+    )
+
+    imputed <- do.call(
+      rbind,
+      lapply(seq_along(completed_datasets), function(index) {
+        data.frame(
+          variable = variable,
+          series = imputation_labels[index],
+          value = as.numeric(as.character(
+            completed_datasets[[index]][[variable]][
+              is.na(prepared[[variable]])
+            ]
+          )),
+          stringsAsFactors = FALSE
+        )
+      })
+    )
+
+    rbind(observed, imputed)
+  })
+)
+density_data$series <- factor(
+  density_data$series,
+  levels = c("Observed", imputation_labels)
+)
+
+density_plot <- lattice::densityplot(
+  ~ value | variable,
+  groups = series,
+  data = density_data,
+  scales = "free",
+  plot.points = FALSE,
+  par.settings = list(
+    superpose.line = list(
+      col = c(
+        "black",
+        rep("#da545480", length(imputation_labels))
+      ),
+      lwd = c(2.5, rep(0.8, length(imputation_labels)))
+    )
+  ),
+  key = list(
+    columns = 2,
+    lines = list(
+      col = c("black", "#2878B580"),
+      lwd = c(2.5, 0.8)
+    ),
+    text = list(c("Observed", "Each completed dataset"))
+  )
+)
+print(density_plot)
 ```

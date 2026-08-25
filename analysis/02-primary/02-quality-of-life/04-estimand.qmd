@@ -1,152 +1,97 @@
 ---
 title: "Quality of life — primary estimand"
-subtitle: "Weeks in good states (1–3) over 26 weeks"
+subtitle: "Pooled treatment odds for a worse six-month outcome"
 format: html
 execute:
   freeze: false
 ---
 
-The primary contrast is the posterior-standardized treatment difference in
-time in states 1–3 over 26 weeks. Standardization uses observed
-principal-stratum participants; it is performed by `avg_sops()` and
-`avg_comparisons()` with 200 posterior draws per imputation and mean SOP
-summaries.
+Two hundred deterministically selected posterior treatment draws are retained
+from every imputation. Equal numbers of draws give every completed dataset equal
+weight. The proportional-odds ratio is the odds of being in a worse category
+(including death) under intervention versus control; values below one favour
+intervention.
 
 ```{r}
-#| label: setup
+#| label: derive-primary-qol-estimand
 #| include: false
+
 source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "model-helpers.R"))
-source(here::here("R", "imputation.R"))
-source(here::here("analysis", "module-runtime.R"))
 
-runtime <- module_runtime()
-config <- runtime$config
-indices <- module_exact_indices(config)
-data_dir <- project_path("artifacts", "primary", "quality-of-life", "imputations")
-model_dir <- project_path("artifacts", "primary", "quality-of-life", "models")
-draw_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life", "estimand"))
-result_dir <- ensure_directory(project_path("results", "primary", "quality-of-life"))
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "model-helpers.R"),
-  here::here("R", "imputation.R"),
-  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
-  knitr::current_input()
-)
-```
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+model_dir <- here::here("artifacts", "primary", "quality-of-life", "models")
+estimand_dir <- here::here("artifacts", "primary", "quality-of-life", "estimand")
+result_dir <- here::here("results", "primary", "quality-of-life")
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 
-```{r}
-#| label: derive-qol-branches
-#| include: false
-for (index in indices) {
-  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
-  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
-  sops_path <- file.path(draw_dir, sprintf("sops-%02d.rds", index))
-  comparison_path <- file.path(draw_dir, sprintf("comparisons-%02d.rds", index))
-  plot_sops_path <- file.path(draw_dir, sprintf("sops-%02d.png", index))
-  plot_comparison_path <- file.path(draw_dir, sprintf("comparisons-%02d.png", index))
-  if (!file.exists(data_path) || !file.exists(model_path)) stop("QoL estimand inputs are incomplete for imputation ", index, ".")
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-qol-estimand-%02d", index),
-    input_paths = c(data_path, model_path),
-    output_paths = c(sops_path, comparison_path, plot_sops_path, plot_comparison_path),
-    code_paths = code_paths,
-    metadata = list(endpoint = "quality_of_life", imputation = index,
-                   posterior_draws = 200L, summary = "mean", good_states = 1:3,
-                   horizon_weeks = 26L),
-    worker = function() {
-      data <- module_read_parquet(data_path)
-      model <- readRDS(model_path)
-      observed <- data[!duplicated(data$id), c("id", "tx", "diagnosis", "ecog_fstcnt", "yprev", "gap"), drop = FALSE]
-      observed$yprev <- factor(observed$yprev, levels = 1:7, ordered = FALSE)
-      sops <- markov.misc::avg_sops(
-        model = model,
-        newdata = observed,
-        variables = list(tx = c(0, 1)),
-        times = 1:26,
-        y_levels = 1:7,
-        absorb = NULL,
-        p_var = "yprev",
-        id_var = "id",
-        time_var = "week",
-        include_re = FALSE,
-        n_draws = 200L,
-        seed = analysis_seed(config, "qol", index),
-        posterior_summary = "mean",
-        return_draws = TRUE
-      )
-      comparisons <- markov.misc::avg_comparisons(
-        model = model,
-        newdata = observed,
-        variables = list(tx = c(0, 1)),
-        estimand = "time_in_state",
-        state_sets = 1:3,
-        times = 1:26,
-        y_levels = 1:7,
-        absorb = NULL,
-        id_var = "id",
-        time_var = "week",
-        p_var = "yprev",
-        include_re = FALSE,
-        n_draws = 200L,
-        seed = analysis_seed(config, "qol", index),
-        posterior_summary = "mean",
-        return_draws = TRUE
-      )
-      module_save_rds(sops, sops_path)
-      module_save_rds(comparisons, comparison_path)
-      if (!requireNamespace("markov.misc", quietly = TRUE)) stop("Package 'markov.misc' is required for QoL plots.")
-      ggplot2::ggsave(plot_sops_path, markov.misc::plot_sops(sops), width = 8, height = 5, dpi = 120)
-      ggplot2::ggsave(plot_comparison_path, markov.misc::plot_comparisons(comparisons), width = 8, height = 5, dpi = 120)
-    }
-  )
-}
-```
+for (index in seq_len(config$imputation$main$m)) {
+  draw_path <- file.path(estimand_dir, sprintf("draws-%02d.parquet", index))
+  if (!force && file.exists(draw_path)) next
 
-```{r}
-#| label: pool-qol-estimand
-#| include: false
-input_paths <- c(
-  file.path(draw_dir, sprintf("comparisons-%02d.rds", indices)),
-  file.path(draw_dir, sprintf("sops-%02d.rds", indices))
-)
-output_paths <- c(
-  file.path(result_dir, "good-state-time-summary.parquet"),
-  file.path(result_dir, "good-state-comparison-draws.parquet")
-)
-module_branch(
-  runtime = runtime,
-  stage_id = "primary-qol-estimand-pooling",
-  input_paths = input_paths,
-  output_paths = output_paths,
-  code_paths = code_paths,
-  metadata = list(endpoint = "quality_of_life", imputations = 50L, good_states = 1:3,
-                 posterior_draws_per_imputation = 200L),
-  worker = function() {
-    comparisons <- lapply(indices, function(index) readRDS(file.path(draw_dir, sprintf("comparisons-%02d.rds", index))))
-    if (length(comparisons) != 50L) stop("QoL pooling requires all 50 comparison branches.")
-    draw_frames <- lapply(seq_along(comparisons), function(position) {
-      draws <- attr(comparisons[[position]], "draws")
-      if (is.null(draws) || !is.data.frame(draws)) stop("QoL comparison branch lacks posterior draws: ", position)
-      names(draws)[names(draws) == "estimate"] <- "draw_value"
-      draws$imputation <- indices[position]
-      draws
-    })
-    pooled <- pool_equal_weight_draws(
-      lapply(draw_frames, function(frame) frame["draw_value"]),
-      n_draws = 200L,
-      seed = analysis_seed(config, "reports")
-    )
-    pooled$draw <- pooled$draw_value
-    summary <- summarize_posterior_draws(pooled$draw_value)
-    summary$probability_benefit <- posterior_probability(pooled$draw_value)
-    summary$good_states <- "1:3"
-    summary$horizon_weeks <- 26L
-    module_save_parquet(as.data.frame(summary), output_paths[1L])
-    module_save_parquet(pooled, output_paths[2L])
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  draws <- as.data.frame(model$draws)
+  if (!"tx" %in% names(draws)) {
+    stop("The QoL model posterior does not contain the treatment coefficient `tx`.")
   }
+  set.seed(analysis_seed(config, "qol", index, offset = 400L))
+  selected <- sample.int(
+    nrow(draws),
+    size = config$markov$post_estimation_draws,
+    replace = FALSE
+  )
+  estimand <- data.frame(
+    imputation = index,
+    draw = seq_len(config$markov$post_estimation_draws),
+    log_odds_ratio_worse = draws$tx[selected],
+    stringsAsFactors = FALSE
+  )
+  estimand$odds_ratio_worse <- exp(estimand$log_odds_ratio_worse)
+  arrow::write_parquet(estimand, draw_path, compression = "zstd")
+}
+
+draws <- do.call(rbind, lapply(seq_len(config$imputation$main$m), function(index) {
+  arrow::read_parquet(file.path(
+    estimand_dir,
+    sprintf("draws-%02d.parquet", index)
+  )) |>
+    as.data.frame()
+}))
+rownames(draws) <- NULL
+
+summary <- data.frame(
+  estimand = "proportional odds ratio for a worse six-month QoL/death state",
+  posterior_mean = mean(draws$odds_ratio_worse),
+  posterior_median = median(draws$odds_ratio_worse),
+  q025 = quantile(draws$odds_ratio_worse, 0.025, names = FALSE),
+  q975 = quantile(draws$odds_ratio_worse, 0.975, names = FALSE),
+  probability_benefit = mean(draws$log_odds_ratio_worse < 0),
+  imputations = config$imputation$main$m,
+  posterior_draws_per_imputation = config$markov$post_estimation_draws,
+  stringsAsFactors = FALSE
+)
+
+arrow::write_parquet(
+  draws,
+  file.path(result_dir, "estimand-draws.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  summary,
+  file.path(result_dir, "summary.parquet"),
+  compression = "zstd"
+)
+writeLines(
+  yaml::as.yaml(list(
+    status = "available",
+    reason = "The prespecified OS rule selected the adjusted death-inclusive ordinal QoL analysis.",
+    artifacts = c(
+      "results/primary/quality-of-life/summary.parquet",
+      "results/primary/quality-of-life/estimand-draws.parquet"
+    )
+  )),
+  file.path(result_dir, "status.yml")
 )
 ```
+

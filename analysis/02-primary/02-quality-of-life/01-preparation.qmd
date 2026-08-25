@@ -1,105 +1,255 @@
 ---
 title: "Quality of life — primary preparation"
-subtitle: "Inverted Q30 states, principal-stratum survivors, and death-inclusive data"
+subtitle: "Six-month death-inclusive ordinal endpoint"
 format: html
 execute:
   freeze: false
 ---
 
-QoL state 1 is the best state after the SAP inversion (`8 - Q30`). The
-principal-stratum artifact contains participants observed alive at day 182;
-the separate death-inclusive artifact retains all participants and assigns the
-absorbing state 8 from the recorded death week onward for the SAP decision rule.
+Dedicated `baseline_q30` values take priority. Only when that field is missing
+is the closest longitudinal Q30 within 14 days before or after `date_visit`
+used as baseline. The landmark response is the latest remaining post-baseline
+Q30 through day 182. Participants who died by day 182 are assigned state 8,
+irrespective of an earlier questionnaire. Participants censored before day 182
+retain an unknown composite endpoint until vital status is drawn in the
+imputation stage. Among participants known or drawn to be alive, a missing
+living QoL response is imputed with MICE.
+
+States 1–7 run from best to worst QoL; state 8 is death.
 
 ```{r}
-#| label: setup
+#| label: prepare-primary-qol-landmark
 #| include: false
+
 source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "data-validation.R"))
-source(here::here("R", "data-helpers.R"))
-source(here::here("R", "imputation.R"))
-source(here::here("analysis", "module-runtime.R"))
 
-runtime <- module_runtime()
-config <- runtime$config
-cohort_path <- project_path("analysis", "00-data", "results", "analysis-cohort.parquet")
-qol_path <- project_path("analysis", "00-data", "results", "analysis-qol.parquet")
-cohort_schema_path <- project_path("data", "schema", "cohort_follow_up.yml")
-qol_schema_path <- project_path("data", "schema", "qol.yml")
-output_dir <- ensure_directory(project_path("artifacts", "primary", "quality-of-life"))
-principal_path <- file.path(output_dir, "prepared.parquet")
-death_inclusive_path <- file.path(output_dir, "death-inclusive-prepared.parquet")
-stage_id <- "primary-qol-preparation"
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "data-validation.R"),
-  here::here("R", "data-helpers.R"), here::here("R", "checkpoints.R"),
-  here::here("analysis", "module-runtime.R"), knitr::current_input()
+config <- read_analysis_config()
+cohort_path <- here::here("analysis", "00-data", "results", "analysis-cohort.parquet")
+qol_path <- here::here("analysis", "00-data", "results", "analysis-qol.parquet")
+output_dir <- here::here("artifacts", "primary", "quality-of-life")
+output_path <- file.path(output_dir, "prepared.parquet")
+longitudinal_path <- file.path(
+  output_dir,
+  "death-inclusive-longitudinal-prepared.parquet"
 )
-```
 
-```{r}
-#| label: prepare-qol-data
-#| include: false
-module_branch(
-  runtime = runtime,
-  stage_id = stage_id,
-  input_paths = c(cohort_path, qol_path, cohort_schema_path, qol_schema_path),
-  output_paths = c(principal_path, death_inclusive_path),
-  code_paths = code_paths,
-  metadata = list(endpoint = "quality_of_life", horizon_weeks = 26L, state_inversion = "8-q30"),
-  worker = function() {
-    cohort <- module_input(cohort_path, cohort_schema_path)
-    qol <- module_input(qol_path, qol_schema_path)
-    module_require_columns(
-      cohort,
-      c("id", "randomization_date", "tx", "diagnosis", "death_date", "follow_up_end_date"),
-      "cohort_follow_up"
-    )
-    module_require_columns(qol, c("id", "assessment_id", "day", "q30", "baseline_q30"), "qol")
-    cohort <- derive_survival_endpoint(
-      cohort,
-      origin_col = "randomization_date",
-      death_date_col = "death_date",
-      follow_up_end_col = "follow_up_end_date",
-      lock_date = parse_analysis_date(config$analysis$data_lock, "data_lock", allow_missing = FALSE),
-      horizon_days = 182L
-    )
-    cohort$ecog_fstcnt <- if ("ecog_fstcnt" %in% names(cohort)) cohort$ecog_fstcnt else NA_integer_
-    cohort$event_death <- as.integer(cohort$event_death)
-    cohort$survival_time_days <- as.numeric(cohort$survival_time_days)
-    base <- cohort[
-      , c("id", "tx", "diagnosis", "ecog_fstcnt", "event_death", "survival_time_days"),
-      drop = FALSE
-    ]
-    base$diagnosis <- as.integer(factor(base$diagnosis, levels = sort(unique(base$diagnosis))))
-    weeks <- data.frame(week = 1:26)
-    grid <- merge(base, weeks, by = NULL)
-    observations <- qol[qol$day > 0 & qol$day <= 182, c("id", "day", "q30", "baseline_q30"), drop = FALSE]
-    observations$week <- pmax(1L, pmin(26L, ceiling(observations$day / 7)))
-    observations <- observations[order(observations$id, observations$week, observations$day), , drop = FALSE]
-    observations <- observations[!duplicated(observations[c("id", "week")], fromLast = TRUE), , drop = FALSE]
-    grid <- merge(grid, observations[, c("id", "week", "q30", "baseline_q30"), drop = FALSE],
-                  by = c("id", "week"), all.x = TRUE, sort = FALSE)
-    grid$y <- q30_to_analysis_state(grid$q30, strict = FALSE)
-    grid$baseline_state <- q30_to_analysis_state(grid$baseline_q30, strict = FALSE)
-    grid <- grid[order(grid$id, grid$week), , drop = FALSE]
-    grid$death_week <- ifelse(
-      grid$event_death == 1L,
-      pmax(1L, pmin(26L, ceiling(grid$survival_time_days / 7))),
-      27L
-    )
-    death_inclusive <- grid
-    death_inclusive$y_death_inclusive <- ifelse(
-      death_inclusive$week >= death_inclusive$death_week, 8L,
-      death_inclusive$y
-    )
-    principal <- grid[grid$event_death == 0L, , drop = FALSE]
-    principal <- principal[principal$week <= 26L, , drop = FALSE]
-    if (nrow(principal) == 0L) stop("No observed 26-week survivors are available for primary QoL.")
-    module_save_parquet(principal, principal_path)
-    module_save_parquet(death_inclusive, death_inclusive_path)
-  }
+cohort <- arrow::read_parquet(cohort_path) |>
+  as.data.frame()
+qol <- arrow::read_parquet(qol_path) |>
+  as.data.frame()
+
+required_cohort <- c(
+  "id", "tx", "age", "gender", "diagnosis", "ecog_fstcnt",
+  "stage_binary", "baseline_q30", "event_death", "survival_time_days"
 )
+required_qol <- c("id", "assessment_id", "questionnaire_date", "day", "q30")
+if (!all(required_cohort %in% names(cohort))) {
+  stop("The analysis cohort is missing a required QoL landmark variable.")
+}
+if (!all(required_qol %in% names(qol))) {
+  stop("The longitudinal QoL dataset lacks dates or Q30 values required for landmark preparation.")
+}
+if (anyDuplicated(cohort$id)) stop("The analysis cohort must have one row per participant.")
+visit_variable <- intersect(c("date_visit", "visit_date"), names(cohort))
+if (length(visit_variable) != 1L) {
+  stop("The analysis cohort must contain exactly one of `date_visit` or legacy `visit_date`.")
+}
+cohort$date_visit <- cohort[[visit_variable]]
+
+# Use the same five diagnosis categories in the QoL imputation and analysis
+# models: the four most common diagnoses in the full cohort and "Other".
+# There are not ties.
+diagnosis_label <- as.character(cohort$diagnosis)
+diagnosis_counts <- as.data.frame(
+  table(diagnosis_label, useNA = "no"),
+  stringsAsFactors = FALSE
+)
+diagnosis_counts <- diagnosis_counts[order(
+  -diagnosis_counts$Freq,
+  diagnosis_counts$diagnosis_label
+), ]
+common_diagnoses <- head(diagnosis_counts$diagnosis_label, 4L)
+cohort$diagnosis_group <- ifelse(
+  is.na(diagnosis_label),
+  NA_character_,
+  ifelse(diagnosis_label %in% common_diagnoses, diagnosis_label, "Other")
+)
+cohort$diagnosis_code <- as.integer(factor(
+  cohort$diagnosis_group,
+  levels = c(common_diagnoses, "Other")
+))
+
+primary_columns <- unique(c(
+  required_cohort,
+  "diagnosis_group", "diagnosis_code",
+  intersect(
+    c("plan_fstcnt_coded", "albumin", "c_reactive_protein"),
+    names(cohort)
+  )
+))
+
+baseline <- cohort[c("id", "baseline_q30")]
+baseline$baseline_assessment_id <- NA_character_
+missing_baseline_ids <- baseline$id[is.na(baseline$baseline_q30)]
+
+baseline_candidates <- merge(
+  qol[
+    qol$id %in% missing_baseline_ids &
+      !is.na(qol$q30) & !is.na(qol$questionnaire_date),
+    c(
+    "id", "assessment_id", "questionnaire_date", "q30"
+    )
+  ],
+  cohort[c("id", "date_visit")],
+  by = "id",
+  all = FALSE
+)
+baseline_candidates$distance_days <- abs(as.integer(
+  baseline_candidates$questionnaire_date - baseline_candidates$date_visit
+))
+baseline_candidates <- baseline_candidates[
+  !is.na(baseline_candidates$distance_days) &
+    baseline_candidates$distance_days <= 14L,
+]
+baseline_candidates <- baseline_candidates[order(
+  baseline_candidates$id,
+  baseline_candidates$distance_days,
+  baseline_candidates$questionnaire_date,
+  baseline_candidates$assessment_id
+), ]
+fallback_baseline <- baseline_candidates[
+  !duplicated(baseline_candidates$id),
+  c(
+  "id", "assessment_id", "q30"
+  )
+]
+names(fallback_baseline)[names(fallback_baseline) == "assessment_id"] <-
+  "baseline_assessment_id"
+names(fallback_baseline)[names(fallback_baseline) == "q30"] <- "baseline_q30"
+fallback_rows <- match(fallback_baseline$id, baseline$id)
+matched_fallback <- !is.na(fallback_rows)
+fallback_baseline <- fallback_baseline[matched_fallback, ]
+fallback_rows <- fallback_rows[matched_fallback]
+baseline$baseline_q30[fallback_rows] <- fallback_baseline$baseline_q30
+baseline$baseline_assessment_id[fallback_rows] <-
+  fallback_baseline$baseline_assessment_id
+
+valid_qol <- qol[
+  !is.na(qol$q30) & qol$day > 0 & qol$day <= config$analysis$horizon_days,
+  c("id", "assessment_id", "day", "q30")
+]
+baseline_ids <- baseline$baseline_assessment_id[match(valid_qol$id, baseline$id)]
+valid_qol <- valid_qol[
+  is.na(baseline_ids) | valid_qol$assessment_id != baseline_ids,
+]
+valid_qol <- valid_qol[order(valid_qol$id, valid_qol$day), ]
+latest <- valid_qol[!duplicated(valid_qol$id, fromLast = TRUE), ]
+latest$assessment_id <- NULL
+names(latest)[names(latest) == "day"] <- "landmark_day"
+names(latest)[names(latest) == "q30"] <- "landmark_q30"
+
+cohort_primary <- cohort[primary_columns]
+cohort_primary$baseline_q30 <- baseline$baseline_q30[
+  match(cohort_primary$id, baseline$id)
+]
+cohort_primary$baseline_assessment_id <- baseline$baseline_assessment_id[
+  match(cohort_primary$id, baseline$id)
+]
+prepared <- merge(
+  cohort_primary,
+  latest,
+  by = "id",
+  all.x = TRUE,
+  sort = FALSE
+)
+prepared <- prepared[match(cohort$id, prepared$id), ]
+prepared$baseline_q30 <- ifelse(
+  is.na(prepared$baseline_q30),
+  NA_integer_,
+  as.integer(prepared$baseline_q30)
+)
+prepared$y_landmark <- ifelse(
+  prepared$event_death == 1L,
+  8L,
+  ifelse(
+    prepared$survival_time_days < config$analysis$horizon_days |
+      is.na(prepared$landmark_q30),
+    NA_integer_,
+    as.integer(prepared$landmark_q30)
+  )
+)
+
+if (any(!is.na(prepared$baseline_q30) & !prepared$baseline_q30 %in% 1:7)) {
+  stop("Baseline Q30 produced a QoL state outside 1:7.")
+}
+if (any(!is.na(prepared$y_landmark) & !prepared$y_landmark %in% 1:8)) {
+  stop("The six-month QoL endpoint contains a state outside 1:8.")
+}
+if (any(prepared$event_death == 1L & prepared$y_landmark != 8L)) {
+  stop("Every death by day 182 must be assigned the absorbing death state.")
+}
+
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+arrow::write_parquet(prepared, output_path, compression = "zstd")
+
+# Supporting death-inclusive longitudinal data: QoL is missing only while a
+# participant is known alive. Rows after non-death censoring are absent; death
+# is retained as an absorbing state through week 26.
+long_columns <- intersect(
+  c(
+    "id", "tx", "age", "gender", "diagnosis_code", "ecog_fstcnt",
+    "plan_fstcnt_coded", "albumin", "c_reactive_protein",
+    "event_death", "survival_time_days"
+  ),
+  names(cohort)
+)
+long_base <- cohort[long_columns]
+long_base <- merge(
+  long_base,
+  baseline[c("id", "baseline_q30")],
+  by = "id",
+  all.x = TRUE,
+  sort = FALSE
+)
+long_grid <- merge(long_base, data.frame(week = 1:26), by = NULL)
+weekly_qol <- qol[
+  !is.na(qol$q30) & qol$day > 0 & qol$day <= config$analysis$horizon_days,
+  c("id", "assessment_id", "day", "q30")
+]
+weekly_baseline_ids <- baseline$baseline_assessment_id[
+  match(weekly_qol$id, baseline$id)
+]
+weekly_qol <- weekly_qol[
+  is.na(weekly_baseline_ids) | weekly_qol$assessment_id != weekly_baseline_ids,
+]
+weekly_qol$week <- pmax(1L, pmin(26L, ceiling(weekly_qol$day / 7)))
+weekly_qol <- weekly_qol[order(weekly_qol$id, weekly_qol$week, weekly_qol$day), ]
+weekly_qol <- weekly_qol[
+  !duplicated(weekly_qol[c("id", "week")], fromLast = TRUE),
+  c("id", "week", "q30")
+]
+long_grid <- merge(
+  long_grid,
+  weekly_qol,
+  by = c("id", "week"),
+  all.x = TRUE,
+  sort = FALSE
+)
+long_grid$death_week <- ifelse(
+  long_grid$event_death == 1L,
+  pmax(1L, pmin(26L, ceiling(long_grid$survival_time_days / 7))),
+  NA_integer_
+)
+known_alive <- long_grid$week * 7 <= long_grid$survival_time_days |
+  !is.na(long_grid$q30)
+after_death <- long_grid$event_death == 1L &
+  long_grid$week >= long_grid$death_week
+long_grid <- long_grid[known_alive | after_death, ]
+long_grid$y_death_inclusive <- ifelse(
+  long_grid$event_death == 1L & long_grid$week >= long_grid$death_week,
+  8L,
+  ifelse(is.na(long_grid$q30), NA_integer_, as.integer(long_grid$q30))
+)
+long_grid <- long_grid[order(long_grid$id, long_grid$week), ]
+arrow::write_parquet(long_grid, longitudinal_path, compression = "zstd")
 ```
