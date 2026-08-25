@@ -23,8 +23,10 @@ force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
 model_dir <- here::here("artifacts", "primary", "quality-of-life", "models")
 estimand_dir <- here::here("artifacts", "primary", "quality-of-life", "estimand")
 result_dir <- here::here("results", "primary", "quality-of-life")
+figure_dir <- here::here("artifacts", "primary", "quality-of-life", "figures")
 dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 
 for (index in seq_len(config$imputation$main$m)) {
   draw_path <- file.path(estimand_dir, sprintf("draws-%02d.parquet", index))
@@ -82,6 +84,41 @@ arrow::write_parquet(
   file.path(result_dir, "summary.parquet"),
   compression = "zstd"
 )
+
+posterior_plot <- ggplot2::ggplot(
+  draws,
+  ggplot2::aes(x = odds_ratio_worse)
+) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(
+    .width = c(0.66, 0.95),
+    point_interval = ggdist::median_qi
+  ) +
+  ggplot2::geom_vline(
+    xintercept = 1,
+    linetype = "dashed",
+    colour = "grey40"
+  ) +
+  ggplot2::labs(
+    x = "Treatment odds ratio for a worse six-month QoL/death state",
+    y = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    axis.text.y = ggplot2::element_blank(),
+    axis.ticks.y = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor.y = ggplot2::element_blank()
+  )
+
+ggplot2::ggsave(
+  file.path(figure_dir, "qol-odds-ratio-posterior.png"),
+  posterior_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
 writeLines(
   yaml::as.yaml(list(
     status = "available",
@@ -94,4 +131,3 @@ writeLines(
   file.path(result_dir, "status.yml")
 )
 ```
-

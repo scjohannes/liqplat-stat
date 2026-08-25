@@ -16,9 +16,13 @@ R-hat and effective-sample-size thresholds after the permitted retry.
 source(here::here("R", "analysis-config.R"))
 
 config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
 diagnostic_dir <- here::here(
   "artifacts", "primary", "quality-of-life", "diagnostics"
 )
+model_dir <- here::here("artifacts", "primary", "quality-of-life", "models")
+trace_dir <- file.path(diagnostic_dir, "trace-plots")
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
 diagnostics <- do.call(rbind, lapply(seq_len(config$imputation$main$m), function(index) {
   path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
   if (!file.exists(path)) stop("Missing QoL diagnostic artifact: ", path)
@@ -48,3 +52,34 @@ diagnostic_summary <- data.frame(
 knitr::kable(diagnostic_summary)
 ```
 
+One trace-plot file is saved for every fitted model. The raw Stan object names
+the seven ordinal intercepts `alpha[1]`–`alpha[7]` and the treatment and
+baseline-QoL spline coefficients `beta[1]`–`beta[4]`; all eleven are shown.
+The full numerical diagnostic table retains every sampled parameter.
+
+```{r}
+#| label: save-primary-qol-trace-plots
+#| include: false
+
+for (index in seq_len(config$imputation$main$m)) {
+  trace_path <- file.path(trace_dir, sprintf("trace-%02d.png", index))
+  if (!force && file.exists(trace_path)) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  draws <- posterior::as_draws_array(rmsb::stanGet(model))
+  trace_variables <- posterior::variables(draws)
+  trace_variables <- trace_variables[grepl("^(alpha|beta)\\[", trace_variables)]
+  if (length(trace_variables) == 0L) {
+    stop("No QoL alpha or beta parameters were found for trace plotting.")
+  }
+  trace_plot <- bayesplot::mcmc_trace(draws, pars = trace_variables)
+  ggplot2::ggsave(
+    trace_path,
+    trace_plot,
+    width = 10,
+    height = max(4, 1.2 * length(trace_variables)),
+    dpi = 180,
+    limitsize = FALSE
+  )
+}
+```
