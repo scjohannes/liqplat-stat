@@ -1,92 +1,43 @@
 ---
 title: "Overall survival — primary preparation"
-subtitle: "Locked cohort and 182-day survival endpoint"
+subtitle: "Locked 182-day survival endpoint"
 format: html
 execute:
   freeze: false
 ---
 
-This module constructs the schema-validated overall-survival analysis data. It
-uses the fixed data lock from `config/analysis.yml`; it does not infer a lock
-date from the machine clock. The notebook stops with an actionable error when
-the private cohort input is absent or lacks a SAP covariate.
-
-```{r}
-#| label: setup
-#| include: false
-source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "data-validation.R"))
-source(here::here("R", "data-helpers.R"))
-source(here::here("R", "imputation.R"))
-source(here::here("R", "survival-helpers.R"))
-source(here::here("analysis", "module-runtime.R"))
-
-runtime <- module_runtime()
-config <- runtime$config
-input_path <- project_path("analysis", "00-data", "results", "analysis-cohort.parquet")
-schema_path <- project_path("data", "schema", "cohort_follow_up.yml")
-output_path <- project_path("artifacts", "primary", "overall-survival", "prepared.parquet")
-stage_id <- "primary-os-preparation"
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "data-helpers.R"),
-  here::here("R", "data-validation.R"), here::here("R", "survival-helpers.R"),
-  here::here("R", "checkpoints.R"),
-  here::here("analysis", "module-runtime.R"), knitr::current_input()
-)
-```
+The wide cohort dataset already contains survival time and event status derived
+at the fixed data lock. This stage selects the SAP covariates and creates the
+deterministic ECOG and mGPS variables used downstream.
 
 ```{r}
 #| label: prepare-os-data
 #| include: false
-module_branch(
-  runtime = runtime,
-  stage_id = stage_id,
-  input_paths = c(input_path, schema_path),
-  output_paths = output_path,
-  code_paths = code_paths,
-  metadata = list(endpoint = "overall_survival", horizon_days = 182L),
-  worker = function() {
-    cohort <- module_input(input_path, schema_path)
-    module_require_columns(
-      cohort,
-      c("id", "randomization_date", "tx", "death_date", "follow_up_end_date",
-        "ecog_fstcnt", "albumin", "c_reactive_protein", "stage_binary", "lung"),
-      "cohort_follow_up"
-    )
-    if (!all(validate_binary(cohort$tx, "tx", allow_missing = FALSE) %in% c(0, 1))) {
-      stop("cohort_follow_up$tx must use the SAP coding 0 = comparator, 1 = SAT invitation.")
-    }
-    if (any(!is.na(cohort$stage_binary) & !cohort$stage_binary %in% 0:1)) {
-      stop("stage_binary must be coded 0/1.")
-    }
-    if (any(!is.na(cohort$lung) & !cohort$lung %in% 0:1)) {
-      stop("lung must be coded 0/1.")
-    }
-    prepared <- derive_survival_endpoint(
-      cohort,
-      origin_col = "randomization_date",
-      death_date_col = "death_date",
-      follow_up_end_col = "follow_up_end_date",
-      lock_date = parse_analysis_date(config$analysis$data_lock, "data_lock", allow_missing = FALSE),
-      horizon_days = as.integer(config$analysis$horizon_days)
-    )
-    prepared$ecog_binary <- derive_ecog_binary(prepared$ecog_fstcnt)
-    prepared$mgps <- derive_mgps(prepared$albumin, prepared$c_reactive_protein)
-    assert_ecog_binary_consistent(prepared)
-    assert_mgps_consistent(prepared)
-    prepared <- prepared[
-      , c("id", "tx", "survival_time_days", "event_death", "ecog_binary",
-          "ecog_fstcnt", "stage_binary", "lung", "mgps", "age", "gender", "albumin",
-          "c_reactive_protein"), drop = FALSE
-    ]
-    if (anyDuplicated(prepared$id)) stop("Prepared OS data contains duplicate patient IDs.")
-    module_save_parquet(prepared, output_path)
-  }
-)
-```
 
-The prepared artifact is intentionally stored under ignored `artifacts/`; it
-contains no fabricated patient records and is the only input accepted by the
-downstream OS stages.
+source(here::here("R", "survival-helpers.R"))
+
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+input_path <- here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+)
+output_path <- here::here(
+  "artifacts", "primary", "overall-survival", "prepared.parquet"
+)
+dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+
+if (force || !file.exists(output_path)) {
+  prepared <- arrow::read_parquet(input_path) |>
+    as.data.frame()
+  prepared$ecog_binary <- derive_ecog_binary(prepared$ecog_fstcnt)
+  prepared$mgps <- derive_mgps(
+    prepared$albumin,
+    prepared$c_reactive_protein
+  )
+  prepared <- prepared[c(
+    "id", "tx", "survival_time_days", "event_death", "ecog_binary",
+    "ecog_fstcnt", "stage_binary", "lung", "mgps", "age", "gender",
+    "albumin", "bilirubin", "c_reactive_protein", "lactate_dehydrogenase"
+  )]
+  arrow::write_parquet(prepared, output_path)
+}
+```

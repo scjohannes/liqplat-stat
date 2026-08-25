@@ -1,70 +1,371 @@
 ---
 title: "Overall survival — primary diagnostics"
-subtitle: "Compact posterior diagnostics for 50 Bayesian survival fits"
+subtitle: "Posterior diagnostics for 50 Bayesian survival fits"
 format: html
 execute:
   freeze: false
 ---
 
-This stage reports compact convergence diagnostics and refuses to certify a
-branch that violates the configured thresholds. It does not re-fit models or
-write patient-level displays.
+```{r}
+#| label: check-os-models
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)
+model_dir <- here::here("artifacts", "primary", "overall-survival", "models")
+diagnostic_dir <- here::here(
+  "artifacts", "primary", "overall-survival", "diagnostics"
+)
+trace_dir <- file.path(diagnostic_dir, "trace-plots")
+figure_dir <- here::here("artifacts", "primary", "overall-survival", "figures")
+result_path <- here::here(
+  "results", "primary", "overall-survival", "diagnostics.parquet"
+)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(result_path), recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  output_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!force && file.exists(output_path)) next
+
+  diagnostics <- posterior::summarise_draws(
+    posterior::as_draws_df(readRDS(model_path))
+  ) |>
+    as.data.frame()
+  diagnostics$imputation <- index
+  if (
+    any(diagnostics$rhat[is.finite(diagnostics$rhat)] >
+      config$diagnostics$max_rhat) ||
+      any(diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)] <
+        config$diagnostics$min_ess_bulk) ||
+      any(diagnostics$ess_tail[is.finite(diagnostics$ess_tail)] <
+        config$diagnostics$min_ess_tail)
+  ) {
+    stop("OS posterior diagnostics failed for imputation ", index, ".")
+  }
+  arrow::write_parquet(diagnostics, output_path)
+}
+
+diagnostic_paths <- file.path(
+  diagnostic_dir,
+  sprintf("diagnostics-%02d.parquet", indices)
+)
+diagnostics <- lapply(diagnostic_paths, function(path) {
+  arrow::read_parquet(path) |>
+    as.data.frame()
+})
+arrow::write_parquet(do.call(rbind, diagnostics), result_path)
+```
+
+One trace plot is saved for each fitted survival model. These files are retained
+as diagnostic artifacts and are not automatically inserted into the main
+report.
 
 ```{r}
-#| label: setup
+#| label: save-os-trace-plots
 #| include: false
-source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("analysis", "module-runtime.R"))
 
-runtime <- module_runtime()
-config <- runtime$config
-indices <- module_exact_indices(config)
-model_dir <- project_path("artifacts", "primary", "overall-survival", "models")
-diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "overall-survival", "diagnostics"))
-result_path <- project_path("results", "primary", "overall-survival", "diagnostics.parquet")
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"),
-  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
-  knitr::current_input()
+for (index in indices) {
+  trace_path <- file.path(trace_dir, sprintf("trace-%02d.png", index))
+  if (!force && file.exists(trace_path)) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  draws <- posterior::as_draws_array(model)
+  trace_variables <- posterior::variables(draws)
+  trace_variables <- trace_variables[grepl(
+    "^(tx|ecog_binary|stage_binary|lung|mgps)",
+    trace_variables
+  )]
+  if (length(trace_variables) == 0L) {
+    stop("No OS regression parameters were found for trace plotting.")
+  }
+  trace_plot <- bayesplot::mcmc_trace(draws, pars = trace_variables)
+  ggplot2::ggsave(
+    trace_path,
+    trace_plot,
+    width = 10,
+    height = max(5, 1.1 * length(trace_variables)),
+    dpi = 180,
+    limitsize = FALSE
+  )
+}
+```
+
+The observed Kaplan–Meier curves retain censoring marks and are overlaid with
+the pooled standardized posterior survival curves. The Cox–Snell check is
+calculated directly from posterior survival probabilities from the first
+imputation's `stan_surv` fit. A companion Cox model with the same linear
+predictor is used only for supplemental scaled Schoenfeld and deviance-residual
+checks. These checks do not replace or refit the Bayesian primary estimand.
+
+```{r}
+#| label: derive-os-graphical-diagnostics
+#| include: false
+
+prepared <- arrow::read_parquet(here::here(
+  "artifacts", "primary", "overall-survival", "prepared.parquet"
+)) |>
+  as.data.frame()
+curve_draws <- arrow::read_parquet(here::here(
+  "results", "primary", "overall-survival", "survival-curves.parquet"
+)) |>
+  as.data.frame()
+
+prepared$tx_plot <- factor(
+  prepared$tx,
+  levels = 0:1,
+  labels = c("Control", "Intervention")
+)
+km_fit <- ggsurvfit::survfit2(
+  survival::Surv(survival_time_days, event_death) ~ tx_plot,
+  data = prepared,
+  conf.type = "log-log"
+)
+
+curve_summary <- do.call(rbind, lapply(
+  split(curve_draws, interaction(curve_draws$tx, curve_draws$time, drop = TRUE)),
+  function(data) {
+    data.frame(
+      tx = data$tx[[1L]],
+      time = data$time[[1L]],
+      median = median(data$survival),
+      lower = quantile(data$survival, 0.025, names = FALSE),
+      upper = quantile(data$survival, 0.975, names = FALSE)
+    )
+  }
+))
+rownames(curve_summary) <- NULL
+curve_summary$tx <- factor(
+  curve_summary$tx,
+  levels = 0:1,
+  labels = c("Control", "Intervention")
+)
+risk_times <- c(
+  seq(0, config$analysis$horizon_days - 30, by = 30),
+  config$analysis$horizon_days
+)
+
+survival_plot <- ggsurvfit::ggsurvfit(
+  km_fit,
+  linewidth = 0.55,
+  linetype = 2
+) +
+  ggplot2::geom_ribbon(
+    data = curve_summary,
+    ggplot2::aes(x = time, ymin = lower, ymax = upper, fill = tx),
+    alpha = 0.16,
+    inherit.aes = FALSE
+  ) +
+  ggplot2::geom_line(
+    data = curve_summary,
+    ggplot2::aes(x = time, y = median, colour = tx),
+    linewidth = 0.9,
+    inherit.aes = FALSE
+  ) +
+  ggsurvfit::add_censor_mark(size = 1.8) +
+  ggplot2::scale_x_continuous(
+    breaks = risk_times
+  ) +
+  ggplot2::coord_cartesian(
+    xlim = c(0, config$analysis$horizon_days),
+    ylim = c(0, 1)
+  ) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Survival probability",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = "n.risk",
+    stats_label = list(n.risk = "At risk")
+  )
+
+imputations <- readRDS(here::here(
+  "artifacts", "primary", "overall-survival", "imputations.rds"
+))
+diagnostic_data <- mice::complete(imputations, 1L)
+diagnostic_data$mgps <- factor(diagnostic_data$mgps, levels = 0:2)
+diagnostic_data <- diagnostic_data[diagnostic_data$survival_time_days > 0, ]
+cox_model <- survival::coxph(
+  survival::Surv(survival_time_days, event_death) ~
+    tx + ecog_binary + stage_binary + lung + mgps,
+  data = diagnostic_data,
+  x = TRUE,
+  y = TRUE
+)
+zph <- survival::cox.zph(cox_model, transform = "km")
+zph_table <- as.data.frame(zph$table)
+zph_table$term <- rownames(zph_table)
+rownames(zph_table) <- NULL
+
+posterior_model <- readRDS(file.path(model_dir, "model-01.rds"))
+posterior_survival <- rstanarm::posterior_survfit(
+  posterior_model,
+  newdata = diagnostic_data,
+  times = "survival_time_days",
+  extrapolate = FALSE,
+  draws = config$diagnostics$posterior_draws,
+  seed = analysis_seed(config, "diagnostics", 1L),
+  return_matrix = TRUE
+)
+survival_draws <- as.matrix(posterior_survival[[1L]])
+if (ncol(survival_draws) != nrow(diagnostic_data)) {
+  stop("Posterior survival predictions do not match the diagnostic dataset.")
+}
+cox_snell_residuals <- -log(pmax(survival_draws, .Machine$double.xmin))
+residual_grid <- seq(
+  0,
+  stats::quantile(cox_snell_residuals, 0.99, names = FALSE),
+  length.out = 200L
+)
+
+cox_snell_hazards <- vapply(
+  seq_len(nrow(cox_snell_residuals)),
+  function(draw) {
+    residual_fit <- survival::survfit(
+      survival::Surv(
+        cox_snell_residuals[draw, ],
+        diagnostic_data$event_death
+      ) ~ 1,
+      stype = 2,
+      ctype = 1
+    )
+    stats::approx(
+      x = c(0, residual_fit$time),
+      y = c(0, residual_fit$cumhaz),
+      xout = residual_grid,
+      method = "constant",
+      f = 0,
+      rule = 2
+    )$y
+  },
+  numeric(length(residual_grid))
+)
+cox_snell_data <- data.frame(
+  residual = residual_grid,
+  median = apply(cox_snell_hazards, 1L, stats::median),
+  lower = apply(
+    cox_snell_hazards,
+    1L,
+    stats::quantile,
+    probs = 0.025,
+    names = FALSE
+  ),
+  upper = apply(
+    cox_snell_hazards,
+    1L,
+    stats::quantile,
+    probs = 0.975,
+    names = FALSE
+  )
+)
+cox_snell_plot <- ggplot2::ggplot(
+  cox_snell_data,
+  ggplot2::aes(x = residual, y = median)
+) +
+  ggplot2::geom_ribbon(
+    ggplot2::aes(ymin = lower, ymax = upper),
+    fill = "steelblue",
+    alpha = 0.2
+  ) +
+  ggplot2::geom_line(colour = "steelblue4", linewidth = 0.8) +
+  ggplot2::geom_abline(intercept = 0, slope = 1, linetype = 2, colour = "grey45") +
+  ggplot2::labs(
+    x = "Posterior Cox–Snell residual",
+    y = "Nelson–Aalen cumulative hazard"
+  ) +
+  ggplot2::theme_bw()
+
+deviance_data <- data.frame(
+  linear_predictor = stats::predict(cox_model, type = "lp"),
+  deviance_residual = stats::residuals(cox_model, type = "deviance")
+)
+deviance_plot <- ggplot2::ggplot(
+  deviance_data,
+  ggplot2::aes(x = linear_predictor, y = deviance_residual)
+) +
+  ggplot2::geom_hline(yintercept = 0, colour = "grey65") +
+  ggplot2::geom_point(alpha = 0.65) +
+  ggplot2::geom_smooth(method = "loess", formula = y ~ x, se = FALSE) +
+  ggplot2::labs(x = "Companion Cox-model linear predictor", y = "Deviance residual") +
+  ggplot2::theme_bw()
+
+ggplot2::ggsave(
+  file.path(figure_dir, "kaplan-meier-vs-posterior-model.png"),
+  ggsurvfit::ggsurvfit_build(survival_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "cox-snell-residuals.png"),
+  cox_snell_plot,
+  width = 6.5,
+  height = 5,
+  dpi = 300
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "deviance-residuals.png"),
+  deviance_plot,
+  width = 6.5,
+  height = 5,
+  dpi = 300
+)
+grDevices::png(
+  file.path(figure_dir, "scaled-schoenfeld-residuals.png"),
+  width = 1800,
+  height = 1800,
+  res = 180
+)
+plot(zph)
+grDevices::dev.off()
+arrow::write_parquet(
+  zph_table,
+  here::here("results", "primary", "overall-survival", "ph-diagnostics.parquet")
+)
+arrow::write_parquet(
+  cox_snell_data,
+  here::here(
+    "results", "primary", "overall-survival",
+    "cox-snell-posterior-summary.parquet"
+  )
 )
 ```
 
 ```{r}
-#| label: check-os-models
-#| include: false
-for (index in indices) {
-  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
-  output_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
-  if (!file.exists(model_path)) stop("Missing OS model branch: ", model_path)
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-os-diagnostics-%02d", index),
-    input_paths = model_path,
-    output_paths = output_path,
-    code_paths = code_paths,
-    metadata = list(endpoint = "overall_survival", imputation = index),
-    worker = function() {
-      model <- readRDS(model_path)
-      if (!requireNamespace("posterior", quietly = TRUE)) stop("Package 'posterior' is required for OS diagnostics.")
-      draws <- posterior::as_draws_df(model)
-      diagnostics <- as.data.frame(posterior::summarise_draws(draws))
-      diagnostics$imputation <- index
-      finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
-      finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
-      finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
-      if (length(finite_rhat) == 0L || any(finite_rhat > config$diagnostics$max_rhat) ||
-          length(finite_bulk) == 0L || any(finite_bulk < config$diagnostics$min_ess_bulk) ||
-          length(finite_tail) == 0L || any(finite_tail < config$diagnostics$min_ess_tail)) {
-        stop("OS posterior diagnostics failed for imputation ", index, ".")
-      }
-      module_save_parquet(diagnostics, output_path)
-    }
-  )
-}
-diagnostic_paths <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", indices))
-if (!all(file.exists(diagnostic_paths))) stop("OS diagnostics are incomplete.")
-all_diagnostics <- do.call(rbind, lapply(diagnostic_paths, module_read_parquet))
-module_save_parquet(all_diagnostics, result_path)
+#| label: fig-os-km-model-check
+#| fig-cap: "Observed Kaplan–Meier estimates, numbers at risk, and pooled standardized posterior survival curves"
+#| fig-alt: "Survival plot by randomized group with an aligned number-at-risk table. Dashed steps show Kaplan–Meier estimates with censoring marks; solid lines and bands show median Bayesian model predictions and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+```{r}
+#| label: fig-os-residual-checks
+#| fig-cap: "Bayesian survival-model Cox–Snell and supplemental companion-Cox deviance residual checks"
+#| fig-subcap:
+#|   - "Posterior Cox–Snell cumulative-hazard check"
+#|   - "Companion-Cox deviance residuals against the linear predictor"
+#| layout-ncol: 2
+#| fig-width: 6.5
+#| fig-height: 5
+#| echo: false
+
+cox_snell_plot
+deviance_plot
 ```
