@@ -1,114 +1,174 @@
 ---
 title: "TAOOH — primary imputation"
-subtitle: "50 multilevel weekly-state MICE branches"
+subtitle: "Patient-level baseline-covariate imputation"
 format: html
 execute:
   freeze: false
 ---
 
-TAOOH uses exactly 50 one-imputation branches. The ordinal state is imputed
-with multilevel PMM and then reconstructed into first- and second-order
-histories; death is re-enforced as absorbing after each completed branch.
-
-```{r}
-#| label: setup
-#| include: false
-source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "imputation.R"))
-source(here::here("analysis", "module-runtime.R"))
-
-runtime <- module_runtime()
-config <- runtime$config
-if (!requireNamespace("miceadds", quietly = TRUE)) stop("Package 'miceadds' is required for multilevel TAOOH imputation.")
-library(miceadds)
-indices <- module_exact_indices(config)
-if (length(indices) != 50L) stop("Primary TAOOH requires exactly 50 imputation branches.")
-input_path <- project_path("artifacts", "primary", "taooh", "prepared.parquet")
-branch_dir <- ensure_directory(project_path("artifacts", "primary", "taooh", "imputations"))
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "imputation.R"),
-  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
-  knitr::current_input()
-)
-```
+TAOOH has no intermittent missing states. The observed weekly outcome is
+therefore not imputed. Instead, incomplete baseline covariates are imputed in a
+one-row-per-patient dataset using observed TAOOH occupancy proportions and
+survival information as auxiliary predictors. Each completed baseline dataset
+is then joined back to the unchanged, already lagged weekly history.
 
 ```{r}
 #| label: impute-taooh
 #| include: false
-prepared <- module_read_parquet(input_path)
-module_require_columns(
-  prepared,
-  c("id", "tx", "diagnosis", "ecog_fstcnt", "albumin", "c_reactive_protein", "week", "y_taooh"),
-  "prepared TAOOH data"
+library(tidyverse)
+library(mice)
+source(here::here("R", "analysis-config.R"))
+
+
+config <- read_analysis_config()
+indices <- seq_len(config$imputation$main$m)
+input_path <- here::here("artifacts", "primary", "taooh", "prepared.parquet")
+branch_dir <- here::here("artifacts", "primary", "taooh", "imputations")
+dir.create(branch_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(input_path) |>
+  as.data.frame() |>
+  mutate(
+    diagnosis = factor(diagnosis),
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 0:3, ordered = TRUE)
+  )
+
+taooh_summaries <- prepared |>
+  group_by(id) |>
+  summarise(
+    n_alive = sum(y %in% 1:4, na.rm = TRUE),
+    no_alive_history = as.integer(n_alive == 0L),
+    prop_planned_admission = if_else(
+      n_alive > 0,
+      sum(y == 2L, na.rm = TRUE) / n_alive,
+      0
+    ),
+    prop_er = if_else(
+      n_alive > 0,
+      sum(y == 3L, na.rm = TRUE) / n_alive,
+      0
+    ),
+    prop_unplanned_admission = if_else(
+      n_alive > 0,
+      sum(y == 4L, na.rm = TRUE) / n_alive,
+      0
+    )
+  )
+
+transition_summaries <- prepared |> 
+  group_by(id) |>
+  summarise(
+    n_from_home = sum(
+      yprev == 1L & y %in% 1:4,
+      na.rm = TRUE
+    ),
+    n_acute_from_home = sum(
+      yprev == 1L & y %in% c(3L, 4L),
+      na.rm = TRUE
+    ),
+    prop_acute_from_home = if_else(
+      n_from_home > 0,
+      n_acute_from_home / n_from_home,
+      0
+    ),
+    .groups = "drop"
+  )
+
+patient_data <- prepared |>
+  select(
+    id, tx, age, gender, diagnosis, ecog_fstcnt, albumin, bilirubin,
+    c_reactive_protein, lactate_dehydrogenase, survival_time_days,
+    event_death
+  ) |>
+  distinct() |>
+  left_join(taooh_summaries, by = "id") |>
+  left_join(transition_summaries, by = "id") |> 
+  mutate(
+    tx = factor(tx),
+    gender = factor(gender),
+    event_death = as.integer(event_death)
+  )
+
+patient_data$na_est <- mice::nelsonaalen(
+  patient_data,
+  survival_time_days,
+  event_death
 )
-prepared$.cluster <- as.integer(factor(prepared$id))
-init <- mice::mice(prepared, m = 0, maxit = 0, printFlag = FALSE)
-methods <- init$method
-predictors <- init$predictorMatrix
+
+patient_ids <- patient_data$id
+imputation_data <- patient_data |>
+  select(-survival_time_days, -n_acute_from_home, -n_alive)
+
+mice::md.pattern(imputation_data)
+
+methods <- mice::make.method(imputation_data)
 methods[] <- ""
-methods["y_taooh"] <- "2l.pmm"
-if ("ecog_fstcnt" %in% names(methods)) methods["ecog_fstcnt"] <- "2lonly.pmm"
-if ("albumin" %in% names(methods)) methods["albumin"] <- "2lonly.pmm"
-if ("c_reactive_protein" %in% names(methods)) methods["c_reactive_protein"] <- "2lonly.pmm"
-if ("diagnosis" %in% names(methods)) methods["diagnosis"] <- "2lonly.pmm"
-predictors[,] <- 0
-predictors["y_taooh", c("week", "tx", "diagnosis", "ecog_fstcnt", "albumin", "c_reactive_protein")] <- 1
-predictors["y_taooh", ".cluster"] <- -2
-for (column in intersect(c("ecog_fstcnt", "albumin", "c_reactive_protein", "diagnosis"), rownames(predictors))) {
-  predictors[column, c("tx", "week")] <- 1
-  predictors[column, ".cluster"] <- -2
-}
-predictors[, c("id", ".cluster", "y", "yprev", "ypprev")] <- 0
-predictors[c("id", ".cluster", "y", "yprev", "ypprev"), ] <- 0
-validate_mice_spec(prepared, methods, predictors)
+methods["ecog_fstcnt"] <- "polr"
+methods[c(
+  "albumin", "bilirubin", "c_reactive_protein",
+  "lactate_dehydrogenase"
+)] <- "pmm"
+
+predictors <- mice::make.predictorMatrix(imputation_data)
+predictors[, "id"] <- 0
+
+imputation_fit <- mice::mice(
+  data = imputation_data,
+  method = methods,
+  predictorMatrix = predictors,
+  m = config$imputation$main$m,
+  maxit = config$imputation$main$maxit,
+  donors = config$imputation$main$donors,
+  seed = analysis_seed(config, "imputation", 1L),
+  printFlag = FALSE
+)
+
+qsaveRDS(
+  imputation_fit,
+  file.path(branch_dir, "imputation-fit.rds"),
+  compress = "xz"
+)
+
+longitudinal_data <- prepared |>
+  select(id, week, y, yprev, ypprev)
 
 for (index in indices) {
   output_path <- file.path(branch_dir, sprintf("imputation-%02d.parquet", index))
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-taooh-imputation-%02d", index),
-    input_paths = input_path,
-    output_paths = output_path,
-    code_paths = code_paths,
-    metadata = list(endpoint = "taooh", imputation = index, m = 50L,
-                   maxit = 50L, method = "multilevel PMM"),
-    worker = function() {
-      fitted <- mice::mice(
-        data = prepared,
-        method = methods,
-        predictorMatrix = predictors,
-        m = 1L,
-        maxit = as.integer(config$imputation$main$maxit),
-        donors = as.integer(config$imputation$main$donors),
-        seed = analysis_seed(config, "imputation", index),
-        printFlag = FALSE
-      )
-      completed <- mice::complete(fitted, action = 1L)
-      completed$y <- as.integer(completed$y_taooh)
-      completed <- completed |>
-        dplyr::arrange(id, week) |>
-        dplyr::group_by(id) |>
-        dplyr::mutate(
-          death_seen = cumany(y == 5L),
-          y = dplyr::if_else(death_seen, 5L, y),
-          yprev = dplyr::lag(y, 1L, default = dplyr::first(y)),
-          ypprev = dplyr::lag(y, 2L, default = dplyr::first(y))
-        ) |>
-        dplyr::ungroup()
-      completed$death_seen <- NULL
-      if (any(completed$y < 1L | completed$y > 5L, na.rm = TRUE)) stop("Completed TAOOH states are outside 1:5.")
-      completed$y <- factor(completed$y, levels = 1:5, ordered = TRUE)
-      completed$yprev <- factor(completed$yprev, levels = 1:5, ordered = FALSE)
-      completed$ypprev <- factor(completed$ypprev, levels = 1:5, ordered = FALSE)
-      completed$.cluster <- NULL
-      module_save_parquet(completed, output_path)
-    }
-  )
+
+  completed_baseline <- mice::complete(imputation_fit, index) |>
+    select(
+      id, tx, age, gender, diagnosis, ecog_fstcnt, albumin, bilirubin,
+      c_reactive_protein, lactate_dehydrogenase
+    )
+
+  completed <- longitudinal_data |>
+    left_join(completed_baseline, by = "id") |>
+    mutate(
+      yprev = factor(yprev, levels = 1:4),
+      ypprev = factor(ypprev, levels = 1:4),
+      id = factor(id)
+    )
+
+  arrow::write_parquet(completed, output_path, compression = "zstd")
 }
-branch_paths <- file.path(branch_dir, sprintf("imputation-%02d.parquet", indices))
-if (length(branch_paths) != 50L || !all(file.exists(branch_paths))) {
-  stop("TAOOH imputation stage did not produce all 50 required branches.")
-}
+```
+
+```{r}
+#| label: taooh-imputation-convergence
+#| echo: false
+#| fig-cap: "MICE convergence traces for imputed TAOOH baseline covariates."
+
+plot(imputation_fit)
+```
+
+```{r}
+#| label: taooh-imputation-distributions
+#| echo: false
+#| fig-cap: "Observed and imputed distributions of TAOOH baseline covariates."
+
+densityplot(
+  imputation_fit,
+  ~ ecog_fstcnt + albumin + bilirubin +
+    c_reactive_protein + lactate_dehydrogenase
+)
 ```
