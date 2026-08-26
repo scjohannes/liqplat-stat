@@ -1,23 +1,22 @@
 ---
 title: "TAOOH — primary preparation"
-subtitle: "Five-state weekly history with first- and second-order lags"
+subtitle: "Observed weekly histories and patient-level covariates"
 format: html
 execute:
   freeze: false
 ---
 
 The weekly state is 1 = alive/out of hospital, 2 = planned admission,
-3 = emergency room, 4 = unplanned admission, and 5 = dead. From the first
-week classified as dead onward, state 5 must remain absorbing.
+3 = emergency room, 4 = unplanned admission, and 5 = dead. Unobserved states
+remain missing. This stage constructs the observed first- and second-order
+history and removes rows after either previous state is 5.
 
 ```{r}
 #| label: prepare-taooh-data
 #| include: false
-library(dplyr)
-source(here::here("R", "data-helpers.R"))
+library(tidyverse)
 
 
-force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
 cohort_path <- here::here(
   "analysis", "00-data", "results", "analysis-cohort.parquet"
 )
@@ -29,51 +28,59 @@ output_path <- here::here(
 )
 dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
 
-if (force || !file.exists(output_path)) {
-  cohort <- arrow::read_parquet(cohort_path) |>
-    as.data.frame()
-  taooh <- arrow::read_parquet(taooh_path) |>
-    as.data.frame()
+cohort <- arrow::read_parquet(cohort_path) |>
+  as.data.frame()
+taooh <- arrow::read_parquet(taooh_path) |>
+  as.data.frame()
 
-  if (any(!is.na(taooh$y_taooh) & !taooh$y_taooh %in% 1:5)) {
-    stop("Observed TAOOH states must be in 1:5.")
-  }
-  
-  analysis_data <- cohort |> 
-    select(
-      id, 
-      tx, 
-      age, 
-      gender, 
-      diagnosis,
-      ecog_fstcnt, 
-      stage_binary, 
-      lung, 
-      plan_fstcnt_coded, 
-      albumin, 
-      bilirubin, 
-      c_reactive_protein, 
-      creatinine, 
-      lactate_dehydrogenase, 
-      leukocytes) |> 
-    left_join(taooh, by = "id") |> 
-    group_by(id) |>
-    arrange(id, week) |> 
-    mutate(
-      y = as.numeric(as.character(y_taooh)),
-      yprev = lag(y_taooh, 1L),
-      ypprev = lag(y_taooh, 2L)
-    ) |>
-    ungroup() |>
-    filter_out(week < 1) |>
-    filter_out(yprev == 5) |>
-    filter_out(ypprev == 5) |>
-    mutate(
-      yprev = factor(yprev, levels = 1:4, ordered = FALSE),
-      ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),
-      id = factor(id)
-    )
-
-  arrow::write_parquet(analysis_data, output_path)
+if (any(!is.na(taooh$y_taooh) & !taooh$y_taooh %in% 1:5)) {
+  stop("Observed TAOOH states must be in 1:5.")
 }
+  
+cohort <- cohort |>
+  mutate(
+    ecog_fstcnt = if_else(ecog_fstcnt == 4L, 3L, ecog_fstcnt),
+    diagnosis = fct_lump_n(
+      factor(diagnosis),
+      n = 4,
+      other_level = "Other",
+      ties.method = "first"
+    )
+  )
+
+analysis_data <- cohort |>
+  select(
+    id,
+    tx,
+    age,
+    gender,
+    diagnosis,
+    ecog_fstcnt,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    lactate_dehydrogenase,
+    survival_time_days,
+    event_death
+  ) |>
+  left_join(taooh, by = "id") |>
+  arrange(id, week) |>
+  group_by(id) |>
+  mutate(
+    y = as.integer(y_taooh),
+    yprev = lag(y, 1L),
+    ypprev = lag(y, 2L)
+  ) |>
+  ungroup() |>
+  filter(
+    week >= 1L,
+    !is.na(y), #this results in 296 patients, two exclusions because first week missing
+    !is.na(yprev),
+    !is.na(ypprev),
+    yprev != 5L,
+    ypprev != 5L
+  ) |> 
+  select(-y_taooh)
+
+arrow::write_parquet(analysis_data, output_path, compression = "zstd")
 ```
