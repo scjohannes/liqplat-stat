@@ -83,8 +83,6 @@ if (force || !file.exists(output_path)) {
   fit_seed <- analysis_seed(config, "taooh")
   fit <- markov.misc::blrm_markov(
     formula = model_formula,
-    ppo = ~week,
-    cppo = function(y) as.numeric(as.character(y)),
     data = data,
     id_var = "id",
     time_var = "week",
@@ -103,8 +101,6 @@ if (force || !file.exists(output_path)) {
   if (!isTRUE(diagnostics$passed)) {
     fit <- markov.misc::blrm_markov(
       formula = model_formula,
-      ppo = ~week,
-      cppo = function(y) as.numeric(as.character(y)),
       data = data,
       id_var = "id",
       time_var = "week",
