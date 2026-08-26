@@ -26,7 +26,12 @@ taooh_path <- here::here(
 output_path <- here::here(
   "artifacts", "primary", "taooh", "prepared.parquet"
 )
+figure_path <- here::here(
+  "artifacts", "primary", "taooh", "figures",
+  "empirical-state-occupancy.png"
+)
 dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(figure_path), recursive = TRUE, showWarnings = FALSE)
 
 cohort <- arrow::read_parquet(cohort_path) |>
   as.data.frame()
@@ -47,6 +52,51 @@ cohort <- cohort |>
       ties.method = "first"
     )
   )
+
+# Plot the observed state occupancy distribution before removing observations
+# after entry into the absorbing death state for transition-model fitting.
+empirical_sop_data <- cohort |>
+  select(id, tx) |>
+  left_join(taooh, by = "id") |>
+  mutate(
+    y_taooh = factor(
+      y_taooh,
+      levels = 1:5,
+      labels = c(
+        "Alive/out of hospital",
+        "Planned admission",
+        "Emergency room",
+        "Unplanned admission",
+        "Dead"
+      )
+    ),
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  )
+
+empirical_sop_plot <- markov.misc::plot_sops(
+  empirical_sop_data,
+  facet_var = NULL,
+  time_var = "week",
+  y_var = "y_taooh",
+  linetype_var = "tx"
+) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(
+    x = "Week",
+    y = "Observed proportion",
+    color = "TAOOH state",
+    linetype = "Treatment group",
+    title = NULL
+  ) +
+  theme_minimal()
+
+ggsave(
+  figure_path,
+  empirical_sop_plot,
+  width = 9,
+  height = 5.5,
+  dpi = 300
+)
 
 analysis_data <- cohort |>
   select(

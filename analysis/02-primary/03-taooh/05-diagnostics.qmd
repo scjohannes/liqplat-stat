@@ -1,65 +1,330 @@
 ---
 title: "TAOOH — primary diagnostics"
-subtitle: "Compact second-order Markov diagnostics for 50 branches"
+subtitle: "Second-order Markov diagnostics for 50 completed datasets"
 format: html
 execute:
   freeze: false
 ---
 
-The production diagnostic contract is evaluated for every TAOOH model branch;
-posterior standardization over observed participants using patient-specific
-random-intercept draws is kept separate from convergence checking.
-
-```{r}
-#| label: setup
-#| include: false
-source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("R", "markov-helpers.R"))
-source(here::here("analysis", "module-runtime.R"))
-
-runtime <- module_runtime()
-config <- runtime$config
-indices <- module_exact_indices(config)
-model_dir <- project_path("artifacts", "primary", "taooh", "models")
-diagnostic_dir <- ensure_directory(project_path("artifacts", "primary", "taooh", "diagnostics"))
-result_path <- project_path("results", "primary", "taooh", "diagnostics.parquet")
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"), here::here("R", "markov-helpers.R"),
-  here::here("R", "checkpoints.R"), here::here("analysis", "module-runtime.R"),
-  knitr::current_input()
-)
-```
-
 ```{r}
 #| label: check-taooh-models
 #| include: false
+library(dplyr)
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "markov-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)[1:2]
+taooh_diagnostic_thresholds <- config$diagnostics
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
+model_dir <- here::here("artifacts", "primary", "taooh", "models")
+diagnostic_dir <- here::here("artifacts", "primary", "taooh", "diagnostics")
+trace_dir <- file.path(diagnostic_dir, "trace-plots")
+stan_dx_dir <- file.path(diagnostic_dir, "stan-dx")
+figure_dir <- here::here("artifacts", "primary", "taooh", "figures")
+result_path <- here::here("results", "primary", "taooh", "diagnostics.parquet")
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(result_path), recursive = TRUE, showWarnings = FALSE)
+
 for (index in indices) {
   model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
-  output_path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
-  if (!file.exists(model_path)) stop("Missing TAOOH model branch: ", model_path)
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("primary-taooh-diagnostics-%02d", index),
-    input_paths = model_path,
-    output_paths = output_path,
-    code_paths = code_paths,
-    metadata = list(endpoint = "taooh", imputation = index, order = 2L),
-    worker = function() {
-      model <- readRDS(model_path)
-      diagnostics <- markov_diagnostics(model, config$diagnostics)
-      assert_markov_diagnostics(diagnostics)
-      output <- as.data.frame(diagnostics$summary)
-      output$imputation <- index
-      output$divergent_transitions <- diagnostics$divergent_transitions
-      output$treedepth_exceeded <- diagnostics$treedepth_exceeded
-      output$min_bfmi <- diagnostics$min_bfmi
-      module_save_parquet(output, output_path)
-    }
+  output_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!force && file.exists(output_path)) next
+
+  diagnostics <- markov_diagnostics(
+    readRDS(model_path),
+    taooh_diagnostic_thresholds
+  )
+  assert_markov_diagnostics(diagnostics)
+  output <- as.data.frame(diagnostics$summary)
+  output$imputation <- index
+  output$divergent_transitions <- diagnostics$divergent_transitions
+  output$treedepth_exceeded <- diagnostics$treedepth_exceeded
+  output$min_bfmi <- diagnostics$min_bfmi
+  arrow::write_parquet(output, output_path)
+}
+
+diagnostic_paths <- file.path(
+  diagnostic_dir,
+  sprintf("diagnostics-%02d.parquet", indices)
+)
+diagnostics <- lapply(diagnostic_paths, function(path) {
+  arrow::read_parquet(path) |>
+    as.data.frame()
+})
+arrow::write_parquet(do.call(rbind, diagnostics), result_path)
+```
+
+One trace plot is saved for every fitted model. The trace selection uses the
+indexed raw Stan parameter names produced by `rmsb`, retaining ordinal
+intercepts, regression coefficients, partial-proportional-odds coefficients,
+and random-effect scale parameters while excluding pointwise log likelihoods.
+Numerical diagnostics continue to cover the full posterior.
+
+```{r}
+#| label: save-taooh-trace-plots
+#| include: false
+
+for (index in indices) {
+  trace_path <- file.path(trace_dir, sprintf("trace-%02d.png", index))
+  if (!force && file.exists(trace_path)) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  draws <- posterior::as_draws_array(rmsb::stanGet(model))
+  trace_variables <- posterior::variables(draws)
+  trace_variables <- trace_variables[grepl(
+    "^(alpha|beta|tau|sigma|sd)(\\[|$)",
+    trace_variables
+  )]
+  if (length(trace_variables) == 0L) {
+    stop("No TAOOH alpha, beta, tau, or scale parameters were found for trace plotting.")
+  }
+  trace_plot <- bayesplot::mcmc_trace(draws, pars = trace_variables)
+  ggplot2::ggsave(
+    trace_path,
+    trace_plot,
+    width = 11,
+    height = max(6, 1.05 * length(trace_variables)),
+    dpi = 180,
+    limitsize = FALSE
   )
 }
-diagnostic_paths <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", indices))
-if (!all(file.exists(diagnostic_paths))) stop("TAOOH diagnostics are incomplete.")
-module_save_parquet(do.call(rbind, lapply(diagnostic_paths, module_read_parquet)), result_path)
+```
+
+The full `rmsb` Stan diagnostic report and diagnostic plot are saved for every
+fitted model, allowing divergences, treedepth, E-BFMI, R-hat, effective sample
+sizes, and chain behavior to be reviewed by imputation.
+
+```{r}
+#| label: save-taooh-stan-diagnostics
+#| include: false
+
+for (index in indices) {
+  stan_dx_text_path <- file.path(
+    stan_dx_dir,
+    sprintf("stan-dx-%02d.txt", index)
+  )
+  stan_dx_plot_path <- file.path(
+    stan_dx_dir,
+    sprintf("stan-dx-%02d.png", index)
+  )
+  if (
+    !force &&
+      file.exists(stan_dx_text_path) &&
+      file.exists(stan_dx_plot_path)
+  ) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  stan_dx_text <- capture.output(rmsb::stanDx(model))
+  writeLines(stan_dx_text, stan_dx_text_path)
+
+  stan_dx_plot <- rmsb::stanDxplot(model)
+  ggplot2::ggsave(
+    stan_dx_plot_path,
+    stan_dx_plot,
+    width = 11,
+    height = max(6, 1.05 * length(unique(stan_dx_plot$data$param))),
+    dpi = 180,
+    limitsize = FALSE
+  )
+}
+```
+
+The empirical graphical checks use the observed weekly dataset with death
+carried forward through week 26. Model-derived checks use the first completed
+dataset and its fitted model as a representative imputation-specific
+diagnostic. SOPs, transition proportions, correlations, and variograms are
+kept as separate files so they can be compared directly. Correlation plots are
+used for TAOOH because its dense weekly observations make the empirical
+time-by-time correlation structure estimable.
+
+```{r}
+#| label: derive-taooh-graphical-diagnostics
+#| include: false
+
+diagnostic_index <- indices[[1L]]
+data <- arrow::read_parquet(file.path(
+  here::here("artifacts", "primary", "taooh", "imputations"),
+  sprintf("imputation-%02d.parquet", diagnostic_index)
+)) |>
+  as.data.frame()
+data$y <- factor(data$y, levels = 1:5, ordered = TRUE)
+data$yprev <- factor(data$yprev, levels = 1:5)
+data$ypprev <- factor(data$ypprev, levels = 1:5)
+
+cohort <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+)) |>
+  as.data.frame()
+empirical_data <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-taooh.parquet"
+)) |>
+  as.data.frame() |>
+  left_join(cohort |> select(id, tx), by = "id") |>
+  arrange(id, week) |>
+  group_by(id) |>
+  mutate(
+    y = as.integer(y_taooh),
+    yprev = lag(y)
+  ) |>
+  ungroup() |>
+  filter(between(week, 1L, 26L)) |>
+  mutate(
+    y = factor(y, levels = 1:5, ordered = TRUE),
+    yprev = factor(yprev, levels = 1:5),
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  )
+
+model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", diagnostic_index)))
+sops <- arrow::read_parquet(file.path(
+  here::here("artifacts", "primary", "taooh", "estimand"),
+  sprintf("sops-draws-%02d.parquet", diagnostic_index)
+))
+diagnostic_times <- c(1L, 3L, 6L, 9L, 12L, 16L, 20, 24, 26)
+diagnostic_seed <- analysis_seed(config, "diagnostics", diagnostic_index)
+
+empirical_sop_plot <- markov.misc::plot_sops(
+  empirical_data,
+  time_var = "week",
+  y_var = "y",
+  facet_var = NULL,
+  linetype_var = "tx",
+  geom = "line"
+) +
+  ggplot2::scale_color_brewer(palette = "Dark2")
+
+empirical_transition_plot <- markov.misc::plot_transitions(
+  empirical_data,
+  times = diagnostic_times,
+  time_var = "week",
+  y_var = "y",
+  p_var = "yprev",
+  y_levels = 1:5,
+  # facet_var = "tx",
+  show_values = TRUE
+)
+empirical_transition_plot$layers[[2]]$aes_params$colour <- "white"
+
+model_transition_plot <- markov.misc::plot_transitions(
+  model,
+  times = diagnostic_times,
+  y_levels = 1:5,
+  absorb = 5L,
+  time_var = "week",
+  p_var = "yprev",
+  p2_var = "ypprev",
+  id_var = "id",
+  # facet_var = "tx",
+  seed = diagnostic_seed,
+  n_draws = 200L,
+  show_values = TRUE
+)
+
+model_transition_plot$layers[[2]]$aes_params$colour <- "white"
+
+empirical_correlation_plot <- markov.misc::plot_correlation(
+  empirical_data,
+  times = 1:26,
+  y_levels = 1:5,
+  id_var = "id",
+  time_var = "week",
+  y_var = "y",
+  # facet_var = "tx",
+  show_values = TRUE
+)
+
+model_correlation_plot <- markov.misc::plot_correlation(
+  model,
+  times = 1:26,
+  y_levels = 1:5,
+  absorb = 5L,
+  id_var = "id",
+  time_var = "week",
+  p_var = "yprev",
+  p2_var = "ypprev",
+  # facet_var = "tx",
+  seed = diagnostic_seed,
+  n_draws = 50L,
+  show_values = TRUE
+)
+empirical_variogram_plot <- markov.misc::plot_variogram(
+  empirical_data,
+  times = 1:26,
+  y_levels = 1:5,
+  id_var = "id",
+  time_var = "week",
+  y_var = "y",
+  # facet_var = "tx"
+)
+model_variogram_plot <- markov.misc::plot_variogram(
+  model,
+  times = 1:26,
+  y_levels = 1:5,
+  absorb = 5L,
+  id_var = "id",
+  time_var = "week",
+  p_var = "yprev",
+  p2_var = "ypprev",
+  # facet_var = "tx",
+  seed = diagnostic_seed,
+  n_draws = 50L
+)
+
+diagnostic_plots <- list(
+  "empirical-sops.png" = empirical_sop_plot,
+  # "model-sops.png" = model_sop_plot,
+  "empirical-transitions.png" = empirical_transition_plot,
+  "model-transitions.png" = model_transition_plot,
+  "empirical-correlation.png" = empirical_correlation_plot,
+  "model-correlation.png" = model_correlation_plot,
+  "empirical-variogram.png" = empirical_variogram_plot,
+  "model-variogram.png" = model_variogram_plot
+)
+for (filename in names(diagnostic_plots)) {
+  ggplot2::ggsave(
+    file.path(figure_dir, filename),
+    diagnostic_plots[[filename]],
+    width = if (grepl("transition", filename)) 12 else 8,
+    height = if (grepl("transition", filename)) 9 else 5.5,
+    dpi = 300,
+    limitsize = FALSE
+  )
+}
+```
+
+```{r}
+#| label: fig-taooh-sop-check
+#| fig-cap: "Empirical and model-derived TAOOH state occupancy probabilities in the first completed dataset"
+#| fig-subcap:
+#|   - "Empirical state occupancy probabilities"
+#|   - "Model-derived state occupancy probabilities"
+#| layout-ncol: 1
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+empirical_sop_plot
+# model_sop_plot
+```
+
+```{r}
+#| label: fig-taooh-correlation-check
+#| fig-cap: "Empirical and second-order model-derived TAOOH correlation structures in the first completed dataset"
+#| fig-subcap:
+#|   - "Empirical correlations"
+#|   - "Model-derived correlations"
+#| layout-ncol: 2
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+empirical_correlation_plot
+model_correlation_plot
 ```

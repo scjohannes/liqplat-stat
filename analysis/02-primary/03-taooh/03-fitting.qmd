@@ -20,7 +20,11 @@ library(rmsb)
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
-indices <- seq_len(config$imputation$main$m)[1:2]
+indices <- seq_len(config$imputation$main$m)[1:20]
+taooh_diagnostic_thresholds <- config$diagnostics
+# A small number of divergences is retained for review rather than causing an
+# automatic full refit. Twenty or more divergences still trigger the retry.
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
 data_dir <- here::here("artifacts", "primary", "taooh", "imputations")
 model_dir <- here::here("artifacts", "primary", "taooh", "models")
 diagnostic_dir <- here::here("artifacts", "primary", "taooh", "diagnostics")
@@ -63,6 +67,7 @@ for (index in indices) {
       warmup = config$markov$warmup,
       refresh = 1,
       backend = "cmdstan",
+      loo = FALSE,
       sampling.args = list(
         seed = fit_seed,
         parallel_chains = config$markov$chains
@@ -72,13 +77,14 @@ for (index in indices) {
   )
 
   diagnostics <- if (inherits(fit, "error")) NULL else
-    tryCatch(markov_diagnostics(fit, config$diagnostics), error = function(error) NULL)
+    tryCatch(
+      markov_diagnostics(fit, taooh_diagnostic_thresholds),
+      error = function(error) NULL
+    )
 
   if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
     fit <- markov.misc::blrm_markov(
       formula = model_formula,
-      # ppo = ~week,
-      # cppo = function(y) as.numeric(as.character(y)),
       data = data,
       id_var = "id",
       time_var = "week",
@@ -93,11 +99,16 @@ for (index in indices) {
         parallel_chains = config$markov$chains
       )
     )
-    diagnostics <- markov_diagnostics(fit, config$diagnostics)
+    diagnostics <- markov_diagnostics(fit, taooh_diagnostic_thresholds)
   }
 
   assert_markov_diagnostics(diagnostics)
   saveRDS(fit, model_path, compress = "xz")
-  arrow::write_parquet(as.data.frame(diagnostics$summary), diagnostic_path)
+  diagnostic_output <- as.data.frame(diagnostics$summary)
+  diagnostic_output$imputation <- index
+  diagnostic_output$divergent_transitions <- diagnostics$divergent_transitions
+  diagnostic_output$treedepth_exceeded <- diagnostics$treedepth_exceeded
+  diagnostic_output$min_bfmi <- diagnostics$min_bfmi
+  arrow::write_parquet(diagnostic_output, diagnostic_path)
 }
 ```
