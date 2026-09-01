@@ -1,0 +1,316 @@
+---
+title: "OS non-proportional hazards — estimands"
+subtitle: "Standardized survival and 182-day RMST using five imputations"
+format: html
+execute:
+  freeze: false
+---
+
+For each of the five completed datasets, this supporting analysis draws 500
+standardized posterior survival curves per treatment group. The RMST contrast
+is intervention minus control at day 182. Draws are pooled with equal weight
+across imputations.
+
+```{r}
+#| label: derive-supporting-os-nph-estimands
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "model-helpers.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- config$imputation$supporting$indices
+n_draws <- config$imputation$supporting$post_estimation_draws
+horizon_days <- config$analysis$horizon_days
+imputations <- readRDS(here::here(
+  "artifacts", "primary", "overall-survival", "imputations.rds"
+))
+model_dir <- here::here(
+  "artifacts", "supporting", "os-non-proportional-hazards"
+)
+estimand_dir <- here::here(
+  "artifacts", "supporting", "os-non-proportional-hazards", "estimand"
+)
+result_dir <- here::here(
+  "results", "supporting", "os-non-proportional-hazards"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "os-non-proportional-hazards", "figures"
+)
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  curves_path <- file.path(
+    estimand_dir,
+    sprintf("survival-curves-%02d.parquet", index)
+  )
+  rmst_path <- file.path(
+    estimand_dir,
+    sprintf("rmst-draws-%02d.parquet", index)
+  )
+  estimand_complete <- all(file.exists(c(curves_path, rmst_path))) &&
+    nrow(arrow::read_parquet(rmst_path)) == 2L * n_draws
+  if (!force && estimand_complete) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  standardization_data <- mice::complete(imputations, index) |>
+    dplyr::mutate(mgps = factor(mgps, levels = 0:2))
+  prediction_seed <- analysis_seed(config, "supporting", index, offset = 100L)
+
+  curve_list <- vector("list", 2L)
+  for (treatment in 0:1) {
+    newdata <- standardization_data |>
+      dplyr::mutate(tx = treatment)
+
+    # The same seed selects matched posterior draws under both treatment paths.
+    raw_curves <- rstanarm::posterior_survfit(
+      model,
+      newdata = newdata,
+      times = 0,
+      extrapolate = TRUE,
+      standardise = TRUE,
+      control = list(edist = horizon_days, epoints = 200L),
+      return_matrix = TRUE,
+      draws = n_draws,
+      seed = prediction_seed
+    )
+    curve_matrix <- if (is.matrix(raw_curves)) {
+      raw_curves
+    } else {
+      do.call(cbind, raw_curves)
+    }
+    curve_matrix <- as.matrix(curve_matrix)
+    times <- if (is.list(raw_curves)) {
+      purrr::map_dbl(raw_curves, ~ as.numeric(attr(.x, "times")))
+    } else {
+      attr(raw_curves, "times")
+    }
+    if (is.null(times)) {
+      times <- seq(0, horizon_days, length.out = ncol(curve_matrix))
+    }
+    if (nrow(curve_matrix) < n_draws && ncol(curve_matrix) == n_draws) {
+      curve_matrix <- t(curve_matrix)
+    }
+    if (length(times) != ncol(curve_matrix)) {
+      stop("Survival-curve time points do not match the posterior matrix.")
+    }
+
+    curve_list[[treatment + 1L]] <- tibble::tibble(
+      draw = rep(seq_len(n_draws), each = length(times)),
+      time = rep(times, times = n_draws),
+      survival = as.vector(t(curve_matrix[seq_len(n_draws), , drop = FALSE])),
+      tx = treatment,
+      imputation = index
+    )
+  }
+
+  curves <- dplyr::bind_rows(curve_list)
+  rmst <- compute_rmst_draws(
+    curves,
+    horizon = horizon_days,
+    group_cols = c("tx", "imputation")
+  )
+
+  arrow::write_parquet(curves, curves_path, compression = "zstd")
+  arrow::write_parquet(rmst, rmst_path, compression = "zstd")
+}
+
+pooled_curves <- indices |>
+  purrr::map(~ arrow::read_parquet(file.path(
+    estimand_dir,
+    sprintf("survival-curves-%02d.parquet", .x)
+  ))) |>
+  purrr::list_rbind()
+
+pooled_rmst <- indices |>
+  purrr::map(~ arrow::read_parquet(file.path(
+    estimand_dir,
+    sprintf("rmst-draws-%02d.parquet", .x)
+  ))) |>
+  purrr::list_rbind() |>
+  tidyr::pivot_wider(
+    names_from = tx,
+    values_from = rmst,
+    names_prefix = "rmst_"
+  ) |>
+  dplyr::mutate(rmst_diff = rmst_1 - rmst_0)
+
+rmst_summary <- pooled_rmst |>
+  dplyr::summarise(
+    mean = mean(rmst_diff),
+    median = median(rmst_diff),
+    ci_66_low = quantile(rmst_diff, 0.17, names = FALSE),
+    ci_66_high = quantile(rmst_diff, 0.83, names = FALSE),
+    ci_95_low = quantile(rmst_diff, 0.025, names = FALSE),
+    ci_95_high = quantile(rmst_diff, 0.975, names = FALSE),
+    probability_benefit = mean(rmst_diff > 0),
+    horizon_days = horizon_days,
+    imputations = dplyr::n_distinct(imputation),
+    draws_per_imputation = n_draws
+  )
+
+curve_summary <- pooled_curves |>
+  dplyr::summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(tx, time)
+  )
+
+arrow::write_parquet(
+  pooled_curves,
+  file.path(result_dir, "survival-curves.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  pooled_rmst,
+  file.path(result_dir, "rmst-draws.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  rmst_summary,
+  file.path(result_dir, "rmst-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: build-supporting-os-nph-plots
+#| include: false
+
+prepared <- arrow::read_parquet(here::here(
+  "artifacts", "primary", "overall-survival", "prepared.parquet"
+)) |>
+  dplyr::mutate(
+    tx_plot = factor(tx, levels = 0:1, labels = c("Control", "Intervention"))
+  )
+
+curve_summary <- curve_summary |>
+  dplyr::mutate(
+    tx_plot = factor(tx, levels = 0:1, labels = c("Control", "Intervention"))
+  )
+
+km_fit <- ggsurvfit::survfit2(
+  survival::Surv(survival_time_days, event_death) ~ tx_plot,
+  data = prepared,
+  conf.type = "log-log"
+)
+risk_times <- c(seq(0, horizon_days - 30, by = 30), horizon_days)
+
+survival_plot <- ggsurvfit::ggsurvfit(
+  km_fit,
+  linewidth = 0.55,
+  linetype = 2
+) +
+  ggplot2::geom_ribbon(
+    data = curve_summary,
+    ggplot2::aes(x = time, ymin = lower, ymax = upper, fill = tx_plot),
+    alpha = 0.16,
+    inherit.aes = FALSE
+  ) +
+  ggplot2::geom_line(
+    data = curve_summary,
+    ggplot2::aes(x = time, y = median, colour = tx_plot),
+    linewidth = 0.9,
+    inherit.aes = FALSE
+  ) +
+  ggsurvfit::add_censor_mark(size = 1.8) +
+  ggplot2::scale_x_continuous(breaks = risk_times) +
+  ggplot2::coord_cartesian(xlim = c(0, horizon_days), ylim = c(0, 1)) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Survival probability",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = "n.risk",
+    stats_label = list(n.risk = "At risk")
+  )
+
+rmst_plot <- ggplot2::ggplot(
+  pooled_rmst,
+  ggplot2::aes(x = rmst_diff)
+) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(
+    .width = c(0.66, 0.95),
+    point_interval = ggdist::median_qi
+  ) +
+  ggplot2::geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    colour = "grey40"
+  ) +
+  ggplot2::labs(
+    x = paste0(
+      "Difference in ", horizon_days,
+      "-day restricted mean survival time (intervention - control), days"
+    ),
+    y = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    axis.text.y = ggplot2::element_blank(),
+    axis.ticks.y = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor.y = ggplot2::element_blank()
+  )
+
+ggplot2::ggsave(
+  file.path(figure_dir, "kaplan-meier-vs-nph-model.png"),
+  ggsurvfit::ggsurvfit_build(survival_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "rmst-difference-posterior.png"),
+  rmst_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+```{r}
+for (index in indices) {
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  npo_plot <- plot(model, plotfun = "tve")
+  ggplot2::ggsave(
+    file.path(figure_dir, sprintf("npo-plot-%02d.png", index)),
+    npo_plot,
+    width = 8,
+    height = 5,
+    dpi = 300
+  )
+}
+```
+
+```{r}
+#| label: fig-supporting-os-nph-survival
+#| fig-cap: "Observed Kaplan–Meier estimates and standardized survival curves from the non-proportional-hazards sensitivity model"
+#| fig-alt: "Survival plot by randomized group with a number-at-risk table. Dashed Kaplan–Meier curves include censoring marks; solid model curves include 95 percent credible bands."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+```{r}
+#| label: fig-supporting-os-nph-rmst
+#| fig-cap: "Posterior distribution of the 182-day RMST difference from the non-proportional-hazards sensitivity model"
+#| fig-alt: "A half-eye density above a posterior dot plot of the intervention-minus-control difference in 182-day restricted mean survival time from five imputations."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+rmst_plot
+```

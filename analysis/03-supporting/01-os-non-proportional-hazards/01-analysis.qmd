@@ -1,12 +1,13 @@
 ---
-title: "OS non-proportional hazards — supporting analysis (5 imputations)"
+title: "OS non-proportional hazards — fitting"
+subtitle: "Supporting analysis using five imputations"
 format: html
 execute:
   freeze: false
 ---
 
-This computationally reduced supporting analysis uses fixed imputations 1–5
-and 200 standardized posterior survival draws per imputation.
+This computationally reduced supporting analysis uses fixed imputations 1–5.
+The time-varying treatment effect relaxes the proportional-hazards assumption.
 
 ```{r}
 #| label: fit-supporting-os-nph
@@ -17,33 +18,30 @@ source(here::here("R", "analysis-config.R"))
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
 indices <- config$imputation$supporting$indices
-imputation_path <- here::here(
+imputations <- readRDS(here::here(
   "artifacts", "primary", "overall-survival", "imputations.rds"
-)
-output_dir <- here::here(
+))
+model_dir <- here::here(
   "artifacts", "supporting", "os-non-proportional-hazards"
 )
-dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-imputations <- readRDS(imputation_path)
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
 
 for (index in indices) {
-  model_path <- file.path(output_dir, sprintf("model-%02d.rds", index))
-  draws_path <- file.path(output_dir, sprintf("draws-%02d.parquet", index))
-  if (!force && file.exists(model_path) && file.exists(draws_path)) next
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  if (!force && file.exists(model_path)) next
 
-  standardization_data <- mice::complete(imputations, index)
-  standardization_data$mgps <- factor(
-    standardization_data$mgps,
-    levels = 0:2
-  )
-  # Match the primary OS likelihood: exclude the one intervention participant
-  # censored on day zero from fitting, but retain them for standardization.
-  fitting_data <- standardization_data |>
-    dplyr::filter(survival_time_days > 0)
-  model_formula <- survival::Surv(survival_time_days, event_death) ~
-    tve(tx, df = 3, degree = 2) + ecog_binary + stage_binary + lung + mgps
+  completed_data <- mice::complete(imputations, index) |>
+    dplyr::mutate(mgps = factor(mgps, levels = 0:2))
+
+  # The intervention participant censored on day zero remains in the completed
+  # dataset used for standardization but cannot contribute to model fitting.
+  fitting_data <- completed_data |>
+    dplyr::filter_out(survival_time_days == 0)
+
   model <- rstanarm::stan_surv(
-    formula = model_formula,
+    formula = survival::Surv(survival_time_days, event_death) ~
+      tve(tx, df = 3, degree = 3) +
+      ecog_binary + stage_binary + lung + mgps,
     data = fitting_data,
     chains = 4L,
     iter = 1000L,
@@ -54,60 +52,6 @@ for (index in indices) {
     seed = analysis_seed(config, "supporting", index)
   )
 
-  curve_list <- vector("list", 2L)
-  # Reuse one seed so treatment and control select identical posterior draws.
-  prediction_seed <- analysis_seed(config, "supporting", index)
-  for (treatment in 0:1) {
-    newdata <- standardization_data
-    newdata$tx <- treatment
-    raw_curves <- rstanarm::posterior_survfit(
-      model,
-      newdata = newdata,
-      times = 0,
-      extrapolate = TRUE,
-      standardise = TRUE,
-      control = list(edist = 182, epoints = 200L),
-      return_matrix = TRUE,
-      draws = 200L,
-      seed = prediction_seed
-    )
-    curve_matrix <- if (is.matrix(raw_curves)) raw_curves else
-      do.call(cbind, raw_curves)
-    curve_matrix <- as.matrix(curve_matrix)
-    times <- if (is.list(raw_curves)) {
-      vapply(raw_curves, function(curve) {
-        curve_time <- attr(curve, "times")
-        if (length(curve_time) != 1L || !is.finite(curve_time)) {
-          stop("Each standardized survival curve must contain one time point.")
-        }
-        as.numeric(curve_time)
-      }, numeric(1))
-    } else {
-      attr(raw_curves, "times")
-    }
-    if (is.null(times)) times <- seq(0, 182, length.out = ncol(curve_matrix))
-    if (nrow(curve_matrix) < 200L && ncol(curve_matrix) == 200L) {
-      curve_matrix <- t(curve_matrix)
-    }
-    if (length(times) != ncol(curve_matrix)) {
-      stop("Survival-curve time points do not match the posterior matrix.")
-    }
-    curve_matrix <- curve_matrix[seq_len(200L), , drop = FALSE]
-    curve_list[[treatment + 1L]] <- data.frame(
-      draw = rep(seq_len(200L), each = length(times)),
-      time = rep(times, times = 200L),
-      survival = as.vector(t(curve_matrix)),
-      tx = treatment,
-      imputation = index,
-      stringsAsFactors = FALSE
-    )
-  }
-
   saveRDS(model, model_path, compress = "xz")
-  arrow::write_parquet(
-    do.call(rbind, curve_list),
-    draws_path,
-    compression = "zstd"
-  )
 }
 ```
