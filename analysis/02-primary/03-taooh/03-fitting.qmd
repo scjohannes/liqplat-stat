@@ -20,7 +20,7 @@ library(rmsb)
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
-indices <- seq_len(config$imputation$main$m)[1:20]
+indices <- seq_len(config$imputation$main$m)
 taooh_diagnostic_thresholds <- config$diagnostics
 # A small number of divergences is retained for review rather than causing an
 # automatic full refit. Twenty or more divergences still trigger the retry.
@@ -57,8 +57,6 @@ for (index in indices) {
   fit <- tryCatch(
     markov.misc::blrm_markov(
       formula = model_formula,
-      ppo = ~week,
-      cppo = function(y) as.numeric(as.character(y)),
       data = data,
       id_var = "id",
       time_var = "week",
