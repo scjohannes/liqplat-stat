@@ -192,35 +192,23 @@ if (any(prepared$event_death == 1L & prepared$y_landmark != 8L)) {
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 arrow::write_parquet(prepared, output_path, compression = "zstd")
 
-# Supporting death-inclusive longitudinal data: QoL is missing only while a
-# participant is known alive. Rows after non-death censoring are absent; death
-# is retained as an absorbing state through week 26.
+# Supporting death-inclusive longitudinal data. The original baseline Q30 in
+# the cohort data is separate from all follow-up questionnaires. Keep every
+# observed follow-up response here; the supporting imputation stage will
+# restrict its MICE input to confirmed living follow-up and add death afterward.
 long_columns <- intersect(
   c(
     "id", "tx", "age", "gender", "diagnosis_code", "ecog_fstcnt",
-    "plan_fstcnt_coded", "albumin", "c_reactive_protein",
-    "event_death", "survival_time_days"
+    "stage_binary", "plan_fstcnt_coded", "albumin", "c_reactive_protein",
+    "baseline_q30", "event_death", "survival_time_days"
   ),
   names(cohort)
 )
 long_base <- cohort[long_columns]
-long_base <- merge(
-  long_base,
-  baseline[c("id", "baseline_q30")],
-  by = "id",
-  all.x = TRUE,
-  sort = FALSE
-)
 long_grid <- merge(long_base, data.frame(week = 1:26), by = NULL)
 weekly_qol <- qol[
   !is.na(qol$q30) & qol$day > 0 & qol$day <= config$analysis$horizon_days,
   c("id", "assessment_id", "day", "q30")
-]
-weekly_baseline_ids <- baseline$baseline_assessment_id[
-  match(weekly_qol$id, baseline$id)
-]
-weekly_qol <- weekly_qol[
-  is.na(weekly_baseline_ids) | weekly_qol$assessment_id != weekly_baseline_ids,
 ]
 weekly_qol$week <- pmax(1L, pmin(26L, ceiling(weekly_qol$day / 7)))
 weekly_qol <- weekly_qol[order(weekly_qol$id, weekly_qol$week, weekly_qol$day), ]

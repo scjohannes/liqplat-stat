@@ -18,6 +18,7 @@ state-probability draws across imputations.
 #| include: false
 
 source(here::here("R", "analysis-config.R"))
+library(rmsb)
 
 config <- read_analysis_config()
 prepared_path <- here::here(

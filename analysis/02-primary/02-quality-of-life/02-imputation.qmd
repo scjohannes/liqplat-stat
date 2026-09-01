@@ -17,6 +17,7 @@ classified as alive at day 182.
 #| label: impute-primary-qol-landmark
 #| include: false
 source(here::here("R", "analysis-config.R"))
+library(tidyverse)
 
 config <- read_analysis_config()
 input_path <- here::here(
@@ -37,16 +38,15 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 prepared <- arrow::read_parquet(input_path) |>
   as.data.frame()
-diagnosis_levels <- unique(prepared$diagnosis_group[
-  order(prepared$diagnosis_code)
-])
-prepared$diagnosis_group <- factor(
-  prepared$diagnosis_group,
-  levels = diagnosis_levels
-)
-prepared$gender <- factor(prepared$gender)
-prepared$age_scaled <- scale(prepared$age)
-prepared$ecog_fstcnt <- ifelse(prepared$ecog_fstcnt == 4, 3, prepared$ecog_fstcnt)
+
+prepared <- prepared |> 
+  mutate(
+    gender = factor(gender), 
+    age_scaled = (age - mean(age))/sd(age), 
+    ecog_fstcnt = factor(ifelse(prepared$ecog_fstcnt == 4, 3, prepared$ecog_fstcnt)),
+    plan_fstcnt_coded = fct_lump_n(factor(plan_fstcnt_coded), n = 4),
+    diagnosis_group = fct_lump_n(factor(diagnosis), n = 4)
+  )
 
 
 fit_vital_status_model <- force || !file.exists(vital_status_model_path)
@@ -111,10 +111,8 @@ arrow::write_parquet(
 
 rerun_imputations <- force || fit_vital_status_model ||
   !all(file.exists(c(output_path, imputation_fits_path, vital_status_draws_path)))
-if (rerun_imputations) {
-  prepared$gender_code <- as.integer(factor(prepared$gender))
-  prepared$plan_code <- as.integer(factor(prepared$plan_fstcnt_coded))
 
+if (rerun_imputations) {
   completed_datasets <- vector("list", config$imputation$main$m)
   imputation_fits <- vector("list", config$imputation$main$m)
   vital_status_draws <- vector("list", config$imputation$main$m)
@@ -157,60 +155,20 @@ if (rerun_imputations) {
       )
     }
 
-    imputation_columns <- intersect(c(
-      "id", "tx", "age", "gender_code", "diagnosis_code", "ecog_fstcnt",
-      "stage_binary", "plan_code", "albumin", "c_reactive_protein", 
-      "baseline_q30", "landmark_q30"
-    ), names(prepared))
+    imputation_columns <- c("id", "tx", "age_scaled", "gender", "diagnosis_group", "ecog_fstcnt",
+      "plan_fstcnt_coded", "albumin", "c_reactive_protein", "baseline_q30", "landmark_q30")
     imputation_data <- prepared[imputation_columns]
     imputation_data$death_182 <- death_182
-    ordinal_levels <- list(
-      ecog_fstcnt = 0:3,
-      baseline_q30 = 1:7,
-      landmark_q30 = 1:7
-    )
-    ordinal_columns <- intersect(names(ordinal_levels), names(imputation_data))
-    for (variable in ordinal_columns) {
-      imputation_data[[variable]] <- ordered(
-        imputation_data[[variable]],
-        levels = ordinal_levels[[variable]]
-      )
-    }
-    methods <- mice::make.method(imputation_data)
-    # methods[] <- ""
-    imputed_columns <- intersect(
-      c(
-        # "age", "gender_code", "diagnosis_code", "stage_binary", # are complete 
-        "ecog_fstcnt", 
-        "plan_code",
-        "albumin", 
-        "c_reactive_protein", 
-        "baseline_q30", 
-        "landmark_q30"
-      ),
-      names(imputation_data)
-    )
-    # methods[imputed_columns] <- "pmm"
-    # methods[ordinal_columns] <- "polr"
 
+    imputation_data <- imputation_data |> 
+      mutate(
+        baseline_q30 = factor(baseline_q30, levels = 1:7, ordered = TRUE), 
+        landmark_q30 = factor(landmark_q30, levels = 1:7, ordered = TRUE),
+      )
+
+    methods <- mice::make.method(imputation_data)
     predictors <- mice::make.predictorMatrix(imputation_data)
     predictors[,"id"] <- 0L #don't impute anything with id
-    # predictor_columns <- setdiff(names(imputation_data), "id")
-    # predictors[imputed_columns, predictor_columns] <- 1L
-    # diag(predictors) <- 0L
-    # predictors[setdiff(imputed_columns, "landmark_q30"), "landmark_q30"] <- 0L
-
-    # where <- matrix(
-    #   FALSE,
-    #   nrow = nrow(imputation_data),
-    #   ncol = ncol(imputation_data),
-    #   dimnames = dimnames(imputation_data)
-    # )
-    # for (variable in setdiff(imputed_columns, "landmark_q30")) {
-    #   where[, variable] <- is.na(imputation_data[[variable]])
-    # }
-    # where[, "landmark_q30"] <- is.na(imputation_data$landmark_q30) &
-    #   imputation_data$death_182 == 0L
 
     imputation_fit <- mice::mice(
       imputation_data,

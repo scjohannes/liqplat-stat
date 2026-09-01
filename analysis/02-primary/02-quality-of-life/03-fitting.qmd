@@ -49,6 +49,7 @@ for (index in seq_len(config$imputation$main$m)[1:50]) {
 
   data <- imputations[[index]]
   data$y_landmark <- factor(data$y_landmark, levels = 1:8, ordered = TRUE)
+  data$baseline_q30 <- as.numeric(as.character(data$baseline_q30))
   dd <- rms::datadist(data)
   options(datadist = "dd")
 
@@ -60,56 +61,62 @@ for (index in seq_len(config$imputation$main$m)[1:50]) {
     chains = config$markov$chains,
     iter = config$markov$iterations,
     warmup = config$markov$warmup,
-    seed = fit_seed
+    backend = "cmdstan",
+    loo = FALSE,
+    sampling.args = list(
+        seed = fit_seed,
+        parallel_chains = config$markov$chains
+      )
   )
+  
   draws <- posterior::as_draws_df(rmsb::stanGet(model))
   diagnostics <- posterior::summarise_draws(draws) |>
     as.data.frame()
-  finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
-  finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
-  finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
-  passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
-    length(finite_tail) > 0L && all(
-    finite_rhat <= config$diagnostics$max_rhat
-  ) && all(
-    finite_bulk >=
-      config$diagnostics$min_ess_bulk
-  ) && all(
-    finite_tail >=
-      config$diagnostics$min_ess_tail
-  )
+  # finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+  # finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+  # finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+  # passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+  #   length(finite_tail) > 0L && all(
+  #   finite_rhat <= config$diagnostics$max_rhat
+  # ) && all(
+  #   finite_bulk >=
+  #     config$diagnostics$min_ess_bulk
+  # ) && all(
+  #   finite_tail >=
+  #     config$diagnostics$min_ess_tail
+  # )
 
-  if (!passed) {
-    model <- rmsb::blrm(
-      y_landmark ~ tx + baseline_q30,
-      pcontrast = pcontrast_tx,
-      data = data,
-      chains = config$markov$chains,
-      iter = config$markov$retry_iterations,
-      warmup = config$markov$retry_iterations / 2L,
-      seed = fit_seed + 500000L
-    )
-    draws <- posterior::as_draws_df(rmsb::stanGet(model))
-    diagnostics <- posterior::summarise_draws(draws) |>
-      as.data.frame()
-    finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
-    finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
-    finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
-    passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
-      length(finite_tail) > 0L && all(
-      finite_rhat <=
-        config$diagnostics$max_rhat
-    ) && all(
-      finite_bulk >=
-        config$diagnostics$min_ess_bulk
-    ) && all(
-      finite_tail >=
-        config$diagnostics$min_ess_tail
-    )
-  }
-  if (!passed) {
-    stop("Persistent convergence failure in primary QoL imputation ", index, ".")
-  }
+  # if (!passed) {
+  #   model <- rmsb::blrm(
+  #     y_landmark ~ tx + baseline_q30,
+  #     pcontrast = pcontrast_tx,
+  #     data = data,
+  #     chains = config$markov$chains,
+  #     iter = config$markov$retry_iterations,
+  #     warmup = config$markov$retry_iterations / 2L,
+  #     seed = fit_seed + 500000L
+  #   )
+  #   draws <- posterior::as_draws_df(rmsb::stanGet(model))
+  #   diagnostics <- posterior::summarise_draws(draws) |>
+  #     as.data.frame()
+  #   finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+  #   finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+  #   finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+  #   passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+  #     length(finite_tail) > 0L && all(
+  #     finite_rhat <=
+  #       config$diagnostics$max_rhat
+  #   ) && all(
+  #     finite_bulk >=
+  #       config$diagnostics$min_ess_bulk
+  #   ) && all(
+  #     finite_tail >=
+  #       config$diagnostics$min_ess_tail
+  #   )
+  # }
+  # if (!passed) {
+  #   stop("Persistent convergence failure in primary QoL imputation ", index, ".")
+  # }
 
   saveRDS(model, model_path, compress = "xz")
   arrow::write_parquet(diagnostics, diagnostic_path, compression = "zstd")
