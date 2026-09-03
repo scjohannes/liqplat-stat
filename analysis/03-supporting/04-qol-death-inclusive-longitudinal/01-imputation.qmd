@@ -9,13 +9,13 @@ execute:
 Baseline variables are first imputed in one patient-level dataset using the
 other baseline variables, survival information, and mean observed follow-up
 QoL. Each completed baseline dataset is then joined to the weekly data before
-QoL states 1--7 are imputed with a proportional-odds model. The previous-state
-predictor is the most recent observed QoL carried forward, initialized from the
-completed baseline state. One observed transition to death is added after
+living QoL states 1--7 are imputed. The previous-state predictor is based on
+observed follow-up QoL and falls back to the completed baseline state when no
+follow-up value is available. One observed transition to death is added after
 imputation; death is never a MICE target.
 
 ```{r}
-#| label: impute-death-inclusive-longitudinal-qol
+#| label: setup-death-inclusive-longitudinal-qol-imputation
 #| include: false
 
 source(here::here("R", "analysis-config.R"))
@@ -29,9 +29,6 @@ input_path <- here::here(
   "artifacts", "primary", "quality-of-life",
   "death-inclusive-longitudinal-prepared.parquet"
 )
-qol_path <- here::here(
-  "analysis", "00-data", "results", "analysis-qol.parquet"
-)
 output_dir <- here::here(
   "artifacts", "supporting", "qol-death-inclusive-longitudinal"
 )
@@ -42,6 +39,13 @@ baseline_imputation_path <- file.path(output_dir, "baseline-imputations.rds")
 
 dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(imputation_fit_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Prepare the weekly imputation data
+
+```{r}
+#| label: prepare-death-inclusive-longitudinal-qol-imputation
+#| include: false
 
 prepared_full <- arrow::read_parquet(input_path) |>
   as.data.frame() |>
@@ -56,33 +60,32 @@ patient_survival$na_est <- mice::nelsonaalen(
   statusvar = event_death
 )
 
-mean_followup_qol <- arrow::read_parquet(qol_path) |>
-  as.data.frame() |>
-  filter(
-    !is.na(q30),
-    q30 %in% 1:7,
-    day > 0,
-    day <= config$analysis$horizon_days
-  ) |>
+mean_followup_qol <- prepared_full |>
+  filter(!is.na(q30), q30 %in% 1:7) |>
   summarise(mean_observed_q30 = mean(as.numeric(q30)), .by = id)
 
 week_basis <- Hmisc::rcspline.eval(1:26, nk = 4, inclx = TRUE)
+week_basis <- as.data.frame(week_basis)
 colnames(week_basis) <- c("week", "week_rcs_1", "week_rcs_2")
 
 prepared_full <- prepared_full |>
   left_join(patient_survival |> select(id, na_est), by = "id") |>
-  left_join(as.data.frame(week_basis), by = "week") |>
+  left_join(week_basis, by = "week") |>
   mutate(
-    gender = factor(gender), 
-    age_scaled = (age - mean(age))/sd(age), 
-    ecog_fstcnt = factor(ifelse(ecog_fstcnt == 4, 3, ecog_fstcnt), ordered = TRUE),
+    gender = factor(gender),
+    age_scaled = (age - mean(age, na.rm = TRUE)) / sd(age, na.rm = TRUE),
+    ecog_fstcnt = factor(
+      if_else(ecog_fstcnt == 4, 3, ecog_fstcnt),
+      ordered = TRUE
+    ),
     plan_fstcnt_coded = fct_lump_n(factor(plan_fstcnt_coded), n = 4),
     diagnosis_code = factor(diagnosis_code),
-    stage_binary = factor(stage_binary)
+    stage_binary = factor(stage_binary), 
+    baseline_q30 = factor(baseline_q30, ordered = TRUE)
   )
 
-# MICE sees only living QoL states. An observed response in a partial censoring
-# week is retained; the observed death week is added after imputation.
+# Complete weeks are retained until death or
+# censoring; an observed response in a partial censoring week is also retained.
 prepared <- prepared_full |>
   filter(
     (event_death == 1L & week < death_week) |
@@ -91,34 +94,27 @@ prepared <- prepared_full |>
   ) |>
   select(-y_death_inclusive)
 
-# Fixed observed-QoL history: lag first, then carry the latest previous
-# observation forward. Weeks before the first observed follow-up response use
-# the completed baseline state in the imputation loop below.
-history_proxy <- prepared_full |>
-  select(id, week, q30) |>
-  arrange(id, week) |>
-  group_by(id) |>
-  mutate(yprev_imputation = lag(q30)) |>
-  fill(yprev_imputation, .direction = "down") |>
-  ungroup() |>
-  select(id, week, yprev_imputation)
-
 death_template <- prepared_full |>
   filter(event_death == 1L, week == death_week) |>
   select(-y_death_inclusive)
 
 arrow::write_parquet(prepared, prepared_path, compression = "zstd")
+```
 
-## Patient-level baseline imputation
+## Impute patient-level variables
+
+```{r}
+#| label: prepare-death-inclusive-qol-baseline-imputation
+#| include: false
 
 baseline_variables <- c(
-    "age_scaled", "gender", "ecog_fstcnt", "diagnosis_code", "stage_binary",
-    "plan_fstcnt_coded", "albumin", "c_reactive_protein", "baseline_q30"
-  )
-
+  "age_scaled", "gender", "ecog_fstcnt", "diagnosis_code", "stage_binary",
+  "plan_fstcnt_coded", "albumin", "c_reactive_protein", "baseline_q30"
+)
 baseline_targets <- c(
-    "ecog_fstcnt", "plan_fstcnt_coded", "albumin",
-    "c_reactive_protein", "baseline_q30", "mean_observed_q30")
+  "ecog_fstcnt", "diagnosis_code", "plan_fstcnt_coded", "albumin",
+  "c_reactive_protein", "baseline_q30", "mean_observed_q30"
+)
 
 baseline_data <- prepared_full |>
   distinct(id, .keep_all = TRUE) |>
@@ -126,12 +122,18 @@ baseline_data <- prepared_full |>
   left_join(mean_followup_qol, by = "id")
 
 run_baseline_imputation <- force || !file.exists(baseline_imputation_path)
-if (run_baseline_imputation) {
+```
 
+```{r}
+#| label: run-death-inclusive-qol-baseline-imputation
+#| include: false
+
+if (run_baseline_imputation) {
   methods <- mice::make.method(baseline_data)
+  # methods[setdiff(names(methods), baseline_targets)] <- ""
 
   predictors <- mice::make.predictorMatrix(baseline_data)
-  predictors[,"id"] <- 0L # don't use patient id as predictor
+  predictors[, "id"] <- 0L
 
   baseline_imputations <- mice::mice(
     baseline_data,
@@ -143,6 +145,7 @@ if (run_baseline_imputation) {
     seed = analysis_seed(config, "supporting", offset = 500L),
     printFlag = TRUE
   )
+
   saveRDS(baseline_imputations, baseline_imputation_path, compress = "xz")
 }
 
@@ -151,18 +154,44 @@ completed_baseline_variables <- setdiff(
   baseline_targets,
   "mean_observed_q30"
 )
+```
 
-## Longitudinal imputation
+## Configure longitudinal QoL imputation
+
+```{r}
+#| label: configure-death-inclusive-qol-longitudinal-imputation
+#| include: false
+
+# This is a fixed auxiliary history derived only from observed follow-up QoL.
+# The lag is carried forward and backward; completed baseline QoL is used only
+# for participants without an available observed-history value.
+history_proxy <- prepared_full |>
+  select(id, week, q30) |>
+  arrange(id, week) |>
+  group_by(id) |>
+  mutate(yprev_imputation = lag(q30)) |>
+  fill(yprev_imputation, .direction = "downup") |>
+  ungroup() |>
+  select(id, week, yprev_imputation)
 
 q30_predictors <- c(
-  "tx", "age_scaled", 
-  "ecog_fstcnt", "diagnosis_code", "plan_fstcnt_coded", 
-  "stage_binary", "albumin", "c_reactive_protein",
-  "event_death", 
-  "gender",
-  "baseline_q30", "na_est", "week", "week_rcs_1",
+  "tx", "age_scaled", "gender", "ecog_fstcnt", "diagnosis_code",
+  "stage_binary", "plan_fstcnt_coded", "albumin", "c_reactive_protein",
+  "baseline_q30", "event_death", "na_est", "week", "week_rcs_1",
   "week_rcs_2", "yprev_imputation"
 )
+
+analysis_baseline_variables <- c(
+  "tx", "age", "gender", "diagnosis_code", "stage_binary", "ecog_fstcnt",
+  "plan_fstcnt_coded", "albumin", "c_reactive_protein"
+)
+```
+
+## Impute weekly QoL and add death
+
+```{r}
+#| label: run-death-inclusive-qol-longitudinal-imputation
+#| include: false
 
 for (index in indices) {
   completed_path <- file.path(
@@ -173,6 +202,7 @@ for (index in indices) {
     imputation_fit_dir,
     sprintf("long-imputation-%02d.rds", index)
   )
+
   if (
     !force &&
       !run_baseline_imputation &&
@@ -184,7 +214,7 @@ for (index in indices) {
     as.data.frame() |>
     select(id, all_of(completed_baseline_variables))
 
-  data <- prepared |>
+  imputation_data <- prepared |>
     select(-all_of(completed_baseline_variables)) |>
     left_join(completed_baseline, by = "id") |>
     left_join(history_proxy, by = c("id", "week")) |>
@@ -198,17 +228,16 @@ for (index in indices) {
       tx = as.numeric(as.character(tx))
     )
 
-  methods <- mice::make.method(data)
+  methods <- mice::make.method(imputation_data)
   methods[] <- ""
   methods["q30"] <- "polr"
 
-  predictors <- mice::make.predictorMatrix(data)
+  predictors <- mice::make.predictorMatrix(imputation_data)
   predictors[,] <- 0L
-  predictors["q30", c(q30_predictors)] <- 1L
-  predictors["q30", "q30"] <- 0L
+  predictors["q30", q30_predictors] <- 1L
 
   long_imputation <- mice::mice(
-    data,
+    imputation_data,
     m = 1L,
     maxit = config$imputation$supporting$maxit,
     method = methods,
@@ -217,36 +246,36 @@ for (index in indices) {
     polr.to.loggedEvents = TRUE,
     printFlag = TRUE
   )
+
   saveRDS(long_imputation, long_imputation_path, compress = "xz")
 
   living_completed <- mice::complete(long_imputation, 1L) |>
-    as.data.frame() |> 
+    as.data.frame() |>
     mutate(
-        q30 = as.integer(as.character(q30)),
-        y = q30
-      )
+      q30 = as.integer(as.character(q30)),
+      y = q30
+    )
 
   death_rows <- death_template |>
-    select(id, week) |> 
-    mutate(q30 = NA, y = 8)
+    select(-all_of(completed_baseline_variables)) |>
+    left_join(completed_baseline, by = "id") |>
+    mutate(q30 = NA_integer_, y = 8L)
 
-  baseline_vars <- c("tx", "age", "gender", "diagnosis_code", "stage_binary", "ecog_fstcnt", "plan_fstcnt_coded", "albumin", "c_reactive_protein")
-
-  completed <- bind_rows(
-    living_completed, 
-    death_rows
-  ) |>
+  completed <- bind_rows(living_completed, death_rows) |>
     arrange(id, week) |>
     group_by(id) |>
     mutate(
-      yprev = factor(
-        coalesce(lag(y), first(baseline_q30)),
-        levels = 1:7
-      )
+      yprev = coalesce(
+        lag(y),
+        as.integer(as.character(first(baseline_q30)))
+      ),
+      yprev = factor(yprev, levels = 1:8)
     ) |>
-    fill(baseline_vars, .direction = "down") |> 
     ungroup() |>
-    select(id, y, yprev, week, baseline_q30, tx, baseline_vars)
+    select(
+      id, y, q30, yprev, week, baseline_q30,
+      all_of(analysis_baseline_variables)
+    )
 
   arrow::write_parquet(completed, completed_path, compression = "zstd")
 }
