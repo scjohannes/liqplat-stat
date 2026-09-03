@@ -34,6 +34,7 @@ vital_status_diagnostics_path <- file.path(
 )
 diagnostic_dir <- file.path(output_dir, "imputation-diagnostics")
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+# force <- TRUE
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 prepared <- arrow::read_parquet(input_path) |>
@@ -221,26 +222,41 @@ imputation_fits <- readRDS(imputation_fits_path)
 dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
 
 trace_variables <- c("baseline_q30", "landmark_q30", "ecog_fstcnt")
-old_par <- graphics::par(mfrow = c(1, length(trace_variables)))
-for (variable in trace_variables) {
-  trace_values <- vapply(
-    imputation_fits,
-    function(fit) as.numeric(fit$chainMean[variable, , 1L]),
-    numeric(config$imputation$main$maxit)
-  )
-  if (variable == "ecog_fstcnt") trace_values <- trace_values - 1
-  graphics::matplot(
-    seq_len(config$imputation$main$maxit),
-    trace_values,
-    type = "l",
-    lty = 1,
-    col = grDevices::adjustcolor("black", alpha.f = 0.2),
-    xlab = "Iteration",
-    ylab = "Mean imputed value",
-    main = variable
-  )
+imputation_colours <- grDevices::rainbow(
+  length(imputation_fits),
+  alpha = 0.5
+)
+draw_convergence_traces <- function() {
+  old_par <- graphics::par(mfrow = c(1, length(trace_variables)))
+  on.exit(graphics::par(old_par))
+  for (variable in trace_variables) {
+    trace_values <- vapply(
+      imputation_fits,
+      function(fit) as.numeric(fit$chainMean[variable, , 1L]),
+      numeric(config$imputation$main$maxit)
+    )
+    if (variable == "ecog_fstcnt") trace_values <- trace_values - 1
+    graphics::matplot(
+      seq_len(config$imputation$main$maxit),
+      trace_values,
+      type = "l",
+      lty = 1,
+      col = imputation_colours,
+      xlab = "Iteration",
+      ylab = "Mean imputed value",
+      main = variable
+    )
+  }
 }
-graphics::par(old_par)
+grDevices::png(
+  file.path(diagnostic_dir, "mice-convergence-traces.png"),
+  width = 1800,
+  height = 1000,
+  res = 180
+)
+draw_convergence_traces()
+grDevices::dev.off()
+draw_convergence_traces()
 
 imputation_labels <- sprintf(
   "Imputation %02d",
@@ -308,4 +324,12 @@ density_plot <- lattice::densityplot(
   )
 )
 print(density_plot)
+grDevices::png(
+  file.path(diagnostic_dir, "observed-vs-imputed.png"),
+  width = 1800,
+  height = 1000,
+  res = 180
+)
+print(density_plot)
+grDevices::dev.off()
 ```
