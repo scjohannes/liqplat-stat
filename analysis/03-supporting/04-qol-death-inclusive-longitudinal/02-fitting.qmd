@@ -1,0 +1,129 @@
+---
+title: "QoL death-inclusive Markov — model fitting"
+subtitle: "First-order ordinal transition models for 50 completed datasets"
+format: html
+execute:
+  freeze: false
+---
+
+A Bayesian first-order ordinal transition model is fitted to each independently
+completed longitudinal dataset. Death is state 8 and absorbing. The model uses
+the imputed previous state; the partial proportional-odds term permits the time
+effect to differ across outcome cut-points. The formula is never simplified
+automatically.
+
+```{r}
+#| label: fit-death-inclusive-longitudinal-qol
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "markov-helpers.R"))
+library(tidyverse)
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)
+output_dir <- here::here(
+  "artifacts", "supporting", "qol-death-inclusive-longitudinal"
+)
+imputation_dir <- file.path(output_dir, "imputations")
+model_dir <- file.path(output_dir, "models")
+diagnostic_dir <- file.path(output_dir, "diagnostics")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+model_formula <- y ~ tx + rms::rcs(week, 4) + yprev +
+  ecog_fstcnt + diagnosis_code + cluster(id)
+
+for (index in indices) {
+  data_path <- file.path(
+    imputation_dir,
+    sprintf("imputation-%02d.parquet", index)
+  )
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  diagnostic_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!force && file.exists(model_path) && file.exists(diagnostic_path)) next
+
+  data <- arrow::read_parquet(data_path) |>
+    as.data.frame() |>
+    mutate(
+      y = as.integer(as.character(y)),
+      yprev = factor(yprev, levels = 1:7),
+      ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+    )
+  dd <- rms::datadist(data)
+  options(datadist = "dd")
+  fit_seed <- analysis_seed(config, "supporting", index, offset = 500L)
+
+  model <- markov.misc::blrm_markov(
+    formula = model_formula,
+    pcontrast = pcontrast_tx,
+    ppo = ~week,
+    cppo = function(y) y,
+    data = data,
+    id_var = "id",
+    time_var = "week",
+    chains = config$markov$chains,
+    iter = config$markov$iterations,
+    warmup = config$markov$warmup,
+    refresh = 0L,
+    backend = "cmdstan",
+    loo = FALSE,
+    sampling.args = list(
+      seed = fit_seed,
+      parallel_chains = config$markov$chains
+    )
+  )
+  diagnostics <- markov_diagnostics(model, config$diagnostics)
+
+  if (!isTRUE(diagnostics$passed)) {
+    model <- markov.misc::blrm_markov(
+      formula = model_formula,
+      pcontrast = pcontrast_tx,
+      ppo = ~week,
+      cppo = function(y) as.numeric(as.character(y)),
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      refresh = 0L,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed + 500000L,
+        parallel_chains = config$markov$chains
+      )
+    )
+    diagnostics <- markov_diagnostics(model, config$diagnostics)
+  }
+  assert_markov_diagnostics(diagnostics)
+
+  saveRDS(model, model_path, compress = "xz")
+  diagnostic_output <- as.data.frame(diagnostics$summary) |>
+    mutate(
+      imputation = index,
+      divergent_transitions = diagnostics$divergent_transitions,
+      treedepth_exceeded = diagnostics$treedepth_exceeded,
+      min_bfmi = diagnostics$min_bfmi
+    )
+  arrow::write_parquet(
+    diagnostic_output,
+    diagnostic_path,
+    compression = "zstd"
+  )
+}
+
+options(datadist = NULL)
+```
