@@ -1,6 +1,6 @@
 ---
 title: "OS non-proportional hazards — estimands"
-subtitle: "Standardized survival and 182-day RMST using five imputations"
+subtitle: "Adjusted (fixed): standardized survival and 182-day RMST using five imputations"
 format: html
 execute:
   freeze: false
@@ -199,7 +199,7 @@ km_fit <- ggsurvfit::survfit2(
   data = prepared,
   conf.type = "log-log"
 )
-risk_times <- c(seq(0, horizon_days - 30, by = 30), horizon_days)
+risk_times <- seq(0, horizon_days, by = 100)
 
 survival_plot <- ggsurvfit::ggsurvfit(
   km_fit,
@@ -230,8 +230,8 @@ survival_plot <- ggsurvfit::ggsurvfit(
   ggplot2::theme_bw() +
   ggsurvfit::add_risktable(
     times = risk_times,
-    risktable_stats = "n.risk",
-    stats_label = list(n.risk = "At risk")
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
   )
 
 rmst_plot <- ggplot2::ggplot(
@@ -296,7 +296,7 @@ for (index in indices) {
 ```{r}
 #| label: fig-supporting-os-nph-survival
 #| fig-cap: "Observed Kaplan–Meier estimates and standardized survival curves from the non-proportional-hazards sensitivity model"
-#| fig-alt: "Survival plot by randomized group with a number-at-risk table. Dashed Kaplan–Meier curves include censoring marks; solid model curves include 95 percent credible bands."
+#| fig-alt: "Survival plot by randomized group with at-risk and cumulative-event counts every 100 days. Dashed Kaplan–Meier curves include censoring marks; solid model curves include 95 percent credible bands."
 #| fig-width: 8
 #| fig-height: 6.5
 #| echo: false
