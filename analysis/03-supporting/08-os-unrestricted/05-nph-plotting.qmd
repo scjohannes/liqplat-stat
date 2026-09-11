@@ -1,0 +1,239 @@
+---
+title: "Overall survival with unrestricted follow-up — non-PH results"
+subtitle: "Adjusted (fixed): Time-varying treatment effects and standardized survival curves"
+format: html
+execute:
+  freeze: false
+---
+
+The non-proportional-hazards analysis reports standardized survival curves over
+unrestricted follow-up and the fitted time-varying treatment effect. No RMST is
+calculated. Survival bands combine 1,000 posterior draws from each of the five
+imputations with equal weight.
+
+```{r}
+#| label: derive-supporting-os-unrestricted-nph-results
+#| include: false
+library(tidyverse)
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- config$imputation$supporting$indices
+n_draws <- 1000L
+imputations <- readRDS(here::here(
+  "artifacts", "supporting", "os-unrestricted", "imputations.rds"
+))
+model_dir <- here::here(
+  "artifacts", "supporting", "os-unrestricted-nph", "models"
+)
+curve_dir <- here::here(
+  "artifacts", "supporting", "os-unrestricted-nph", "survival-curves"
+)
+result_dir <- here::here(
+  "results", "supporting", "os-unrestricted-nph"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "os-unrestricted-nph", "figures"
+)
+dir.create(curve_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+observed <- mice::complete(imputations, 1) |>
+  dplyr::mutate(
+    tx_plot = factor(tx, levels = 0:1, labels = c("Control", "Intervention"))
+  )
+max_follow_up <- max(observed$survival_time_days_unrestricted, na.rm = TRUE)
+
+for (index in indices) {
+  curve_path <- file.path(
+    curve_dir,
+    sprintf("survival-curves-%02d.parquet", index)
+  )
+  curves_complete <- FALSE
+  if (file.exists(curve_path)) {
+    saved_curves <- arrow::read_parquet(
+      curve_path,
+      col_select = c("draw", "tx")
+    )
+    curves_complete <- dplyr::n_distinct(saved_curves$draw) == n_draws &&
+      setequal(saved_curves$tx, 0:1)
+  }
+  if (!force && curves_complete) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  standardization_data <- mice::complete(imputations, index) |>
+    dplyr::mutate(mgps = factor(mgps, levels = 0:2))
+  prediction_seed <- analysis_seed(config, "supporting", index, offset = 1000L)
+
+  curve_list <- vector("list", 2L)
+  for (treatment in 0:1) {
+    newdata <- standardization_data |>
+      dplyr::mutate(tx = treatment)
+    raw_curves <- rstanarm::posterior_survfit(
+      model,
+      newdata = newdata,
+      times = 0,
+      extrapolate = TRUE,
+      standardise = TRUE,
+      control = list(edist = max_follow_up, epoints = 200L),
+      return_matrix = TRUE,
+      draws = n_draws,
+      seed = prediction_seed
+    )
+    curve_matrix <- if (is.matrix(raw_curves)) {
+      raw_curves
+    } else {
+      do.call(cbind, raw_curves)
+    }
+    curve_matrix <- as.matrix(curve_matrix)
+    times <- if (is.list(raw_curves)) {
+      purrr::map_dbl(raw_curves, ~ as.numeric(attr(.x, "times")))
+    } else {
+      attr(raw_curves, "times")
+    }
+    if (is.null(times)) {
+      times <- seq(0, max_follow_up, length.out = ncol(curve_matrix))
+    }
+    if (nrow(curve_matrix) < n_draws && ncol(curve_matrix) == n_draws) {
+      curve_matrix <- t(curve_matrix)
+    }
+    if (length(times) != ncol(curve_matrix)) {
+      stop("Survival-curve time points do not match the posterior matrix.")
+    }
+    curve_list[[treatment + 1L]] <- tibble::tibble(
+      draw = rep(seq_len(n_draws), each = length(times)),
+      time = rep(times, times = n_draws),
+      survival = as.vector(t(curve_matrix[seq_len(n_draws), , drop = FALSE])),
+      tx = treatment,
+      imputation = index
+    )
+  }
+
+  arrow::write_parquet(
+    dplyr::bind_rows(curve_list),
+    curve_path,
+    compression = "zstd"
+  )
+}
+
+pooled_curves <- indices |>
+  purrr::map(~ arrow::read_parquet(file.path(
+    curve_dir,
+    sprintf("survival-curves-%02d.parquet", .x)
+  ))) |>
+  purrr::list_rbind()
+curve_summary <- pooled_curves |>
+  dplyr::summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(tx, time)
+  )
+
+arrow::write_parquet(
+  curve_summary,
+  file.path(result_dir, "survival-curve-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: build-supporting-os-unrestricted-nph-plots
+#| include: false
+
+curve_summary <- curve_summary |>
+  dplyr::mutate(
+    tx_plot = factor(tx, levels = 0:1, labels = c("Control", "Intervention"))
+  )
+km_fit <- ggsurvfit::survfit2(
+  survival::Surv(
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) ~ tx_plot,
+  data = observed,
+  conf.type = "log-log"
+)
+risk_times <- seq(0, max_follow_up, by = 100)
+
+survival_plot <- ggsurvfit::ggsurvfit(
+  km_fit,
+  linewidth = 0.55,
+  linetype = 2
+) +
+  ggplot2::geom_ribbon(
+    data = curve_summary,
+    ggplot2::aes(x = time, ymin = lower, ymax = upper, fill = tx_plot),
+    alpha = 0.16,
+    inherit.aes = FALSE
+  ) +
+  ggplot2::geom_line(
+    data = curve_summary,
+    ggplot2::aes(x = time, y = median, colour = tx_plot),
+    linewidth = 0.9,
+    inherit.aes = FALSE
+  ) +
+  ggsurvfit::add_censor_mark(size = 1.8) +
+  ggplot2::scale_x_continuous(breaks = risk_times) +
+  ggplot2::coord_cartesian(xlim = c(0, max_follow_up), ylim = c(0, 1)) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Survival probability",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  )
+
+ggplot2::ggsave(
+  file.path(figure_dir, "kaplan-meier-vs-nph-model.png"),
+  ggsurvfit::ggsurvfit_build(survival_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+
+for (index in indices) {
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  time_varying_effect_plot <- plot(model, plotfun = "tve")
+  ggplot2::ggsave(
+    file.path(figure_dir, sprintf("time-varying-effect-%02d.png", index)),
+    time_varying_effect_plot,
+    width = 8,
+    height = 5,
+    dpi = 300
+  )
+}
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-nph-survival
+#| fig-cap: "Kaplan–Meier estimates and standardized non-PH-model survival curves using unrestricted follow-up"
+#| fig-alt: "Survival curves by randomized group with at-risk and cumulative-event counts every 100 days. Dashed Kaplan–Meier curves include censoring marks; solid non-proportional-hazards model curves include 95 percent credible bands."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-nph-time-varying-effects
+#| fig-cap: "Time-varying treatment effect from each unrestricted-follow-up non-PH model"
+#| fig-alt: "Five model-specific plots showing the estimated treatment effect as a function of follow-up time, with posterior uncertainty."
+#| fig-width: 8
+#| fig-height: 5
+#| layout-ncol: 2
+#| echo: false
+
+knitr::include_graphics(file.path(
+  figure_dir,
+  sprintf("time-varying-effect-%02d.png", indices)
+))
+```

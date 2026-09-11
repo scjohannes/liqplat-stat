@@ -1,0 +1,68 @@
+---
+title: "Overall survival with unrestricted follow-up — PH fitting"
+subtitle: "Supporting proportional-hazards analysis using five imputations"
+format: html
+execute:
+  freeze: false
+---
+
+The primary proportional-hazards model specification is fitted using the
+unrestricted death or censoring time. This supporting analysis uses five
+completed datasets.
+
+```{r}
+#| label: fit-supporting-os-unrestricted-ph
+#| include: false
+library(tidyverse)
+library(rstanarm)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- config$imputation$supporting$indices
+imputations <- readRDS(here::here(
+  "artifacts", "supporting", "os-unrestricted", "imputations.rds"
+))
+model_dir <- here::here(
+  "artifacts", "supporting", "os-unrestricted-ph", "models"
+)
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  if (!force && file.exists(model_path)) next
+
+  completed_data <- mice::complete(imputations, index) |>
+    dplyr::mutate(mgps = factor(mgps, levels = 0:2))
+
+  # A participant censored on the randomization day cannot contribute to the
+  # survival likelihood, but remains in the completed dataset.
+  fitting_data <- completed_data |>
+    dplyr::filter_out(survival_time_days_unrestricted == 0)
+
+  model <- rstanarm::stan_surv(
+    formula = survival::Surv(
+      survival_time_days_unrestricted,
+      status_death_unrestricted
+    ) ~ tx + ecog_binary + stage_binary + lung + mgps,
+    data = fitting_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = rstanarm::normal(
+      location = rep(0, 6),
+      scale = c(0.55, rep(2.5, 5))
+    ),
+    prior_intercept = rstanarm::normal(0, 20),
+    prior_aux = rstanarm::dirichlet(1),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    seed = analysis_seed(config, "supporting", index, offset = 700L)
+  )
+
+  saveRDS(model, model_path, compress = "xz")
+}
+```

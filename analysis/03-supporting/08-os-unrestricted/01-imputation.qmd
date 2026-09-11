@@ -1,0 +1,111 @@
+---
+title: "Overall survival with unrestricted follow-up — imputation"
+subtitle: "Five completed datasets for supporting PH and non-PH models"
+format: html
+execute:
+  freeze: false
+---
+
+This supporting-analysis imputation uses the same baseline variables and MICE
+methods as the primary overall-survival analysis. The death indicator and
+Nelson--Aalen estimate are instead based on unrestricted follow-up. The same
+five completed datasets are used by the PH and non-PH models.
+
+```{r}
+#| label: impute-supporting-os-unrestricted
+#| include: false
+library(tidyverse)
+library(mice)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+input_path <- here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+)
+output_path <- here::here(
+  "artifacts", "supporting", "os-unrestricted", "imputations.rds"
+)
+dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+
+if (force || !file.exists(output_path)) {
+  prepared <- arrow::read_parquet(input_path) |>
+    dplyr::select(
+      id, tx, survival_time_days_unrestricted, status_death_unrestricted,
+      ecog_fstcnt, stage_binary, lung, age, gender, albumin, bilirubin,
+      c_reactive_protein, lactate_dehydrogenase
+    ) |>
+    dplyr::mutate(
+      ecog_binary = derive_ecog_binary(ecog_fstcnt),
+      mgps = derive_mgps(albumin, c_reactive_protein),
+      ecog_fstcnt = ordered(ecog_fstcnt, levels = 0:4),
+      gender = factor(gender)
+    )
+
+  prepared$na_est <- mice::nelsonaalen(
+    prepared,
+    timevar = survival_time_days_unrestricted,
+    statusvar = status_death_unrestricted
+  )
+  prepared <- prepared |>
+    dplyr::relocate(ecog_binary, mgps, .after = dplyr::last_col())
+
+  methods <- mice::make.method(prepared)
+  predictors <- mice::make.predictorMatrix(prepared)
+
+  fixed_columns <- c(
+    "id", "tx", "survival_time_days_unrestricted",
+    "status_death_unrestricted", "na_est"
+  )
+  methods[fixed_columns] <- ""
+  methods["ecog_fstcnt"] <- "polr"
+  methods["ecog_binary"] <- "~I(derive_ecog_binary(ecog_fstcnt))"
+  methods["mgps"] <- "~I(derive_mgps(albumin, c_reactive_protein))"
+  predictors[fixed_columns, ] <- 0
+  predictors[, c(
+    "id", "survival_time_days_unrestricted", "ecog_binary", "mgps"
+  )] <- 0
+
+  imputation <- mice::mice(
+    prepared,
+    method = methods,
+    predictorMatrix = predictors,
+    m = config$imputation$supporting$m,
+    maxit = config$imputation$supporting$maxit,
+    donors = config$imputation$supporting$donors,
+    seed = analysis_seed(config, "supporting", offset = 600L),
+    printFlag = FALSE
+  )
+  saveRDS(imputation, output_path, compress = "xz")
+}
+
+imputation <- readRDS(output_path)
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-imputation-traces
+#| fig-cap: "MICE trace plots for directly imputed variables in the unrestricted-follow-up OS analyses"
+#| fig-width: 10
+#| fig-height: 8
+#| echo: false
+
+plot(imputation, layout = c(2, 5))
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-imputation-distributions
+#| fig-cap: "Observed and imputed distributions in the unrestricted-follow-up OS analyses"
+#| fig-width: 10
+#| fig-height: 5
+#| echo: false
+
+densityplot(
+  imputation,
+  ~ albumin + bilirubin + c_reactive_protein + lactate_dehydrogenase +
+    ecog_fstcnt + mgps,
+  layout = c(2, 3)
+)
+```
+

@@ -1,0 +1,146 @@
+---
+title: "Overall survival with unrestricted follow-up — censoring diagnostics"
+subtitle: "Reverse Kaplan–Meier curves and a frequentist censoring-hazard model"
+format: html
+execute:
+  freeze: false
+---
+
+These diagnostics compare the unrestricted censoring distribution between
+randomized groups. Censoring is treated as the event and death as a censored
+observation. The Cox model is descriptive: it can identify differential
+censoring hazards by randomized group, but cannot establish that censoring is
+independent of prognosis.
+
+```{r}
+#| label: derive-supporting-os-unrestricted-censoring-diagnostics
+#| include: false
+library(tidyverse)
+
+input_path <- here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+)
+result_dir <- here::here(
+  "results", "supporting", "os-unrestricted-censoring"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "os-unrestricted-censoring", "figures"
+)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+censoring_data <- arrow::read_parquet(input_path) |>
+  dplyr::transmute(
+    tx,
+    tx_plot = factor(
+      tx,
+      levels = 0:1,
+      labels = c("Control", "Intervention")
+    ),
+    follow_up_days = survival_time_days_unrestricted,
+    censoring_event = 1L - status_death_unrestricted
+  )
+
+reverse_km_fit <- ggsurvfit::survfit2(
+  survival::Surv(follow_up_days, censoring_event) ~ tx_plot,
+  data = censoring_data,
+  conf.type = "log-log"
+)
+max_follow_up <- max(censoring_data$follow_up_days, na.rm = TRUE)
+risk_times <- seq(0, max_follow_up, by = 100)
+
+reverse_km_plot <- ggsurvfit::ggsurvfit(
+  reverse_km_fit,
+  linewidth = 0.8
+) +
+  ggsurvfit::add_confidence_interval(alpha = 0.16) +
+  ggplot2::scale_x_continuous(breaks = risk_times) +
+  ggplot2::coord_cartesian(xlim = c(0, max_follow_up), ylim = c(0, 1)) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Probability of remaining uncensored",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  )
+
+censoring_cox_model <- survival::coxph(
+  survival::Surv(follow_up_days, censoring_event) ~ tx,
+  data = censoring_data,
+  ties = "efron",
+  x = TRUE,
+  y = TRUE
+)
+log_hazard_ratio <- unname(stats::coef(censoring_cox_model)[["tx"]])
+standard_error <- sqrt(stats::vcov(censoring_cox_model)["tx", "tx"])
+cox_summary <- tibble::tibble(
+  comparison = "Intervention versus control",
+  hazard_ratio = exp(log_hazard_ratio),
+  conf_low = exp(log_hazard_ratio - stats::qnorm(0.975) * standard_error),
+  conf_high = exp(log_hazard_ratio + stats::qnorm(0.975) * standard_error),
+  p_value = 2 * stats::pnorm(-abs(log_hazard_ratio / standard_error)),
+  n_participants = nrow(censoring_data),
+  n_censoring_events = sum(censoring_data$censoring_event)
+)
+
+proportional_hazards <- survival::cox.zph(
+  censoring_cox_model,
+  transform = "km"
+)
+proportional_hazards_summary <- as.data.frame(proportional_hazards$table) |>
+  tibble::rownames_to_column("term") |>
+  tibble::as_tibble()
+
+arrow::write_parquet(
+  cox_summary,
+  file.path(result_dir, "censoring-cox-model.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  proportional_hazards_summary,
+  file.path(result_dir, "censoring-cox-ph-test.parquet"),
+  compression = "zstd"
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "reverse-kaplan-meier.png"),
+  ggsurvfit::ggsurvfit_build(reverse_km_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+```
+
+```{r}
+#| label: tbl-supporting-os-unrestricted-censoring-cox
+#| tbl-cap: "Frequentist Cox model for the unrestricted censoring hazard"
+#| echo: false
+
+cox_summary |>
+  knitr::kable()
+```
+
+```{r}
+#| label: tbl-supporting-os-unrestricted-censoring-ph-test
+#| tbl-cap: "Proportional-hazards test for the censoring model"
+#| echo: false
+
+proportional_hazards_summary |>
+  knitr::kable()
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-reverse-km
+#| fig-cap: "Reverse Kaplan–Meier estimates of the unrestricted censoring distribution; Events counts cumulative censoring"
+#| fig-alt: "Reverse Kaplan–Meier curves by randomized group with 95 percent confidence bands and at-risk and cumulative-event counts every 100 days. A falling curve indicates censoring; deaths are treated as censored observations for this diagnostic."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+reverse_km_plot
+```
+

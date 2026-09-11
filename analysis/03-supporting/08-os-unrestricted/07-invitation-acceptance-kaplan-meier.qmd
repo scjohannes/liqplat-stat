@@ -1,0 +1,222 @@
+---
+title: "Overall survival with unrestricted follow-up — invitation-acceptance comparisons"
+subtitle: "Descriptive Kaplan–Meier curves"
+format: html
+execute:
+  freeze: false
+---
+
+These descriptive plots compare the control group with all intervention
+participants and, separately, with intervention participants who accepted or
+did not accept the invitation. Invitation acceptance is a post-randomization
+characteristic, so the restricted comparisons do not estimate a causal effect
+of accepting the invitation. Intervention participants with missing acceptance
+status are retained in the randomized-group plot and omitted from both
+acceptance-restricted plots.
+
+```{r}
+#| label: build-supporting-os-unrestricted-invitation-km
+#| include: false
+library(tidyverse)
+
+input_path <- here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "os-unrestricted", "figures"
+)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(input_path) |>
+  dplyr::mutate(
+    tx_plot = factor(
+      tx,
+      levels = 0:1,
+      labels = c("Control", "Intervention")
+    )
+  )
+
+max_follow_up <- max(
+  prepared$survival_time_days_unrestricted,
+  na.rm = TRUE
+)
+risk_times <- seq(0, max_follow_up, by = 100)
+
+randomized_km_fit <- ggsurvfit::survfit2(
+  survival::Surv(
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) ~ tx_plot,
+  data = prepared,
+  conf.type = "log-log"
+)
+
+randomized_km_plot <- ggsurvfit::ggsurvfit(
+  randomized_km_fit,
+  linewidth = 0.55,
+  linetype = 2
+) +
+  ggsurvfit::add_censor_mark(size = 1.8) +
+  ggplot2::scale_x_continuous(breaks = risk_times) +
+  ggplot2::coord_cartesian(
+    xlim = c(0, max_follow_up),
+    ylim = c(0, 1)
+  ) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Survival probability",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  )
+
+accepted <- prepared |>
+  dplyr::filter(
+    tx == 0 | (tx == 1 & invitation_accepted == 1)
+  ) |>
+  dplyr::mutate(
+    acceptance_plot = factor(
+      tx,
+      levels = 0:1,
+      labels = c("Control", "Intervention")
+    )
+  )
+
+accepted_km_fit <- ggsurvfit::survfit2(
+  survival::Surv(
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) ~ acceptance_plot,
+  data = accepted,
+  conf.type = "log-log"
+)
+
+accepted_km_plot <- ggsurvfit::ggsurvfit(
+  accepted_km_fit,
+  linewidth = 0.55,
+  linetype = 2
+) +
+  ggsurvfit::add_censor_mark(size = 1.8) +
+  ggplot2::scale_x_continuous(breaks = risk_times) +
+  ggplot2::coord_cartesian(
+    xlim = c(0, max_follow_up),
+    ylim = c(0, 1)
+  ) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Survival probability",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  )
+
+not_accepted <- prepared |>
+  dplyr::filter(
+    tx == 0 | (tx == 1 & (invitation_accepted == 0 | is.na(invitation_accepted == 0)))
+  ) |>
+  dplyr::mutate(
+    acceptance_plot = factor(
+      tx,
+      levels = 0:1,
+      labels = c("Control", "Intervention")
+    )
+  )
+
+not_accepted_km_fit <- ggsurvfit::survfit2(
+  survival::Surv(
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) ~ acceptance_plot,
+  data = not_accepted,
+  conf.type = "log-log"
+)
+
+not_accepted_km_plot <- ggsurvfit::ggsurvfit(
+  not_accepted_km_fit,
+  linewidth = 0.55,
+  linetype = 2
+) +
+  ggsurvfit::add_censor_mark(size = 1.8) +
+  ggplot2::scale_x_continuous(breaks = risk_times) +
+  ggplot2::coord_cartesian(
+    xlim = c(0, max_follow_up),
+    ylim = c(0, 1)
+  ) +
+  ggplot2::labs(
+    x = "Days since randomization",
+    y = "Survival probability",
+    colour = NULL,
+    fill = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggsurvfit::add_risktable(
+    times = risk_times,
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  )
+
+ggplot2::ggsave(
+  file.path(figure_dir, "kaplan-meier-randomized-groups.png"),
+  ggsurvfit::ggsurvfit_build(randomized_km_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "kaplan-meier-control-vs-accepted.png"),
+  ggsurvfit::ggsurvfit_build(accepted_km_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "kaplan-meier-control-vs-not-accepted.png"),
+  ggsurvfit::ggsurvfit_build(not_accepted_km_plot),
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-randomized-km
+#| fig-cap: "Kaplan–Meier estimates using unrestricted follow-up in the randomized groups"
+#| fig-alt: "Kaplan–Meier survival curves for all control and all intervention participants, with censoring marks and at-risk and cumulative-event counts every 100 days."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+randomized_km_plot
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-accepted-km
+#| fig-cap: "Kaplan–Meier estimates using unrestricted follow-up for controls and intervention participants who accepted the invitation"
+#| fig-alt: "Kaplan–Meier survival curves for all control participants and intervention participants recorded as having accepted the invitation, with censoring marks and at-risk and cumulative-event counts every 100 days."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+accepted_km_plot
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-not-accepted-km
+#| fig-cap: "Kaplan–Meier estimates using unrestricted follow-up for controls and intervention participants who did not accept the invitation"
+#| fig-alt: "Kaplan–Meier survival curves for all control participants and intervention participants recorded as not having accepted the invitation, with censoring marks and at-risk and cumulative-event counts every 100 days."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+not_accepted_km_plot
+```
