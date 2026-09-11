@@ -1,0 +1,47 @@
+---
+title: "Unrestricted overall survival — Adjusted (hierarchical) fitting"
+format: html
+execute:
+  freeze: false
+---
+
+Five Bayesian proportional-hazards models adjust for binary ECOG, stage,
+categorical mGPS, and `(1 || diagnosis)`. The diagnosis intercepts share an
+estimated variance, providing partial pooling across the source SNOMED
+diagnosis groups. The five-df M-spline baseline and fixed-effect priors match
+Adjusted (fixed); the diagnosis variance uses `decov()`.
+
+This sensitivity analysis assesses robustness to the diagnosis adjustment
+structure. It does not assume that hierarchical adjustment must improve
+balance or remove bias. Its treatment hazard ratio is conditional on the
+measured covariates and diagnosis effects.
+
+```{r}
+#| label: fit-os-hierarchical
+#| include: false
+library(tidyverse)
+artifact_dir <- here::here("artifacts", "supporting", "os-unrestricted-hierarchical")
+datasets <- readRDS(file.path(artifact_dir, "completed-datasets.rds"))
+stopifnot(length(datasets) == 5L)
+for (index in 1:5) {
+  fitting_data <- datasets[[index]] |> filter(survival_time_days_unrestricted > 0)
+  stopifnot(!anyNA(fitting_data), nrow(fitting_data) > 0L)
+  model_path <- file.path(artifact_dir, sprintf("model-%02d.rds", index))
+  input_hash <- digest::digest(list(fitting_data, "os-hierarchical-ph-v1"))
+  model <- if (file.exists(model_path)) readRDS(model_path) else NULL
+  if (identical(Sys.getenv("LIQPLAT_FORCE"), "1") || is.null(model) ||
+      !identical(attr(model, "input_hash"), input_hash)) {
+    model <- rstanarm::stan_surv(
+      survival::Surv(survival_time_days_unrestricted, status_death_unrestricted) ~
+        tx + ecog_binary + stage_binary + mgps + (1 || diagnosis),
+      data = fitting_data, basehaz = "ms", basehaz_ops = list(df = 5),
+      prior = rstanarm::normal(location = rep(0, 5), scale = c(0.55, rep(2.5, 4))),
+      prior_intercept = rstanarm::normal(0, 20), prior_aux = rstanarm::dirichlet(1),
+      prior_covariance = rstanarm::decov(),
+      chains = 4L, cores = 4L, iter = 2000L, warmup = 1000L,
+      adapt_delta = 0.99, refresh = 0L, seed = 4200L + index)
+    attr(model, "input_hash") <- input_hash
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

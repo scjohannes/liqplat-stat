@@ -1,0 +1,183 @@
+---
+title: "Unrestricted overall survival — hierarchical sensitivity results"
+format: html
+execute:
+  freeze: false
+---
+
+**Adjusted (fixed)** includes binary ECOG, stage, a lung indicator, and
+categorical mGPS. **Adjusted (hierarchical)** replaces the lung indicator with
+diagnosis random intercepts and uses diagnosis-level covariate imputation.
+The comparison therefore evaluates both the imputation and survival-model
+specifications. It does not isolate the effect of the survival random intercept.
+
+Each adjusted summary combines 1,000 posterior draws from each of five
+imputations with equal weight. Curves average patient-specific predictions
+within each draw over the randomized cohort, retaining fitted diagnosis
+effects for Adjusted (hierarchical). Intervals are 95% credible intervals.
+The participant censored at day zero enters this standardization population
+and the observed risk table, but contributes no survival likelihood.
+
+```{r}
+#| label: summarize-os-hierarchical
+#| include: false
+library(tidyverse)
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+config <- read_analysis_config()
+artifact_dir <- here::here("artifacts", "supporting", "os-unrestricted-hierarchical")
+result_dir <- here::here("results", "supporting", "os-unrestricted-hierarchical")
+figure_dir <- file.path(artifact_dir, "figures")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+datasets <- readRDS(file.path(artifact_dir, "completed-datasets.rds"))
+models <- lapply(1:5, function(index) readRDS(file.path(artifact_dir, sprintf("model-%02d.rds", index))))
+diagnostics <- map_dfr(1:5, function(index) {
+  model <- models[[index]]
+  parameters <- posterior::summarise_draws(posterior::as_draws_array(model))
+  sampler <- rstan::get_sampler_params(model$stanfit, inc_warmup = FALSE)
+  expected <- datasets[[index]] |> filter(survival_time_days_unrestricted > 0)
+  stopifnot(identical(model$data$id, expected$id),
+    identical(model$data$survival_time_days_unrestricted, expected$survival_time_days_unrestricted),
+    identical(model$data$status_death_unrestricted, expected$status_death_unrestricted),
+    all(as.character(datasets[[index]]$diagnosis) %in% as.character(model$data$diagnosis)),
+    identical(model$cnms$diagnosis, "(Intercept)"),
+    length(grep("^Sigma", colnames(as.matrix(model)))) == 1L)
+  tibble(imputation = index, participants = nrow(model$data),
+    max_rhat = max(parameters$rhat, na.rm = TRUE),
+    min_ess_bulk = min(parameters$ess_bulk, na.rm = TRUE),
+    min_ess_tail = min(parameters$ess_tail, na.rm = TRUE),
+    divergences = sum(vapply(sampler, function(x) sum(x[, "divergent__"]), numeric(1))),
+    treedepth_hits = sum(vapply(sampler, function(x) sum(x[, "treedepth__"] >= 10), numeric(1))),
+    min_bfmi = min(vapply(sampler, function(x) mean(diff(x[, "energy__"])^2) / var(x[, "energy__"]), numeric(1))))
+})
+stopifnot(all(diagnostics$max_rhat <= config$diagnostics$max_rhat),
+  all(diagnostics$min_ess_bulk >= config$diagnostics$min_ess_bulk),
+  all(diagnostics$min_ess_tail >= config$diagnostics$min_ess_tail),
+  all(diagnostics$divergences == 0), all(diagnostics$treedepth_hits == 0),
+  all(diagnostics$min_bfmi >= config$diagnostics$min_bfmi))
+observed <- datasets[[1]]
+max_follow_up <- max(observed$survival_time_days_unrestricted)
+hr_draws <- map_dfr(1:5, function(index) {
+  set.seed(4300L + index)
+  tibble(imputation = index, draw = 1:1000,
+    hazard_ratio = sample(exp(as.matrix(models[[index]], pars = "tx")), 1000L))
+})
+hr_summary <- hr_draws |> summarise(adjustment = "Adjusted (hierarchical)",
+  median = median(hazard_ratio), lower_95 = quantile(hazard_ratio, 0.025),
+  upper_95 = quantile(hazard_ratio, 0.975), probability_hr_below_one = mean(hazard_ratio < 1))
+curves <- map_dfr(1:5, function(index) {
+  posterior_standardized_survival_draws(models[[index]], datasets[[index]],
+    horizon = max_follow_up, n_points = 200L, n_draws = 1000L, seed = 4300L + index) |>
+    mutate(imputation = index)
+})
+curve_summary <- curves |> summarise(median = median(survival),
+  lower_95 = quantile(survival, 0.025), upper_95 = quantile(survival, 0.975), .by = c(tx, time)) |>
+  mutate(adjustment = "Adjusted (hierarchical)")
+checks <- map_dfr(1:5, function(index) {
+  newdata <- datasets[[index]] |> mutate(tx = 1)
+  individual <- posterior_survfit_compatible(models[[index]], newdata = newdata, times = 182,
+    extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 4301L)[[1]]
+  standardized <- posterior_survfit_compatible(models[[index]], newdata = newdata, times = 182,
+    extrapolate = FALSE, standardise = TRUE, return_matrix = TRUE, draws = 100L, seed = 4301L)[[1]]
+  error <- max(abs(rowMeans(individual) - as.numeric(standardized)))
+  contrast_data <- newdata[rep(1L, nlevels(newdata$diagnosis)), ]
+  contrast_data$diagnosis <- factor(levels(newdata$diagnosis), levels = levels(newdata$diagnosis))
+  predictions <- posterior_survfit_compatible(models[[index]], newdata = contrast_data, times = 182,
+    extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 4301L)[[1]]
+  diagnosis_contrast <- max(apply(predictions, 1, function(x) diff(range(x))))
+  stopifnot(error < 1e-10, diagnosis_contrast > 1e-8)
+  tibble(imputation = index, maximum_averaging_error = error, maximum_diagnosis_contrast = diagnosis_contrast)
+})
+stopifnot(nrow(hr_draws) == 5000L, all(count(hr_draws, imputation)$n == 1000L))
+fixed_dir <- here::here("results", "supporting", "os-unrestricted-ph")
+fixed_hr <- arrow::read_parquet(file.path(fixed_dir, "hazard-ratio-summary.parquet")) |>
+  transmute(adjustment = "Adjusted (fixed)", median, lower_95 = ci_95_low,
+    upper_95 = ci_95_high, probability_hr_below_one = probability_benefit)
+comparison <- bind_rows(fixed_hr, hr_summary)
+fixed_curves <- arrow::read_parquet(file.path(fixed_dir, "survival-curve-summary.parquet")) |>
+  transmute(tx, time, median, lower_95 = lower, upper_95 = upper, adjustment = "Adjusted (fixed)")
+comparison_curves <- bind_rows(fixed_curves, curve_summary)
+cohort_summary <- observed |> summarise(randomized = n(),
+  positive_follow_up = sum(survival_time_days_unrestricted > 0),
+  deaths = sum(status_death_unrestricted), .by = tx)
+diagnosis_balance <- observed |> count(diagnosis, tx, .drop = FALSE) |>
+  mutate(percent = 100 * n / sum(n), .by = tx) |>
+  pivot_wider(names_from = tx, values_from = c(n, percent), values_fill = 0) |>
+  mutate(difference_percentage_points = percent_1 - percent_0) |>
+  arrange(desc(abs(difference_percentage_points)))
+arrow::write_parquet(hr_draws, file.path(result_dir, "hazard-ratio-draws.parquet"))
+arrow::write_parquet(hr_summary, file.path(result_dir, "hazard-ratio-summary.parquet"))
+arrow::write_parquet(comparison, file.path(result_dir, "comparison.parquet"))
+arrow::write_parquet(curve_summary, file.path(result_dir, "survival-curve-summary.parquet"))
+arrow::write_parquet(diagnostics, file.path(result_dir, "diagnostics.parquet"))
+arrow::write_parquet(checks, file.path(result_dir, "prediction-checks.parquet"))
+arrow::write_parquet(cohort_summary, file.path(result_dir, "cohort-summary.parquet"))
+arrow::write_parquet(diagnosis_balance, file.path(result_dir, "diagnosis-balance.parquet"))
+arrow::write_parquet(curves, file.path(artifact_dir, "standardized-survival-draws.parquet"))
+```
+
+```{r}
+#| label: tbl-os-hierarchical-cohort
+#| tbl-cap: "Unrestricted OS population and deaths by randomized group (0: control; 1: intervention)"
+knitr::kable(cohort_summary)
+```
+
+```{r}
+#| label: tbl-os-hierarchical-comparison
+#| tbl-cap: "Unrestricted OS treatment hazard ratios, intervention versus control, with 95% credible intervals"
+knitr::kable(comparison, digits = 3)
+```
+
+```{r}
+#| label: fig-os-hierarchical-survival
+#| fig-cap: "Standardized unrestricted OS by adjustment approach; bands show 95% credible intervals"
+#| fig-alt: "Control and intervention survival curves comparing fixed adjustment with hierarchical diagnosis adjustment."
+#| fig-width: 10
+#| fig-height: 5
+survival_plot <- ggplot(comparison_curves, aes(time, median, color = factor(tx), fill = factor(tx))) +
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), alpha = 0.15, color = NA) + geom_line() +
+  facet_wrap(~adjustment) + scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(breaks = seq(0, max_follow_up, by = 100)) +
+  scale_color_discrete(labels = c("Control", "Intervention")) +
+  scale_fill_discrete(labels = c("Control", "Intervention")) +
+  labs(x = "Days from randomization", y = "Overall survival", color = NULL, fill = NULL) + theme_minimal()
+ggsave(file.path(figure_dir, "standardized-survival.png"), survival_plot, width = 10, height = 5, dpi = 150)
+survival_plot
+```
+
+```{r}
+#| label: fig-os-hierarchical-km
+#| fig-cap: "Observed unrestricted OS with censor marks, numbers at risk, and cumulative deaths every 100 days"
+#| fig-alt: "Kaplan–Meier curves for both randomized groups with at-risk and cumulative-event counts at 100-day intervals."
+#| fig-width: 9
+#| fig-height: 6
+observed <- observed |> mutate(tx_label = factor(tx, levels = 0:1, labels = c("Control", "Intervention")))
+km_fit <- ggsurvfit::survfit2(survival::Surv(survival_time_days_unrestricted, status_death_unrestricted) ~ tx_label, data = observed)
+risk_times <- seq(0, max_follow_up, by = 100)
+km_plot <- ggsurvfit::ggsurvfit(km_fit) + ggsurvfit::add_confidence_interval() +
+  ggsurvfit::add_censor_mark() + scale_x_continuous(breaks = risk_times) +
+  ggsurvfit::add_risktable(times = risk_times, risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")) +
+  labs(x = "Days from randomization", y = "Overall survival")
+ggsave(file.path(figure_dir, "kaplan-meier.png"), ggsurvfit::ggsurvfit_build(km_plot), width = 9, height = 6, dpi = 150)
+km_plot
+```
+
+```{r}
+#| label: tbl-os-hierarchical-balance
+#| tbl-cap: "Observed diagnosis distribution: counts and percentages within control (0) and intervention (1), ordered by absolute percentage-point difference"
+knitr::kable(diagnosis_balance, digits = 1)
+```
+
+```{r}
+#| label: tbl-os-hierarchical-diagnostics
+#| tbl-cap: "Adjusted (hierarchical): diagnostics for each of five unrestricted OS fits"
+knitr::kable(diagnostics, digits = 3)
+```
+
+```{r}
+#| label: tbl-os-hierarchical-prediction-checks
+#| tbl-cap: "Prediction checks at day 182. Maximum averaging error compares standardized survival with the patient average within each posterior draw. Maximum diagnosis contrast changes only diagnosis to verify that fitted diagnosis effects enter predictions."
+knitr::kable(checks, digits = 10)
+```
