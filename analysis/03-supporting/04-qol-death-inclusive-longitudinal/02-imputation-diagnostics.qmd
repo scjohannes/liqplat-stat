@@ -1,0 +1,914 @@
+---
+title: "QoL death-inclusive Markov — imputation diagnostics"
+subtitle: "Baseline checks and a deep dive into longitudinal Q30 variability"
+format:
+  html:
+    toc: true
+execute:
+  freeze: false
+---
+
+This document evaluates only the two-stage imputation. It separates baseline
+MICE diagnostics from the longitudinal Q30 diagnostics and quantifies how much
+the eight completed datasets differ at the patient-week, participant, week,
+and whole-dataset levels. Death is inspected separately because it is appended
+from observed data after MICE and must be identical in every completion.
+
+```{r}
+#| label: setup-death-inclusive-qol-imputation-diagnostics
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+library(tidyverse)
+
+config <- read_analysis_config()
+n_imputations <- 8L
+indices <- seq_len(n_imputations)
+output_dir <- here::here(
+  "artifacts", "supporting", "qol-death-inclusive-longitudinal"
+)
+imputation_dir <- file.path(output_dir, "imputations")
+imputation_fit_dir <- file.path(output_dir, "imputation-fits")
+diagnostic_dir <- file.path(output_dir, "diagnostics", "imputation")
+figure_dir <- file.path(output_dir, "figures", "imputation")
+result_dir <- here::here(
+  "results", "supporting", "qol-death-inclusive-longitudinal",
+  "imputation"
+)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(file.path(output_dir, "prepared.parquet")) |>
+  as.data.frame()
+death_template <- arrow::read_parquet(
+  file.path(output_dir, "death-template.parquet")
+) |>
+  as.data.frame()
+baseline_imputations <- readRDS(
+  file.path(output_dir, "baseline-imputations.rds")
+)
+run_summary <- arrow::read_parquet(
+  file.path(output_dir, "imputation-run-summary.parquet")
+) |>
+  as.data.frame()
+
+if (!identical(as.integer(baseline_imputations$m), n_imputations)) {
+  stop("Imputation diagnostics require exactly eight baseline completions.")
+}
+if (!identical(run_summary$imputation, indices)) {
+  stop("Imputation diagnostics require all eight longitudinal completions.")
+}
+```
+
+## Completion and death checks
+
+```{r}
+#| label: collect-death-inclusive-qol-completion-checks
+#| include: false
+
+completed_long <- purrr::map_dfr(indices, function(index) {
+  arrow::read_parquet(file.path(
+    imputation_dir,
+    sprintf("imputation-%02d.parquet", index)
+  )) |>
+    as.data.frame() |>
+    mutate(imputation = index)
+})
+
+completion_qc <- completed_long |>
+  summarise(
+    rows = n(),
+    participants = n_distinct(id),
+    missing_id = sum(is.na(id)),
+    duplicate_patient_weeks = sum(duplicated(paste(id, week))),
+    missing_outcomes = sum(is.na(y)),
+    death_rows = sum(y == 8L),
+    death_participants = n_distinct(id[y == 8L]),
+    .by = imputation
+  ) |>
+  left_join(
+    run_summary |>
+      select(imputation, imputed_q30, logged_events),
+    by = "imputation",
+    relationship = "one-to-one"
+  )
+
+death_qc <- completed_long |>
+  filter(y == 8L) |>
+  select(imputation, id, week) |>
+  left_join(
+    death_template |>
+      select(id, expected_death_week = week),
+    by = "id",
+    relationship = "many-to-one"
+  ) |>
+  summarise(
+    death_rows = n(),
+    expected_death_rows = nrow(death_template),
+    missing_expected_id = sum(is.na(expected_death_week)),
+    wrong_death_week = sum(week != expected_death_week, na.rm = TRUE),
+    .by = imputation
+  )
+
+if (
+  any(completion_qc$missing_id > 0L) ||
+    any(completion_qc$duplicate_patient_weeks > 0L) ||
+    any(completion_qc$missing_outcomes > 0L) ||
+    any(death_qc$missing_expected_id > 0L) ||
+    any(death_qc$wrong_death_week > 0L) ||
+    any(death_qc$death_rows != death_qc$expected_death_rows)
+) {
+  stop("At least one completed dataset failed its ID, outcome, or death checks.")
+}
+
+arrow::write_parquet(
+  completion_qc,
+  file.path(result_dir, "completion-qc.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  death_qc,
+  file.path(result_dir, "death-qc.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-death-inclusive-qol-completion-checks
+#| tbl-cap: "Patient, outcome, MICE event, and deterministic death checks for all completed datasets"
+#| echo: false
+
+completion_qc |>
+  left_join(death_qc, by = "imputation", relationship = "one-to-one") |>
+  knitr::kable()
+```
+
+## Baseline imputation
+
+The Markov model uses ECOG performance status and diagnosis category as
+baseline covariates. Diagnosis is complete in the source data, whereas ECOG is
+imputed. Baseline Q30 is also inspected because it initializes the previous
+state for each participant even though it is not a regression covariate.
+
+```{r}
+#| label: derive-death-inclusive-qol-baseline-diagnostics
+#| include: false
+
+baseline_diagnostic_variables <- c(
+  "baseline_q30", "ecog_fstcnt", "diagnosis_code"
+)
+baseline_chain_variables <- intersect(
+  c("baseline_q30", "ecog_fstcnt"),
+  dimnames(baseline_imputations$chainMean)[[1L]]
+)
+
+baseline_trace_data <- bind_rows(
+  purrr::map_dfr(baseline_chain_variables, function(variable) {
+    values <- baseline_imputations$chainMean[variable, , , drop = FALSE]
+    expand_grid(
+      iteration = seq_len(dim(values)[2L]),
+      imputation = seq_len(dim(values)[3L])
+    ) |>
+      mutate(
+        variable = variable,
+        metric = "Mean",
+        value = as.vector(values[1L, , ])
+      )
+  }),
+  purrr::map_dfr(baseline_chain_variables, function(variable) {
+    values <- baseline_imputations$chainVar[variable, , , drop = FALSE]
+    expand_grid(
+      iteration = seq_len(dim(values)[2L]),
+      imputation = seq_len(dim(values)[3L])
+    ) |>
+      mutate(
+        variable = variable,
+        metric = "Standard deviation",
+        value = sqrt(pmax(0, as.vector(values[1L, , ])))
+      )
+  })
+) |>
+  mutate(
+    variable = recode(
+      variable,
+      baseline_q30 = "Baseline Q30",
+      ecog_fstcnt = "Baseline ECOG"
+    )
+  )
+
+baseline_trace_plot <- ggplot(
+  baseline_trace_data,
+  aes(x = iteration, y = value, group = imputation, colour = factor(imputation))
+) +
+  geom_line(alpha = 0.7, linewidth = 0.45) +
+  facet_grid(metric ~ variable, scales = "free_y") +
+  scale_colour_viridis_d(option = "C", end = 0.9) +
+  labs(x = "MICE iteration", y = NULL, colour = "Imputation") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+baseline_observed <- purrr::map_dfr(
+  baseline_diagnostic_variables,
+  function(variable) {
+    value <- baseline_imputations$data[[variable]]
+    tibble(
+      variable = variable,
+      source = "Observed",
+      imputation = NA_integer_,
+      state = as.character(value[!is.na(value)])
+    )
+  }
+)
+baseline_completed <- purrr::map_dfr(indices, function(index) {
+  completed <- mice::complete(baseline_imputations, index) |>
+    as.data.frame()
+  purrr::map_dfr(baseline_diagnostic_variables, function(variable) {
+    tibble(
+      variable = variable,
+      source = "Completed",
+      imputation = index,
+      state = as.character(completed[[variable]])
+    )
+  })
+})
+baseline_distribution_data <- bind_rows(
+  baseline_observed,
+  baseline_completed
+) |>
+  count(variable, source, imputation, state, name = "n") |>
+  mutate(proportion = n / sum(n), .by = c(variable, source, imputation)) |>
+  mutate(
+    variable = recode(
+      variable,
+      baseline_q30 = "Baseline Q30",
+      ecog_fstcnt = "Baseline ECOG",
+      diagnosis_code = "Diagnosis category"
+    )
+  )
+
+baseline_distribution_plot <- ggplot() +
+  geom_line(
+    data = filter(baseline_distribution_data, source == "Completed"),
+    aes(
+      x = state,
+      y = proportion,
+      group = imputation,
+      colour = factor(imputation)
+    ),
+    alpha = 0.65
+  ) +
+  geom_point(
+    data = filter(baseline_distribution_data, source == "Observed"),
+    aes(x = state, y = proportion),
+    colour = "black",
+    size = 2.4
+  ) +
+  facet_wrap(vars(variable), scales = "free_x") +
+  scale_colour_viridis_d(option = "C", end = 0.9) +
+  labs(
+    x = "Category",
+    y = "Proportion",
+    colour = "Completed dataset"
+  ) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+ggsave(
+  file.path(figure_dir, "baseline-traces.png"),
+  baseline_trace_plot,
+  width = 10,
+  height = 6.5,
+  dpi = 220
+)
+ggsave(
+  file.path(figure_dir, "baseline-distributions.png"),
+  baseline_distribution_plot,
+  width = 11,
+  height = 4.5,
+  dpi = 220
+)
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-baseline-imputation
+#| fig-cap: "Baseline MICE traces and observed-versus-completed distributions"
+#| fig-subcap:
+#|   - "MICE chain means and standard deviations for imputed baseline Q30 and ECOG"
+#|   - "Observed distributions (black points) and distributions in each completed dataset (coloured lines)"
+#| fig-alt: "The first panel shows eight MICE chains over 50 iterations for the mean and standard deviation of baseline Q30 and ECOG. The second compares observed and completed categorical distributions for baseline Q30, ECOG, and diagnosis."
+#| layout-ncol: 1
+#| fig-width: 11
+#| fig-height: 6
+#| echo: false
+
+baseline_trace_plot
+baseline_distribution_plot
+```
+
+## Longitudinal Q30 convergence
+
+Each longitudinal fit is an independent single-completion MICE run. The traces
+therefore show one chain for each of the eight completed datasets. Both the
+mean and standard deviation of imputed Q30 are shown; stable traces without a
+trend are more informative than comparing only the final iteration.
+
+```{r}
+#| label: derive-death-inclusive-qol-longitudinal-traces
+#| include: false
+
+long_trace_data <- purrr::map_dfr(indices, function(index) {
+  fit <- readRDS(file.path(
+    imputation_fit_dir,
+    sprintf("long-imputation-%02d.rds", index)
+  ))
+  tibble(
+    imputation = index,
+    iteration = seq_len(fit$iteration),
+    mean_imputed_q30 = as.numeric(fit$chainMean["q30", , 1L]),
+    sd_imputed_q30 = sqrt(pmax(0, as.numeric(fit$chainVar["q30", , 1L])))
+  )
+}) |>
+  pivot_longer(
+    c(mean_imputed_q30, sd_imputed_q30),
+    names_to = "metric",
+    values_to = "value"
+  ) |>
+  mutate(
+    metric = recode(
+      metric,
+      mean_imputed_q30 = "Mean imputed Q30",
+      sd_imputed_q30 = "SD of imputed Q30"
+    )
+  )
+
+long_trace_plot <- ggplot(
+  long_trace_data,
+  aes(x = iteration, y = value, colour = factor(imputation))
+) +
+  geom_line(linewidth = 0.55, alpha = 0.8) +
+  facet_wrap(vars(metric), ncol = 1, scales = "free_y") +
+  scale_colour_viridis_d(option = "C", end = 0.9) +
+  labs(x = "MICE iteration", y = NULL, colour = "Imputation") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+ggsave(
+  file.path(figure_dir, "longitudinal-q30-traces.png"),
+  long_trace_plot,
+  width = 9,
+  height = 7,
+  dpi = 220
+)
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-longitudinal-traces
+#| fig-cap: "Longitudinal Q30 MICE traces across eight independent completions"
+#| fig-alt: "Two panels show the mean and standard deviation of imputed Q30 over 50 MICE iterations, with one colored line for each of eight independent completions."
+#| fig-width: 9
+#| fig-height: 7
+#| echo: false
+
+long_trace_plot
+```
+
+## Observed and imputed Q30 distributions
+
+The smoothed density display is supplemented by exact ordinal state
+proportions. The density is useful for identifying broad shifts; the state
+proportions avoid implying that Q30 is continuous.
+
+```{r}
+#| label: derive-death-inclusive-qol-longitudinal-distributions
+#| include: false
+
+living_values <- completed_long |>
+  filter(y != 8L) |>
+  select(imputation, id, week, tx, q30) |>
+  left_join(
+    prepared |>
+      transmute(id, week, observed_q30 = as.integer(q30)),
+    by = c("id", "week"),
+    relationship = "many-to-one"
+  ) |>
+  mutate(source = if_else(is.na(observed_q30), "Imputed", "Observed"))
+
+observed_q30 <- prepared |>
+  filter(!is.na(q30)) |>
+  transmute(source = "Observed", imputation = NA_integer_, value = as.numeric(q30))
+imputed_q30 <- living_values |>
+  filter(source == "Imputed") |>
+  transmute(source, imputation, value = as.numeric(q30))
+q30_density_data <- bind_rows(observed_q30, imputed_q30)
+
+q30_density_plot <- ggplot() +
+  geom_density(
+    data = imputed_q30,
+    aes(x = value, group = imputation, colour = factor(imputation)),
+    linewidth = 0.55,
+    alpha = 0.65,
+    adjust = 1.25
+  ) +
+  geom_density(
+    data = observed_q30,
+    aes(x = value),
+    colour = "black",
+    linewidth = 1.15,
+    adjust = 1.25
+  ) +
+  scale_x_continuous(breaks = 1:7, limits = c(1, 7)) +
+  scale_colour_viridis_d(option = "C", end = 0.9) +
+  labs(
+    x = "Q30 state (1 = excellent, 7 = very poor)",
+    y = "Smoothed density",
+    colour = "Imputation"
+  ) +
+  theme_bw()
+
+q30_state_proportions <- bind_rows(
+  observed_q30,
+  imputed_q30
+) |>
+  count(source, imputation, state = value, name = "n") |>
+  mutate(proportion = n / sum(n), .by = c(source, imputation))
+
+q30_state_proportion_plot <- ggplot() +
+  geom_line(
+    data = filter(q30_state_proportions, source == "Imputed"),
+    aes(
+      x = state,
+      y = proportion,
+      group = imputation,
+      colour = factor(imputation)
+    ),
+    linewidth = 0.55,
+    alpha = 0.7
+  ) +
+  geom_point(
+    data = filter(q30_state_proportions, source == "Observed"),
+    aes(x = state, y = proportion),
+    colour = "black",
+    size = 2.8
+  ) +
+  scale_x_continuous(breaks = 1:7) +
+  scale_colour_viridis_d(option = "C", end = 0.9) +
+  labs(
+    x = "Q30 state (1 = excellent, 7 = very poor)",
+    y = "Proportion",
+    colour = "Imputation"
+  ) +
+  theme_bw()
+
+model_state_proportions <- completed_long |>
+  count(imputation, state = y, name = "n") |>
+  mutate(proportion = n / sum(n), .by = imputation)
+model_state_proportion_plot <- ggplot(
+  model_state_proportions,
+  aes(
+    x = state,
+    y = proportion,
+    group = imputation,
+    colour = factor(imputation)
+  )
+) +
+  geom_line(linewidth = 0.55, alpha = 0.7) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  scale_x_continuous(
+    breaks = 1:8,
+    labels = c(1:7, "Death")
+  ) +
+  scale_colour_viridis_d(option = "C", end = 0.9) +
+  labs(
+    x = "Model outcome state",
+    y = "Proportion of transition rows",
+    colour = "Imputation"
+  ) +
+  theme_bw()
+
+ggsave(
+  file.path(figure_dir, "longitudinal-q30-density.png"),
+  q30_density_plot,
+  width = 9,
+  height = 5,
+  dpi = 220
+)
+ggsave(
+  file.path(figure_dir, "longitudinal-q30-state-proportions.png"),
+  q30_state_proportion_plot,
+  width = 9,
+  height = 5,
+  dpi = 220
+)
+ggsave(
+  file.path(figure_dir, "death-inclusive-model-state-proportions.png"),
+  model_state_proportion_plot,
+  width = 9,
+  height = 5,
+  dpi = 220
+)
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-longitudinal-distributions
+#| fig-cap: "Observed and imputed longitudinal Q30 distributions"
+#| fig-subcap:
+#|   - "Smoothed densities: observed Q30 in black and imputed Q30 by completed dataset"
+#|   - "Exact ordinal state proportions: observed Q30 in black and imputed Q30 by completed dataset"
+#|   - "Death-inclusive model-row proportions for living Q30 states 1--7 and observed death state 8"
+#| fig-alt: "Three panels compare observed Q30 with imputed values from eight datasets using smoothed densities and exact state proportions, then show the final model-row distribution including death state eight."
+#| layout-ncol: 1
+#| fig-width: 9
+#| fig-height: 5
+#| echo: false
+
+q30_density_plot
+q30_state_proportion_plot
+model_state_proportion_plot
+```
+
+## How variable are the eight imputations?
+
+Variability is assessed only where living Q30 was originally missing. For each
+patient-week cell, we count distinct states, calculate its range and normalized
+entropy, and then summarize agreement across every pair of imputations. We
+also examine how uncertainty propagates to weekly mean Q30, weekly probability
+of good-or-better QoL, and participant-level mean Q30.
+
+```{r}
+#| label: quantify-death-inclusive-qol-imputation-variability
+#| include: false
+
+imputed_cells <- living_values |>
+  filter(source == "Imputed") |>
+  select(imputation, id, week, tx, q30)
+
+cell_variability <- imputed_cells |>
+  summarise(
+    imputations = n(),
+    distinct_states = n_distinct(q30),
+    state_range = max(q30) - min(q30),
+    state_sd = sd(q30),
+    entropy = {
+      probabilities <- table(q30) / n()
+      -sum(probabilities * log(probabilities)) / log(7)
+    },
+    .by = c(id, week, tx)
+  )
+if (any(cell_variability$imputations != n_imputations)) {
+  stop("Every missing living Q30 cell must be represented in all eight imputations.")
+}
+
+participant_variability <- imputed_cells |>
+  summarise(mean_imputed_q30 = mean(q30), .by = c(id, imputation)) |>
+  summarise(
+    between_imputation_sd = sd(mean_imputed_q30),
+    between_imputation_range = max(mean_imputed_q30) - min(mean_imputed_q30),
+    .by = id
+  )
+
+variability_summary <- cell_variability |>
+  summarise(
+    missing_patient_weeks = n(),
+    proportion_identical = mean(distinct_states == 1L),
+    proportion_variable = mean(distinct_states > 1L),
+    median_distinct_states = median(distinct_states),
+    q90_distinct_states = quantile(distinct_states, 0.90, names = FALSE),
+    mean_state_range = mean(state_range),
+    mean_normalized_entropy = mean(entropy),
+    median_participant_mean_sd = median(participant_variability$between_imputation_sd),
+    q90_participant_mean_sd = quantile(
+      participant_variability$between_imputation_sd,
+      0.90,
+      names = FALSE
+    )
+  )
+
+wide_cells <- imputed_cells |>
+  select(id, week, imputation, q30) |>
+  pivot_wider(names_from = imputation, values_from = q30, names_prefix = "imp_")
+pair_indices <- combn(indices, 2L, simplify = FALSE)
+pairwise_agreement <- purrr::map_dfr(pair_indices, function(pair) {
+  first <- wide_cells[[paste0("imp_", pair[[1L]])]]
+  second <- wide_cells[[paste0("imp_", pair[[2L]])]]
+  tibble(
+    imputation_1 = pair[[1L]],
+    imputation_2 = pair[[2L]],
+    exact_agreement = mean(first == second),
+    mean_absolute_difference = mean(abs(first - second))
+  )
+})
+
+weekly_by_imputation <- living_values |>
+  summarise(
+    mean_q30 = mean(q30),
+    proportion_good = mean(q30 <= 3L),
+    .by = c(imputation, tx, week)
+  )
+weekly_variability <- weekly_by_imputation |>
+  summarise(
+    mean_q30_sd = sd(mean_q30),
+    mean_q30_min = min(mean_q30),
+    mean_q30_max = max(mean_q30),
+    proportion_good_sd = sd(proportion_good),
+    proportion_good_min = min(proportion_good),
+    proportion_good_max = max(proportion_good),
+    mean_q30 = mean(mean_q30),
+    proportion_good = mean(proportion_good),
+    .by = c(tx, week)
+  ) |>
+  mutate(tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention")))
+
+arrow::write_parquet(
+  cell_variability,
+  file.path(result_dir, "q30-cell-variability.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  variability_summary,
+  file.path(result_dir, "q30-variability-summary.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  pairwise_agreement,
+  file.path(result_dir, "q30-pairwise-agreement.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  weekly_variability,
+  file.path(result_dir, "q30-weekly-variability.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-death-inclusive-qol-imputation-variability
+#| tbl-cap: "Between-imputation variability for originally missing living Q30 values"
+#| echo: false
+
+variability_summary |>
+  mutate(across(where(is.numeric), ~round(.x, 3))) |>
+  knitr::kable()
+```
+
+Across the originally missing living-Q30 cells, the proportion receiving more
+than one state across the eight completions is
+`r scales::percent(variability_summary$proportion_variable, accuracy = 0.1)`.
+The median cell receives `r variability_summary$median_distinct_states`
+distinct states, and pairwise exact agreement averages
+`r scales::percent(mean(pairwise_agreement$exact_agreement), accuracy = 0.1)`.
+At participant level, the median between-imputation standard deviation of mean
+imputed Q30 is `r round(variability_summary$median_participant_mean_sd, 2)`
+states. These diagnostics indicate substantial patient-week uncertainty even
+when aggregate distributions and MICE traces are stable; the uncertainty is
+therefore carried forward by fitting and pooling all eight datasets rather
+than selecting a single completion.
+
+```{r}
+#| label: plot-death-inclusive-qol-imputation-variability
+#| include: false
+
+cell_variability_plot <- ggplot(
+  cell_variability,
+  aes(x = factor(distinct_states))
+) +
+  geom_bar(fill = "#D95F02", colour = "white") +
+  labs(
+    x = "Distinct imputed Q30 states across 8 datasets",
+    y = "Missing patient-week cells"
+  ) +
+  theme_bw()
+
+entropy_by_week <- cell_variability |>
+  summarise(
+    mean_entropy = mean(entropy),
+    q25 = quantile(entropy, 0.25, names = FALSE),
+    q75 = quantile(entropy, 0.75, names = FALSE),
+    .by = c(tx, week)
+  ) |>
+  mutate(tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention")))
+entropy_plot <- ggplot(
+  entropy_by_week,
+  aes(x = week, y = mean_entropy, colour = tx, fill = tx)
+) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    x = "Week",
+    y = "Normalized entropy of imputed Q30",
+    colour = "Randomized group",
+    fill = "Randomized group"
+  ) +
+  theme_bw()
+
+weekly_mean_plot <- ggplot(
+  weekly_variability,
+  aes(x = week, y = mean_q30, colour = tx, fill = tx)
+) +
+  geom_ribbon(
+    aes(ymin = mean_q30_min, ymax = mean_q30_max),
+    alpha = 0.15,
+    colour = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    x = "Week",
+    y = "Mean living Q30 state",
+    colour = "Randomized group",
+    fill = "Randomized group"
+  ) +
+  theme_bw()
+
+weekly_good_plot <- ggplot(
+  weekly_variability,
+  aes(x = week, y = proportion_good, colour = tx, fill = tx)
+) +
+  geom_ribbon(
+    aes(ymin = proportion_good_min, ymax = proportion_good_max),
+    alpha = 0.15,
+    colour = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    x = "Week",
+    y = "Proportion with good-or-better living Q30",
+    colour = "Randomized group",
+    fill = "Randomized group"
+  ) +
+  theme_bw()
+
+agreement_matrix <- bind_rows(
+  pairwise_agreement |>
+    select(imputation_1, imputation_2, exact_agreement),
+  pairwise_agreement |>
+    transmute(
+      imputation_1 = imputation_2,
+      imputation_2 = imputation_1,
+      exact_agreement
+    ),
+  tibble(
+    imputation_1 = indices,
+    imputation_2 = indices,
+    exact_agreement = 1
+  )
+)
+agreement_plot <- ggplot(
+  agreement_matrix,
+  aes(x = factor(imputation_1), y = factor(imputation_2), fill = exact_agreement)
+) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", exact_agreement)), size = 3) +
+  scale_fill_viridis_c(limits = c(0, 1), option = "C") +
+  coord_equal() +
+  labs(
+    x = "Imputation",
+    y = "Imputation",
+    fill = "Exact agreement"
+  ) +
+  theme_bw()
+
+variability_plots <- list(
+  "q30-distinct-states.png" = cell_variability_plot,
+  "q30-entropy-by-week.png" = entropy_plot,
+  "q30-weekly-mean-range.png" = weekly_mean_plot,
+  "q30-weekly-good-range.png" = weekly_good_plot,
+  "q30-pairwise-agreement.png" = agreement_plot
+)
+purrr::iwalk(variability_plots, function(plot, filename) {
+  ggsave(
+    file.path(figure_dir, filename),
+    plot,
+    width = 8,
+    height = 5,
+    dpi = 220
+  )
+})
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-cell-variability
+#| fig-cap: "Patient-week variability in imputed Q30"
+#| fig-subcap:
+#|   - "Number of distinct Q30 states assigned to each missing patient-week"
+#|   - "Mean normalized imputation entropy by week; ribbons show the interquartile range across missing patient-weeks"
+#| fig-alt: "A bar chart counts how many distinct Q30 states each missing patient-week receives across eight imputations. A second chart shows normalized entropy over weeks by randomized group."
+#| layout-ncol: 1
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+cell_variability_plot
+entropy_plot
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-weekly-variability
+#| fig-cap: "Between-imputation variability in weekly Q30 summaries"
+#| fig-subcap:
+#|   - "Mean living Q30 state; ribbons span the minimum to maximum across eight datasets"
+#|   - "Proportion with good-or-better living Q30; ribbons span the minimum to maximum across eight datasets"
+#| fig-alt: "Two line charts show weekly mean living Q30 and the weekly proportion in states one through three by randomized group. Shaded bands show the full range across eight completed datasets."
+#| layout-ncol: 1
+#| fig-width: 9
+#| fig-height: 5
+#| echo: false
+
+weekly_mean_plot
+weekly_good_plot
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-pairwise-agreement
+#| fig-cap: "Pairwise exact agreement of imputed Q30 values"
+#| fig-alt: "An eight-by-eight heat map gives the proportion of originally missing patient-week Q30 values assigned the same state in each pair of completed datasets."
+#| fig-width: 7
+#| fig-height: 6
+#| echo: false
+
+agreement_plot
+```
+
+## Raw observed trajectories
+
+This final descriptive plot keeps the observed assessment schedule visible.
+Lines connect actual assessments only; they are not weekly interpolations.
+
+```{r}
+#| label: derive-death-inclusive-qol-raw-trajectories
+#| include: false
+
+cohort <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+))
+qol <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-qol.parquet"
+))
+baseline_qol <- cohort |>
+  transmute(
+    id,
+    assessment_id = NA_character_,
+    day = 0,
+    q30 = baseline_q30
+  ) |>
+  filter(!is.na(q30))
+followup_qol <- qol |>
+  filter(
+    !is.na(q30),
+    day > 0,
+    day <= config$analysis$horizon_days
+  ) |>
+  select(id, assessment_id, day, q30)
+raw_qol <- bind_rows(baseline_qol, followup_qol) |>
+  left_join(cohort |> select(id, tx), by = "id") |>
+  distinct(id, assessment_id, day, q30, .keep_all = TRUE) |>
+  arrange(id, day) |>
+  mutate(
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  )
+
+raw_trajectory_plot <- ggplot(
+  raw_qol,
+  aes(x = day, y = q30, group = id)
+) +
+  geom_line(colour = "grey35", alpha = 0.20, linewidth = 0.45) +
+  geom_point(
+    colour = "black",
+    fill = "grey70",
+    shape = 21,
+    size = 1.8,
+    stroke = 0.35,
+    alpha = 0.50,
+    position = position_jitter(width = 0, height = 0.035)
+  ) +
+  facet_wrap(vars(tx), nrow = 1) +
+  scale_x_continuous(
+    breaks = c(0, 28, 56, 84, 112, 140, 168, 182),
+    limits = c(0, config$analysis$horizon_days)
+  ) +
+  scale_y_continuous(breaks = 1:7, limits = c(0.8, 7.2)) +
+  labs(
+    x = "Day since first contact",
+    y = "Q30 state (1 = excellent, 7 = very poor)"
+  ) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+ggsave(
+  file.path(figure_dir, "raw-qol-trajectories.png"),
+  raw_trajectory_plot,
+  width = 12,
+  height = 6.5,
+  dpi = 220
+)
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-raw-trajectories
+#| fig-cap: "Raw observed longitudinal Q30 values by randomized group"
+#| fig-alt: "Two panels show observed Q30 states from excellent to very poor over 182 days. Transparent lines connect repeated observations from the same participant and points mark actual questionnaire dates."
+#| fig-width: 12
+#| fig-height: 6.5
+#| echo: false
+
+raw_trajectory_plot
+```

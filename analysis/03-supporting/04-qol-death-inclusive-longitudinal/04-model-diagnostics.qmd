@@ -1,0 +1,236 @@
+---
+title: "QoL death-inclusive Markov — model diagnostics"
+subtitle: "Posterior sampling quality across 8 completed datasets"
+format:
+  html:
+    toc: true
+execute:
+  freeze: false
+---
+
+This document contains only posterior sampling diagnostics for the eight fitted
+Markov models. Imputation diagnostics are reported separately. The configured
+R-hat, effective sample size, divergence, and treedepth thresholds are applied
+to every model, with E-BFMI checked when available; a complete `stanDx()` text
+report and `stanDxplot()` are also retained for each imputation.
+
+```{r}
+#| label: collect-death-inclusive-qol-model-diagnostics
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "markov-helpers.R"))
+library(tidyverse)
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+n_imputations <- 8L
+indices <- seq_len(n_imputations)
+output_dir <- here::here(
+  "artifacts", "supporting", "qol-death-inclusive-longitudinal"
+)
+model_dir <- file.path(output_dir, "models")
+diagnostic_dir <- file.path(output_dir, "diagnostics", "model")
+stan_dx_dir <- file.path(diagnostic_dir, "stan-dx")
+figure_dir <- file.path(output_dir, "figures", "model-diagnostics")
+result_dir <- here::here(
+  "results", "supporting", "qol-death-inclusive-longitudinal",
+  "model-diagnostics"
+)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+diagnostics <- purrr::map_dfr(indices, function(index) {
+  path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!file.exists(path)) {
+    stop("Missing longitudinal QoL model diagnostic artifact: ", path)
+  }
+  arrow::read_parquet(path) |>
+    as.data.frame()
+})
+fit_attempt_path <- file.path(diagnostic_dir, "fit-attempts-all.parquet")
+if (!file.exists(fit_attempt_path)) {
+  stop("Missing longitudinal QoL fit-attempt audit log: ", fit_attempt_path)
+}
+fit_attempts <- arrow::read_parquet(fit_attempt_path) |>
+  as.data.frame()
+final_fit_attempts <- fit_attempts |>
+  slice_max(attempt, n = 1L, with_ties = FALSE, by = imputation)
+if (
+  !setequal(fit_attempts$imputation, indices) ||
+    any(!final_fit_attempts$diagnostics_passed)
+) {
+  stop("The final fit attempt did not pass for every imputation.")
+}
+
+finite_min <- function(value) {
+  if (any(is.finite(value))) min(value[is.finite(value)]) else NA_real_
+}
+finite_max <- function(value) {
+  if (any(is.finite(value))) max(value[is.finite(value)]) else NA_real_
+}
+
+diagnostic_summary <- diagnostics |>
+  summarise(
+    max_rhat = finite_max(rhat),
+    min_ess_bulk = finite_min(ess_bulk),
+    min_ess_tail = finite_min(ess_tail),
+    divergent_transitions = first(divergent_transitions),
+    treedepth_exceeded = first(treedepth_exceeded),
+    min_bfmi = first(min_bfmi),
+    .by = imputation
+  ) |>
+  mutate(
+    passed =
+      max_rhat <= config$diagnostics$max_rhat &
+      min_ess_bulk >= config$diagnostics$min_ess_bulk &
+      min_ess_tail >= config$diagnostics$min_ess_tail &
+      divergent_transitions <= config$diagnostics$max_divergent_transitions &
+      treedepth_exceeded <= config$diagnostics$max_treedepth_exceeded &
+      (is.na(min_bfmi) | min_bfmi >= config$diagnostics$min_bfmi)
+  )
+if (nrow(diagnostic_summary) != n_imputations || any(!diagnostic_summary$passed)) {
+  stop("At least one longitudinal QoL Markov model failed posterior diagnostics.")
+}
+
+arrow::write_parquet(
+  diagnostics,
+  file.path(result_dir, "parameter-diagnostics.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  diagnostic_summary,
+  file.path(result_dir, "model-diagnostic-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-death-inclusive-qol-model-diagnostics
+#| tbl-cap: "Worst posterior sampling diagnostic within each fitted imputation"
+#| echo: false
+
+diagnostic_summary |>
+  mutate(across(where(is.numeric), ~round(.x, 3))) |>
+  knitr::kable()
+```
+
+```{r}
+#| label: tbl-death-inclusive-qol-fit-attempts
+#| tbl-cap: "Model fit attempts and recorded reasons for refitting"
+#| echo: false
+
+fit_attempts |>
+  transmute(
+    imputation,
+    attempt,
+    iterations_per_chain,
+    retained_draws_per_chain,
+    diagnostics_passed,
+    reason = refit_reason
+  ) |>
+  knitr::kable()
+```
+
+```{r}
+#| label: save-death-inclusive-qol-stan-diagnostics
+#| include: false
+
+for (index in indices) {
+  stan_dx_text_path <- file.path(
+    stan_dx_dir,
+    sprintf("stan-dx-%02d.txt", index)
+  )
+  stan_dx_plot_path <- file.path(
+    stan_dx_dir,
+    sprintf("stan-dx-%02d.png", index)
+  )
+  if (
+    !force &&
+      file.exists(stan_dx_text_path) &&
+      file.exists(stan_dx_plot_path)
+  ) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  writeLines(capture.output(rmsb::stanDx(model)), stan_dx_text_path)
+  stan_dx_plot <- rmsb::stanDxplot(model)
+  ggsave(
+    stan_dx_plot_path,
+    stan_dx_plot,
+    width = 11,
+    height = max(6, 1.05 * length(unique(stan_dx_plot$data$param))),
+    dpi = 180,
+    limitsize = FALSE
+  )
+}
+```
+
+```{r}
+#| label: derive-death-inclusive-qol-diagnostic-overview
+#| include: false
+
+rhat_plot <- diagnostics |>
+  filter(is.finite(rhat)) |>
+  ggplot(aes(x = factor(imputation), y = rhat)) +
+  geom_hline(
+    yintercept = config$diagnostics$max_rhat,
+    linetype = "dashed",
+    colour = "#D95F02"
+  ) +
+  geom_violin(fill = "grey85", colour = "grey45", scale = "width") +
+  geom_boxplot(width = 0.15, outlier.shape = NA) +
+  labs(x = "Imputation", y = "R-hat") +
+  theme_bw()
+
+ess_plot <- diagnostics |>
+  select(imputation, ess_bulk, ess_tail) |>
+  pivot_longer(c(ess_bulk, ess_tail), names_to = "metric", values_to = "ess") |>
+  filter(is.finite(ess)) |>
+  mutate(metric = recode(metric, ess_bulk = "Bulk ESS", ess_tail = "Tail ESS")) |>
+  ggplot(aes(x = factor(imputation), y = ess, fill = metric)) +
+  geom_hline(
+    yintercept = config$diagnostics$min_ess_bulk,
+    linetype = "dashed",
+    colour = "#D95F02"
+  ) +
+  geom_boxplot(position = position_dodge(width = 0.75), outlier.alpha = 0.25) +
+  labs(x = "Imputation", y = "Effective sample size", fill = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave(
+  file.path(figure_dir, "rhat-by-imputation.png"),
+  rhat_plot,
+  width = 9,
+  height = 5,
+  dpi = 220
+)
+ggsave(
+  file.path(figure_dir, "ess-by-imputation.png"),
+  ess_plot,
+  width = 9,
+  height = 5,
+  dpi = 220
+)
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-posterior-diagnostics
+#| fig-cap: "Posterior convergence and effective sample size across eight imputations"
+#| fig-subcap:
+#|   - "Parameter-level R-hat distributions; the dashed line is the configured maximum"
+#|   - "Parameter-level bulk and tail effective sample sizes; the dashed line is the configured minimum"
+#| fig-alt: "Two panels summarize posterior diagnostics for each of eight Markov models. R-hat values remain below the configured threshold and effective sample sizes remain above the configured minimum."
+#| layout-ncol: 1
+#| fig-width: 9
+#| fig-height: 5
+#| echo: false
+
+rhat_plot
+ess_plot
+```

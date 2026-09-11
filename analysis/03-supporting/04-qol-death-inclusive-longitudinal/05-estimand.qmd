@@ -1,0 +1,434 @@
+---
+title: "QoL death-inclusive Markov — state occupancy and estimand"
+subtitle: "Difference in weeks with good-or-better QoL over 26 weeks"
+format:
+  html:
+    toc: true
+execute:
+  freeze: false
+---
+
+Both treatment paths are predicted for every participant in each of eight
+completed datasets. Posterior state occupancy probability (SOP) draws are
+pooled with equal weight across imputations. The same draws are reported for
+the original seven QoL states plus death and for the SAP grouping: Good
+(states 1--3), Average (state 4), Bad (states 5--7), and Death (state 8).
+
+The estimand is calculated directly from the matched SOP draws. Within each
+posterior draw and treatment path, probabilities for states 1--3 are summed
+over all 26 weeks. The intervention-minus-control difference is then formed
+within that same draw. Positive values favour intervention. Because this is an
+eight-imputation test cycle rather than the final 50-imputation run, outputs are
+explicitly flagged as computationally reduced.
+
+```{r}
+#| label: derive-death-inclusive-longitudinal-qol-sops
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+library(tidyverse)
+
+config <- read_analysis_config()
+# force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+force <- TRUE
+n_imputations <- 8L
+indices <- seq_len(n_imputations)
+output_dir <- here::here(
+  "artifacts", "supporting", "qol-death-inclusive-longitudinal"
+)
+imputation_dir <- file.path(output_dir, "imputations")
+model_dir <- file.path(output_dir, "models")
+estimand_dir <- file.path(output_dir, "estimand")
+figure_dir <- file.path(output_dir, "figures", "estimand")
+result_dir <- here::here(
+  "results", "supporting", "qol-death-inclusive-longitudinal",
+  "estimand"
+)
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  data_path <- file.path(
+    imputation_dir,
+    sprintf("imputation-%02d.parquet", index)
+  )
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  sop_summary_path <- file.path(
+    estimand_dir,
+    sprintf("sops-summary-%02d.parquet", index)
+  )
+  sop_draws_path <- file.path(
+    estimand_dir,
+    sprintf("sops-draws-%02d.parquet", index)
+  )
+  if (!force && file.exists(sop_summary_path) && file.exists(sop_draws_path)) {
+    next
+  }
+  if (!file.exists(data_path) || !file.exists(model_path)) {
+    stop("Imputation and model artifacts are required for estimand ", index, ".")
+  }
+
+  data <- arrow::read_parquet(data_path) |>
+    as.data.frame() |>
+    mutate(
+      y = factor(y, levels = 1:8, ordered = TRUE),
+      yprev = factor(yprev, levels = 1:7),
+      ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+      diagnosis_code = factor(diagnosis_code)
+    )
+  model <- readRDS(model_path)
+  observed <- data |>
+    slice_head(n = 1L, by = id) |>
+    # Retain a numeric week column so mostr resolves the time axis as
+    # continuous rather than mistaking restricted-cubic-spline knots for
+    # factor levels when `newdata` omits the fitted time variable.
+    select(id, tx, week, diagnosis_code, ecog_fstcnt, yprev)
+  estimand_seed <- analysis_seed(config, "supporting", index, offset = 600L)
+
+  sops <- mostr::avg_sops(
+    model = model,
+    # newdata = observed,
+    variables = list(tx = c(0, 1)),
+    times = 1:26,
+    y_levels = 1:8,
+    absorb = 8L,
+    p_var = "yprev",
+    id_var = "id",
+    time_var = "week",
+    include_re = TRUE,
+    n_draws = config$markov$post_estimation_draws,
+    seed = estimand_seed,
+    posterior_summary = "median",
+    return_draws = TRUE
+  )
+  sop_draws <- attr(sops, "draws")
+  if (is.null(sop_draws)) {
+    stop("Longitudinal QoL SOP results must retain posterior draws.")
+  }
+  sop_draws <- as.data.frame(sop_draws)
+  required_sop_columns <- c("draw_id", "estimate", "time", "state", "tx")
+  if (!all(required_sop_columns %in% names(sop_draws))) {
+    stop("Longitudinal QoL SOP draws lack matched draw, state, time, or treatment columns.")
+  }
+  if (
+    n_distinct(sop_draws$draw_id) != config$markov$post_estimation_draws ||
+      anyNA(sop_draws[required_sop_columns])
+  ) {
+    stop("Longitudinal QoL SOP draws are incomplete for imputation ", index, ".")
+  }
+
+  arrow::write_parquet(
+    as.data.frame(sops),
+    sop_summary_path,
+    compression = "zstd"
+  )
+  arrow::write_parquet(
+    sop_draws,
+    sop_draws_path,
+    compression = "zstd"
+  )
+}
+```
+
+## Pool and integrate matched SOP draws
+
+```{r}
+#| label: pool-death-inclusive-longitudinal-qol-sops
+#| include: false
+
+ungrouped_sop_draws <- purrr::map_dfr(indices, function(index) {
+  arrow::read_parquet(file.path(
+    estimand_dir,
+    sprintf("sops-draws-%02d.parquet", index)
+  )) |>
+    as.data.frame() |>
+    mutate(
+      imputation = index,
+      state = as.integer(as.character(state)),
+      tx = as.integer(as.character(tx))
+    )
+})
+
+draw_sums <- ungrouped_sop_draws |>
+  summarise(
+    probability = sum(estimate),
+    .by = c(imputation, draw_id, tx, time)
+  )
+if (any(abs(draw_sums$probability - 1) > 1e-6)) {
+  stop("At least one posterior SOP draw does not sum to one across states.")
+}
+
+state_labels <- c(
+  "Excellent", "Very good", "Good", "Average",
+  "Below average", "Poor", "Very poor", "Death"
+)
+ungrouped_sop_summary <- ungrouped_sop_draws |>
+  mutate(
+    state = factor(state, levels = 1:8, labels = state_labels),
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  ) |>
+  summarise(
+    conf.low = quantile(estimate, 0.025, names = FALSE),
+    conf.high = quantile(estimate, 0.975, names = FALSE),
+    estimate = median(estimate),
+    .by = c(tx, time, state)
+  )
+
+grouped_sop_draws <- ungrouped_sop_draws |>
+  mutate(
+    state = case_when(
+      state %in% 1:3 ~ "Good",
+      state == 4L ~ "Average",
+      state %in% 5:7 ~ "Bad",
+      state == 8L ~ "Death",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  summarise(
+    estimate = sum(estimate),
+    .by = c(imputation, draw_id, tx, time, state)
+  )
+if (anyNA(grouped_sop_draws$state)) {
+  stop("A QoL/death state could not be assigned to the SAP grouping.")
+}
+
+grouped_sop_summary <- grouped_sop_draws |>
+  mutate(
+    state = factor(state, levels = c("Good", "Average", "Bad", "Death")),
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  ) |>
+  summarise(
+    conf.low = quantile(estimate, 0.025, names = FALSE),
+    conf.high = quantile(estimate, 0.975, names = FALSE),
+    estimate = median(estimate),
+    .by = c(tx, time, state)
+  )
+
+time_in_group_draws <- grouped_sop_draws |>
+  summarise(
+    weeks = sum(estimate),
+    .by = c(imputation, draw_id, tx, state)
+  )
+comparison_draws <- time_in_group_draws |>
+  filter(state == "Good") |>
+  select(imputation, draw_id, tx, weeks) |>
+  pivot_wider(names_from = tx, values_from = weeks, names_prefix = "tx_") |>
+  mutate(
+    draw = tx_1 - tx_0,
+    estimand = "Difference in weeks with good-or-better QoL"
+  )
+if (
+  nrow(comparison_draws) !=
+    n_imputations * config$markov$post_estimation_draws ||
+    anyNA(comparison_draws$draw)
+) {
+  stop("The integrated good-QoL contrast must retain one matched contrast per draw.")
+}
+
+estimand_summary <- comparison_draws |>
+  summarise(
+    estimand = first(estimand),
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    q025 = quantile(draw, 0.025, names = FALSE),
+    q975 = quantile(draw, 0.975, names = FALSE),
+    probability_benefit = mean(draw > 0),
+    horizon_weeks = 26L,
+    imputations = n_distinct(imputation),
+    posterior_draws_per_imputation = config$markov$post_estimation_draws,
+    computationally_reduced = TRUE
+  )
+
+outputs <- list(
+  "state-occupancy-ungrouped-draws.parquet" = ungrouped_sop_draws,
+  "state-occupancy-ungrouped-summary.parquet" = ungrouped_sop_summary,
+  "state-occupancy-grouped-draws.parquet" = grouped_sop_draws,
+  "state-occupancy-grouped-summary.parquet" = grouped_sop_summary,
+  "time-in-group-draws.parquet" = time_in_group_draws,
+  "good-qol-difference-draws.parquet" = comparison_draws,
+  "good-qol-difference-summary.parquet" = estimand_summary
+)
+purrr::iwalk(outputs, function(data, filename) {
+  arrow::write_parquet(
+    as.data.frame(data),
+    file.path(result_dir, filename),
+    compression = "zstd"
+  )
+})
+```
+
+```{r}
+#| label: tbl-death-inclusive-qol-estimand
+#| tbl-cap: "Posterior summary of the intervention-minus-control difference in weeks with good-or-better QoL"
+#| echo: false
+
+estimand_summary |>
+  mutate(across(where(is.numeric), ~round(.x, 3))) |>
+  knitr::kable()
+```
+
+## State occupancy probabilities
+
+The ungrouped display preserves all seven QoL states and death. The grouped
+display implements the SAP categories without refitting or otherwise changing
+the posterior draws.
+
+```{r}
+#| label: plot-death-inclusive-longitudinal-qol-sops
+#| include: false
+
+validate_sop_intervals <- function(data, label) {
+  required <- c("estimate", "conf.low", "conf.high", "time", "state", "tx")
+  if (
+    !all(required %in% names(data)) ||
+      anyNA(data[required]) ||
+      any(data$conf.low > data$estimate) ||
+      any(data$conf.high < data$estimate) ||
+      all(abs(data$conf.high - data$conf.low) < .Machine$double.eps)
+  ) {
+    stop(label, " SOP summaries do not contain valid posterior intervals.")
+  }
+  invisible(data)
+}
+
+validate_sop_intervals(ungrouped_sop_summary, "Ungrouped")
+validate_sop_intervals(grouped_sop_summary, "Grouped")
+
+ungrouped_sop_plot <- ggplot(
+  ungrouped_sop_summary,
+  aes(
+    x = time,
+    y = estimate,
+    colour = state,
+    fill = state,
+    linetype = tx,
+    group = interaction(state, tx)
+  )
+) +
+  geom_ribbon(
+    aes(ymin = conf.low, ymax = conf.high),
+    alpha = 0.20,
+    colour = NA,
+    linewidth = 0
+  ) +
+  geom_line(linewidth = 0.75) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    x = "Week",
+    y = "Posterior state occupancy probability",
+    colour = "QoL/death state",
+    fill = "QoL/death state",
+    linetype = "Randomized group"
+  ) +
+  theme_bw()
+
+grouped_sop_colours <- c(
+  Good = "#1B9E77",
+  Average = "#7570B3",
+  Bad = "#D95F02",
+  Death = "#1F1F1F"
+)
+grouped_sop_plot <- ggplot(
+  grouped_sop_summary,
+  aes(
+    x = time,
+    y = estimate,
+    colour = state,
+    fill = state,
+    linetype = tx,
+    group = interaction(state, tx)
+  )
+) +
+  geom_ribbon(
+    aes(ymin = conf.low, ymax = conf.high),
+    alpha = 0.25,
+    colour = NA,
+    linewidth = 0
+  ) +
+  geom_line(linewidth = 0.8) +
+  scale_colour_manual(values = grouped_sop_colours) +
+  scale_fill_manual(values = grouped_sop_colours) +
+  labs(
+    x = "Week",
+    y = "Posterior state occupancy probability",
+    colour = "Grouped state",
+    fill = "Grouped state",
+    linetype = "Randomized group"
+  ) +
+  theme_bw()
+
+comparison_posterior_plot <- ggplot(
+  comparison_draws,
+  aes(x = draw)
+) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(
+    .width = c(0.66, 0.95),
+    point_interval = ggdist::median_qi
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  labs(
+    x = paste0(
+      "Difference in weeks with good-or-better QoL over 26 weeks ",
+      "(intervention - control)"
+    ),
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+  )
+
+estimand_plots <- list(
+  "model-state-occupancy-ungrouped.png" = ungrouped_sop_plot,
+  "model-state-occupancy-grouped.png" = grouped_sop_plot,
+  "good-qol-time-difference-posterior.png" = comparison_posterior_plot
+)
+purrr::iwalk(estimand_plots, function(plot, filename) {
+  ggsave(
+    file.path(figure_dir, filename),
+    plot,
+    width = if (grepl("occupancy", filename)) 10 else 8,
+    height = if (grepl("occupancy", filename)) 6 else 5,
+    dpi = 300
+  )
+})
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-model-sops-ungrouped
+#| fig-cap: "Pooled model-derived QoL/death state occupancy probabilities by randomized group"
+#| fig-alt: "Posterior state occupancy curves over 26 weeks for seven ordered QoL states and death. Colours distinguish states, line types distinguish randomized groups, and ribbons show 95 percent credible intervals."
+#| fig-width: 10
+#| fig-height: 6
+#| echo: false
+
+ungrouped_sop_plot
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-model-sops-grouped
+#| fig-cap: "Pooled model-derived state occupancy probabilities grouped as Good, Average, Bad, and Death"
+#| fig-alt: "Posterior state occupancy curves over 26 weeks for Good quality of life states one to three, Average state four, Bad states five to seven, and Death state eight. Line types identify randomized groups and ribbons show 95 percent credible intervals."
+#| fig-width: 10
+#| fig-height: 6
+#| echo: false
+
+grouped_sop_plot
+```
+
+```{r}
+#| label: fig-death-inclusive-qol-comparison-posterior
+#| fig-cap: "Posterior distribution of the treatment difference in weeks with good-or-better QoL"
+#| fig-alt: "A half-eye density above a posterior dot plot of the intervention-minus-control difference in weeks spent in QoL states one through three over 26 weeks. Thick and thin intervals show the 66 and 95 percent credible intervals, and a dashed line marks zero."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+comparison_posterior_plot
+```

@@ -1,0 +1,369 @@
+---
+title: "QoL death-inclusive Markov — model fitting"
+subtitle: "First-order ordinal transition models for 8 completed datasets"
+format: html
+execute:
+  freeze: false
+---
+
+A Bayesian first-order ordinal transition model is fitted to each of the eight
+independently completed longitudinal datasets. Death is state 8 and absorbing.
+The model uses the imputed previous state; the partial proportional-odds term
+permits the time effect to differ across outcome cut-points. The formula is
+never simplified automatically. The default run retains 3,000 posterior draws
+across four chains; a failed diagnostic check triggers the existing longer
+retry run.
+
+```{r}
+#| label: fit-death-inclusive-longitudinal-qol
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "markov-helpers.R"))
+library(tidyverse)
+library(rmsb)
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+n_imputations <- 8L
+indices <- seq_len(n_imputations)
+default_retained_draws <- 3000L
+if (default_retained_draws %% config$markov$chains != 0L) {
+  stop("Default retained draws must be divisible by the number of chains.")
+}
+default_draws_per_chain <- default_retained_draws / config$markov$chains
+default_warmup <- as.integer(default_draws_per_chain)
+default_iterations <- as.integer(default_warmup + default_draws_per_chain)
+output_dir <- here::here(
+  "artifacts", "supporting", "qol-death-inclusive-longitudinal"
+)
+imputation_dir <- file.path(output_dir, "imputations")
+model_dir <- file.path(output_dir, "models")
+diagnostic_dir <- file.path(output_dir, "diagnostics", "model")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+model_formula <- y ~ tx + rms::rcs(week, 4) + yprev +
+  ecog_fstcnt + diagnosis_code + cluster(id)
+fit_specification <- list(
+  formula = paste(deparse(model_formula), collapse = " "),
+  r_version = as.character(getRversion()),
+  mostr_version = as.character(utils::packageVersion("mostr")),
+  mostr_built = utils::packageDescription("mostr")[["Built"]],
+  required_fit_wrapper = "blrm_markov",
+  require_starting_profile_metadata = TRUE,
+  chains = as.integer(config$markov$chains),
+  default_iterations = default_iterations,
+  default_warmup = default_warmup,
+  default_retained_draws = default_retained_draws,
+  retry_iterations = as.integer(config$markov$retry_iterations),
+  retry_warmup = as.integer(config$markov$retry_iterations / 2L)
+)
+
+diagnostic_failure_reason <- function(diagnostics, thresholds) {
+  summary <- as.data.frame(diagnostics$summary)
+  reasons <- character()
+  finite_rhat <- summary$rhat[is.finite(summary$rhat)]
+  finite_bulk <- summary$ess_bulk[is.finite(summary$ess_bulk)]
+  finite_tail <- summary$ess_tail[is.finite(summary$ess_tail)]
+  if (length(finite_rhat) == 0L) {
+    reasons <- c(reasons, "R-hat was unavailable")
+  } else if (max(finite_rhat) > thresholds$max_rhat) {
+    reasons <- c(
+      reasons,
+      sprintf(
+        "maximum R-hat %.4f exceeded %.4f",
+        max(finite_rhat),
+        thresholds$max_rhat
+      )
+    )
+  }
+  if (length(finite_bulk) == 0L) {
+    reasons <- c(reasons, "bulk ESS was unavailable")
+  } else if (min(finite_bulk) < thresholds$min_ess_bulk) {
+    reasons <- c(
+      reasons,
+      sprintf(
+        "minimum bulk ESS %.1f was below %.1f",
+        min(finite_bulk),
+        thresholds$min_ess_bulk
+      )
+    )
+  }
+  if (length(finite_tail) == 0L) {
+    reasons <- c(reasons, "tail ESS was unavailable")
+  } else if (min(finite_tail) < thresholds$min_ess_tail) {
+    reasons <- c(
+      reasons,
+      sprintf(
+        "minimum tail ESS %.1f was below %.1f",
+        min(finite_tail),
+        thresholds$min_ess_tail
+      )
+    )
+  }
+  if (
+    diagnostics$divergent_transitions >
+      thresholds$max_divergent_transitions
+  ) {
+    reasons <- c(
+      reasons,
+      paste(diagnostics$divergent_transitions, "divergent transitions")
+    )
+  }
+  if (diagnostics$treedepth_exceeded > thresholds$max_treedepth_exceeded) {
+    reasons <- c(
+      reasons,
+      paste(diagnostics$treedepth_exceeded, "treedepth exceedances")
+    )
+  }
+  if (
+    is.finite(diagnostics$min_bfmi) &&
+      diagnostics$min_bfmi < thresholds$min_bfmi
+  ) {
+    reasons <- c(
+      reasons,
+      sprintf(
+        "minimum E-BFMI %.3f was below %.3f",
+        diagnostics$min_bfmi,
+        thresholds$min_bfmi
+      )
+    )
+  }
+  if (length(reasons) == 0L) "None" else paste(reasons, collapse = "; ")
+}
+
+for (index in indices) {
+  data_path <- file.path(
+    imputation_dir,
+    sprintf("imputation-%02d.parquet", index)
+  )
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  model_metadata_path <- file.path(
+    model_dir,
+    sprintf("model-%02d-metadata.rds", index)
+  )
+  diagnostic_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  fit_attempt_path <- file.path(
+    diagnostic_dir,
+    sprintf("fit-attempts-%02d.parquet", index)
+  )
+  if (!file.exists(data_path)) {
+    stop("Missing completed longitudinal QoL dataset: ", data_path)
+  }
+  cached_specification <- if (file.exists(model_metadata_path)) {
+    readRDS(model_metadata_path)
+  } else {
+    NULL
+  }
+  cached_model_has_required_metadata <- FALSE
+  cached_model_reasons <- character()
+  if (file.exists(model_path)) {
+    cached_model <- readRDS(model_path)
+    if (!identical(attr(cached_model, "markov_fit_wrapper"), "blrm_markov")) {
+      cached_model_reasons <- c(
+        cached_model_reasons,
+        "cached fit lacks blrm_markov() provenance required by R 4.6.1"
+      )
+    }
+    if (
+      is.null(attr(cached_model, "markov_starting_profile_data")) ||
+        is.null(attr(cached_model, "markov_starting_profile_metadata"))
+    ) {
+      cached_model_reasons <- c(
+        cached_model_reasons,
+        paste(
+          "cached fit lacks starting-profile metadata required for",
+          "random-effects marginalization"
+        )
+      )
+    }
+    cached_model_has_required_metadata <- length(cached_model_reasons) == 0L
+    rm(cached_model)
+  }
+  model_is_current <-
+    file.exists(model_path) &&
+    file.exists(diagnostic_path) &&
+    file.exists(fit_attempt_path) &&
+    identical(cached_specification, fit_specification) &&
+    cached_model_has_required_metadata
+  if (!force && model_is_current) next
+
+  refit_reasons <- cached_model_reasons
+  if (!file.exists(model_path)) {
+    refit_reasons <- c(refit_reasons, "no cached model artifact exists")
+  }
+  if (!file.exists(diagnostic_path)) {
+    refit_reasons <- c(refit_reasons, "no cached diagnostic artifact exists")
+  }
+  if (!identical(cached_specification, fit_specification)) {
+    refit_reasons <- c(
+      refit_reasons,
+      "cached fit specification or R/package runtime differs"
+    )
+  }
+  if (force) {
+    refit_reasons <- c(
+      refit_reasons,
+      "forced refit requested with LIQPLAT_FORCE=1"
+    )
+  }
+  refit_reason <- paste(unique(refit_reasons), collapse = "; ")
+
+  data <- arrow::read_parquet(data_path) |>
+    as.data.frame() |>
+    mutate(
+      y = as.integer(as.character(y)),
+      yprev = factor(yprev, levels = 1:7),
+      ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+      diagnosis_code = factor(diagnosis_code)
+    )
+  model_variables <- all.vars(model_formula)
+  if (
+    anyNA(data[model_variables]) ||
+      anyNA(data$id) ||
+      anyDuplicated(data[c("id", "week")]) ||
+      any(!data$y %in% 1:8)
+  ) {
+    stop("Completed dataset ", index, " is not valid for Markov model fitting.")
+  }
+
+  dd <- rms::datadist(data)
+  options(datadist = "dd")
+  fit_seed <- analysis_seed(config, "supporting", index, offset = 500L)
+
+  model <- mostr::blrm_markov(
+    formula = model_formula,
+    pcontrast = pcontrast_tx,
+    ppo = ~week,
+    cppo = function(y) as.numeric(as.character(y)),
+    data = data,
+    id_var = "id",
+    time_var = "week",
+    chains = config$markov$chains,
+    iter = default_iterations,
+    warmup = default_warmup,
+    refresh = 0L,
+    backend = "cmdstan",
+    loo = FALSE,
+    sampling.args = list(
+      seed = fit_seed,
+      parallel_chains = config$markov$chains
+    )
+  )
+  diagnostics <- markov_diagnostics(model, config$diagnostics)
+  fit_attempts <- tibble(
+    imputation = index,
+    attempt = 1L,
+    iterations_per_chain = default_iterations,
+    warmup_per_chain = default_warmup,
+    retained_draws_per_chain = default_iterations - default_warmup,
+    refit_reason = refit_reason,
+    diagnostics_passed = isTRUE(diagnostics$passed),
+    diagnostic_failure_reason = diagnostic_failure_reason(
+      diagnostics,
+      config$diagnostics
+    ),
+    r_version = as.character(getRversion()),
+    mostr_version = as.character(utils::packageVersion("mostr")),
+    fit_wrapper = attr(model, "markov_fit_wrapper") %||% NA_character_,
+    starting_profile_metadata_stored =
+      !is.null(attr(model, "markov_starting_profile_metadata"))
+  )
+  arrow::write_parquet(fit_attempts, fit_attempt_path, compression = "zstd")
+
+  if (!isTRUE(diagnostics$passed)) {
+    retry_reason <- paste0(
+      "Initial fit failed diagnostics: ",
+      diagnostic_failure_reason(diagnostics, config$diagnostics)
+    )
+    model <- mostr::blrm_markov(
+      formula = model_formula,
+      pcontrast = pcontrast_tx,
+      ppo = ~week,
+      cppo = function(y) as.numeric(as.character(y)),
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      refresh = 0L,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed + 500000L,
+        parallel_chains = config$markov$chains
+      )
+    )
+    diagnostics <- markov_diagnostics(model, config$diagnostics)
+    fit_attempts <- bind_rows(
+      fit_attempts,
+      tibble(
+        imputation = index,
+        attempt = 2L,
+        iterations_per_chain = as.integer(config$markov$retry_iterations),
+        warmup_per_chain = as.integer(config$markov$retry_iterations / 2L),
+        retained_draws_per_chain = as.integer(
+          config$markov$retry_iterations / 2L
+        ),
+        refit_reason = retry_reason,
+        diagnostics_passed = isTRUE(diagnostics$passed),
+        diagnostic_failure_reason = diagnostic_failure_reason(
+          diagnostics,
+          config$diagnostics
+        ),
+        r_version = as.character(getRversion()),
+        mostr_version = as.character(
+          utils::packageVersion("mostr")
+        ),
+        fit_wrapper = attr(model, "markov_fit_wrapper") %||% NA_character_,
+        starting_profile_metadata_stored =
+          !is.null(attr(model, "markov_starting_profile_metadata"))
+      )
+    )
+    arrow::write_parquet(fit_attempts, fit_attempt_path, compression = "zstd")
+  }
+  assert_markov_diagnostics(diagnostics)
+
+  saveRDS(model, model_path, compress = "xz")
+  saveRDS(fit_specification, model_metadata_path)
+  diagnostic_output <- as.data.frame(diagnostics$summary) |>
+    mutate(
+      imputation = index,
+      divergent_transitions = diagnostics$divergent_transitions,
+      treedepth_exceeded = diagnostics$treedepth_exceeded,
+      min_bfmi = diagnostics$min_bfmi
+    )
+  arrow::write_parquet(
+    diagnostic_output,
+    diagnostic_path,
+    compression = "zstd"
+  )
+}
+
+fit_attempt_summary <- purrr::map_dfr(indices, function(index) {
+  arrow::read_parquet(file.path(
+    diagnostic_dir,
+    sprintf("fit-attempts-%02d.parquet", index)
+  )) |>
+    as.data.frame()
+})
+arrow::write_parquet(
+  fit_attempt_summary,
+  file.path(diagnostic_dir, "fit-attempts-all.parquet"),
+  compression = "zstd"
+)
+
+options(datadist = NULL)
+```
