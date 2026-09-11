@@ -22,6 +22,7 @@ States 1–7 run from best to worst QoL; state 8 is death.
 #| include: false
 
 source(here::here("R", "analysis-config.R"))
+library(dplyr)
 
 config <- read_analysis_config()
 cohort_path <- here::here("analysis", "00-data", "results", "analysis-cohort.parquet")
@@ -54,30 +55,32 @@ visit_variable <- intersect(c("date_visit", "visit_date"), names(cohort))
 if (length(visit_variable) != 1L) {
   stop("The analysis cohort must contain exactly one of `date_visit` or legacy `visit_date`.")
 }
-cohort$date_visit <- cohort[[visit_variable]]
+cohort <- cohort |>
+  mutate(date_visit = .data[[visit_variable]])
 
 # Use the same five diagnosis categories in the QoL imputation and analysis
 # models: the four most common diagnoses in the full cohort and "Other".
 # There are not ties.
-diagnosis_label <- as.character(cohort$diagnosis)
-diagnosis_counts <- as.data.frame(
-  table(diagnosis_label, useNA = "no"),
-  stringsAsFactors = FALSE
-)
-diagnosis_counts <- diagnosis_counts[order(
-  -diagnosis_counts$Freq,
-  diagnosis_counts$diagnosis_label
-), ]
-common_diagnoses <- head(diagnosis_counts$diagnosis_label, 4L)
-cohort$diagnosis_group <- ifelse(
-  is.na(diagnosis_label),
-  NA_character_,
-  ifelse(diagnosis_label %in% common_diagnoses, diagnosis_label, "Other")
-)
-cohort$diagnosis_code <- as.integer(factor(
-  cohort$diagnosis_group,
-  levels = c(common_diagnoses, "Other")
-))
+common_diagnoses <- cohort |>
+  filter(!is.na(diagnosis)) |>
+  count(diagnosis, name = "n") |>
+  arrange(desc(n), as.character(diagnosis)) |>
+  slice_head(n = 4L) |>
+  pull(diagnosis) |>
+  as.character()
+
+cohort <- cohort |>
+  mutate(
+    diagnosis_group = case_when(
+      is.na(diagnosis) ~ NA_character_,
+      as.character(diagnosis) %in% common_diagnoses ~ as.character(diagnosis),
+      TRUE ~ "Other"
+    ),
+    diagnosis_code = as.integer(factor(
+      diagnosis_group,
+      levels = c(common_diagnoses, "Other")
+    ))
+  )
 
 primary_columns <- unique(c(
   required_cohort,
@@ -88,96 +91,79 @@ primary_columns <- unique(c(
   )
 ))
 
-baseline <- cohort[c("id", "baseline_q30")]
-baseline$baseline_assessment_id <- NA_character_
-missing_baseline_ids <- baseline$id[is.na(baseline$baseline_q30)]
+baseline <- cohort |>
+  transmute(
+    id,
+    baseline_q30 = as.integer(baseline_q30)
+  )
 
-baseline_candidates <- merge(
-  qol[
-    qol$id %in% missing_baseline_ids &
-      !is.na(qol$q30) & !is.na(qol$questionnaire_date),
-    c(
-    "id", "assessment_id", "questionnaire_date", "q30"
+fallback_baseline <- qol |>
+  filter(
+    id %in% baseline$id[is.na(baseline$baseline_q30)],
+    !is.na(q30),
+    !is.na(questionnaire_date)
+  ) |>
+  select(id, assessment_id, questionnaire_date, q30) |>
+  inner_join(cohort |> select(id, date_visit), by = "id") |>
+  mutate(
+    distance_days = abs(as.integer(questionnaire_date - date_visit))
+  ) |>
+  filter(!is.na(distance_days), distance_days <= 14L) |>
+  arrange(id, distance_days, questionnaire_date, assessment_id) |>
+  distinct(id, .keep_all = TRUE) |>
+  transmute(
+    id,
+    fallback_assessment_id = assessment_id,
+    fallback_q30 = as.integer(q30)
+  )
+
+baseline <- baseline |>
+  left_join(fallback_baseline, by = "id") |>
+  mutate(
+    baseline_assessment_id = if_else(
+      is.na(baseline_q30),
+      fallback_assessment_id,
+      NA_character_
+    ),
+    baseline_q30 = coalesce(baseline_q30, fallback_q30)
+  ) |>
+  select(id, baseline_q30, baseline_assessment_id)
+
+latest <- qol |>
+  filter(
+    !is.na(q30),
+    day > 0,
+    day <= config$analysis$horizon_days
+  ) |>
+  select(id, assessment_id, day, q30) |>
+  left_join(
+    baseline |> select(id, baseline_assessment_id),
+    by = "id"
+  ) |>
+  filter(
+    is.na(baseline_assessment_id) |
+      assessment_id != baseline_assessment_id
+  ) |>
+  arrange(id, day) |>
+  slice_tail(n = 1L, by = id) |>
+  transmute(
+    id,
+    landmark_day = day,
+    landmark_q30 = as.integer(q30)
+  )
+
+prepared <- cohort |>
+  select(all_of(primary_columns), -baseline_q30) |>
+  left_join(baseline, by = "id") |>
+  left_join(latest, by = "id") |>
+  mutate(
+    y_landmark = case_when(
+      event_death == 1L ~ 8L,
+      survival_time_days < config$analysis$horizon_days |
+        is.na(landmark_q30) ~ NA_integer_,
+      TRUE ~ landmark_q30
     )
-  ],
-  cohort[c("id", "date_visit")],
-  by = "id",
-  all = FALSE
-)
-baseline_candidates$distance_days <- abs(as.integer(
-  baseline_candidates$questionnaire_date - baseline_candidates$date_visit
-))
-baseline_candidates <- baseline_candidates[
-  !is.na(baseline_candidates$distance_days) &
-    baseline_candidates$distance_days <= 14L,
-]
-baseline_candidates <- baseline_candidates[order(
-  baseline_candidates$id,
-  baseline_candidates$distance_days,
-  baseline_candidates$questionnaire_date,
-  baseline_candidates$assessment_id
-), ]
-fallback_baseline <- baseline_candidates[
-  !duplicated(baseline_candidates$id),
-  c(
-  "id", "assessment_id", "q30"
   )
-]
-names(fallback_baseline)[names(fallback_baseline) == "assessment_id"] <-
-  "baseline_assessment_id"
-names(fallback_baseline)[names(fallback_baseline) == "q30"] <- "baseline_q30"
-fallback_rows <- match(fallback_baseline$id, baseline$id)
-matched_fallback <- !is.na(fallback_rows)
-fallback_baseline <- fallback_baseline[matched_fallback, ]
-fallback_rows <- fallback_rows[matched_fallback]
-baseline$baseline_q30[fallback_rows] <- fallback_baseline$baseline_q30
-baseline$baseline_assessment_id[fallback_rows] <-
-  fallback_baseline$baseline_assessment_id
-
-valid_qol <- qol[
-  !is.na(qol$q30) & qol$day > 0 & qol$day <= config$analysis$horizon_days,
-  c("id", "assessment_id", "day", "q30")
-]
-baseline_ids <- baseline$baseline_assessment_id[match(valid_qol$id, baseline$id)]
-valid_qol <- valid_qol[
-  is.na(baseline_ids) | valid_qol$assessment_id != baseline_ids,
-]
-valid_qol <- valid_qol[order(valid_qol$id, valid_qol$day), ]
-latest <- valid_qol[!duplicated(valid_qol$id, fromLast = TRUE), ]
-latest$assessment_id <- NULL
-names(latest)[names(latest) == "day"] <- "landmark_day"
-names(latest)[names(latest) == "q30"] <- "landmark_q30"
-
-cohort_primary <- cohort[primary_columns]
-cohort_primary$baseline_q30 <- baseline$baseline_q30[
-  match(cohort_primary$id, baseline$id)
-]
-cohort_primary$baseline_assessment_id <- baseline$baseline_assessment_id[
-  match(cohort_primary$id, baseline$id)
-]
-prepared <- merge(
-  cohort_primary,
-  latest,
-  by = "id",
-  all.x = TRUE,
-  sort = FALSE
-)
-prepared <- prepared[match(cohort$id, prepared$id), ]
-prepared$baseline_q30 <- ifelse(
-  is.na(prepared$baseline_q30),
-  NA_integer_,
-  as.integer(prepared$baseline_q30)
-)
-prepared$y_landmark <- ifelse(
-  prepared$event_death == 1L,
-  8L,
-  ifelse(
-    prepared$survival_time_days < config$analysis$horizon_days |
-      is.na(prepared$landmark_q30),
-    NA_integer_,
-    as.integer(prepared$landmark_q30)
-  )
-)
 
 if (any(!is.na(prepared$baseline_q30) & !prepared$baseline_q30 %in% 1:7)) {
   stop("Baseline Q30 produced a QoL state outside 1:7.")
@@ -196,48 +182,54 @@ arrow::write_parquet(prepared, output_path, compression = "zstd")
 # the cohort data is separate from all follow-up questionnaires. Keep every
 # observed follow-up response here; the supporting imputation stage will
 # restrict its MICE input to confirmed living follow-up and add death afterward.
-long_columns <- intersect(
-  c(
-    "id", "tx", "age", "gender", "diagnosis_code", "ecog_fstcnt",
-    "stage_binary", "plan_fstcnt_coded", "albumin", "c_reactive_protein",
-    "baseline_q30", "event_death", "survival_time_days"
-  ),
-  names(cohort)
-)
-long_base <- cohort[long_columns]
-long_grid <- merge(long_base, data.frame(week = 1:26), by = NULL)
-weekly_qol <- qol[
-  !is.na(qol$q30) & qol$day > 0 & qol$day <= config$analysis$horizon_days,
-  c("id", "assessment_id", "day", "q30")
-]
-weekly_qol$week <- pmax(1L, pmin(26L, ceiling(weekly_qol$day / 7)))
-weekly_qol <- weekly_qol[order(weekly_qol$id, weekly_qol$week, weekly_qol$day), ]
-weekly_qol <- weekly_qol[
-  !duplicated(weekly_qol[c("id", "week")], fromLast = TRUE),
-  c("id", "week", "q30")
-]
-long_grid <- merge(
-  long_grid,
-  weekly_qol,
-  by = c("id", "week"),
-  all.x = TRUE,
-  sort = FALSE
-)
-long_grid$death_week <- ifelse(
-  long_grid$event_death == 1L,
-  pmax(1L, pmin(26L, ceiling(long_grid$survival_time_days / 7))),
-  NA_integer_
-)
-known_alive <- long_grid$week * 7 <= long_grid$survival_time_days |
-  !is.na(long_grid$q30)
-after_death <- long_grid$event_death == 1L &
-  long_grid$week >= long_grid$death_week
-long_grid <- long_grid[known_alive | after_death, ]
-long_grid$y_death_inclusive <- ifelse(
-  long_grid$event_death == 1L & long_grid$week >= long_grid$death_week,
-  8L,
-  ifelse(is.na(long_grid$q30), NA_integer_, as.integer(long_grid$q30))
-)
-long_grid <- long_grid[order(long_grid$id, long_grid$week), ]
+long_base <- cohort |>
+  select(
+    id, tx, age, gender, diagnosis_code, ecog_fstcnt,
+    stage_binary, plan_fstcnt_coded, albumin, c_reactive_protein,
+    baseline_q30, event_death, survival_time_days
+  )
+
+weekly_qol <- qol |>
+  filter(
+    !is.na(q30),
+    day > 0,
+    day <= config$analysis$horizon_days
+  ) |>
+  mutate(
+    week = pmax(
+      1L,
+      pmin(26L, as.integer(ceiling(day / 7)))
+    )
+  ) |>
+  arrange(id, week, day) |>
+  slice_tail(n = 1L, by = c(id, week)) |>
+  select(id, week, q30)
+
+long_grid <- long_base |>
+  cross_join(data.frame(week = 1:26)) |>
+  left_join(weekly_qol, by = c("id", "week")) |>
+  mutate(
+    death_week = if_else(
+      event_death == 1L,
+      pmax(
+        1L,
+        pmin(26L, as.integer(ceiling(survival_time_days / 7)))
+      ),
+      NA_integer_
+    ),
+    known_alive = week * 7L <= survival_time_days | !is.na(q30),
+    after_death = event_death == 1L & week >= death_week
+  ) |>
+  filter(known_alive | after_death) |>
+  mutate(
+    y_death_inclusive = case_when(
+      event_death == 1L & week >= death_week ~ 8L,
+      is.na(q30) ~ NA_integer_,
+      TRUE ~ as.integer(q30)
+    )
+  ) |>
+  select(-known_alive, -after_death) |>
+  arrange(id, week)
+
 arrow::write_parquet(long_grid, longitudinal_path, compression = "zstd")
 ```
