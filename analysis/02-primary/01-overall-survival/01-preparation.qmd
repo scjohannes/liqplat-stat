@@ -17,6 +17,7 @@ deterministic ECOG and mGPS variables used downstream.
 source(here::here("R", "survival-helpers.R"))
 
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+# force <- TRUE
 input_path <- here::here(
   "analysis", "00-data", "results", "analysis-cohort.parquet"
 )
@@ -38,6 +39,7 @@ if (force || !file.exists(output_path)) {
     "ecog_fstcnt", "stage_binary", "lung", "mgps", "age", "gender",
     "albumin", "bilirubin", "c_reactive_protein", "lactate_dehydrogenase"
   )]
+  
   arrow::write_parquet(prepared, output_path)
 }
 ```
