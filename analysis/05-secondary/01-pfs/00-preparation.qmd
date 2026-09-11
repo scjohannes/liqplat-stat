@@ -1,0 +1,60 @@
+---
+title: "Progression-free survival — endpoint preparation"
+format: html
+execute:
+  freeze: false
+---
+
+PFS is the first documented progression or death from randomization. Follow-up
+uses the 2026-09-05 data lock without a 182-day cap, as for BSC. Same-day progression and
+death count as one composite event. No cause-specific PFS model is fitted. Missing baseline covariates are imputed in the next stage.
+
+```{r}
+#| label: prepare-pfs
+#| include: false
+library(tidyverse)
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "data-helpers.R"))
+source(here::here("R", "event-survival-helpers.R"))
+
+config <- read_analysis_config()
+artifact_dir <- here::here("artifacts", "secondary", "pfs")
+result_dir <- here::here("results", "secondary", "pfs")
+
+dir.create(artifact_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- arrow::read_parquet(here::here("analysis", "00-data", "results", "analysis-cohort.parquet"))
+endpoint <- derive_pfs_endpoint(cohort, config$analysis$data_lock)
+
+prepared <- endpoint |>
+  filter(pfs_in_analysis) |>
+  select(id, tx, pfs_time_days, event_pfs, diagnosis, ecog_fstcnt, stage_binary,
+         lung, age, gender, albumin, bilirubin, c_reactive_protein, lactate_dehydrogenase)
+
+stopifnot(nrow(prepared) > 0L, sum(prepared$event_pfs) > 0L, !anyNA(prepared$diagnosis))
+endpoint_audit <- endpoint |> count(tx, pfs_exclusion_reason, name = "participants")
+
+event_counts <- endpoint |>
+  filter(pfs_in_analysis) |>
+  summarise(participants = n(), progression_first = sum(event_progression),
+            death_before_progression = sum(event_death_before_progression),
+            pfs_events = sum(event_pfs), censored = sum(event_pfs == 0), .by = tx)
+
+arrow::write_parquet(endpoint, file.path(result_dir, "endpoint.parquet"))
+arrow::write_parquet(prepared, file.path(artifact_dir, "prepared.parquet"))
+arrow::write_parquet(endpoint_audit, file.path(result_dir, "endpoint-audit.parquet"))
+arrow::write_parquet(event_counts, file.path(result_dir, "event-counts.parquet"))
+```
+
+```{r}
+#| label: tbl-pfs-exclusions
+#| tbl-cap: "PFS analysis population and exclusions"
+knitr::kable(endpoint_audit)
+```
+
+```{r}
+#| label: tbl-pfs-event-counts
+#| tbl-cap: "First progression or death events by randomized group"
+knitr::kable(event_counts)
+```

@@ -1,0 +1,72 @@
+---
+title: "Progression-free survival — unadjusted and adjusted models"
+format: html
+execute:
+  freeze: false
+---
+
+Eleven Bayesian proportional-hazards models estimate the composite endpoint:
+one unadjusted fit, five fits with a lung indicator (binary ECOG, stage, lung, and
+categorical mGPS), and five fits replacing lung with `(1 || diagnosis)`.
+All use the OS five-df M-spline baseline and treatment prior. The diagnosis
+random intercept has a single variance parameter with a `decov()` prior.
+
+```{r}
+#| label: fit-pfs
+#| include: false
+library(tidyverse)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+artifact_dir <- here::here("artifacts", "secondary", "pfs")
+model_dir <- file.path(artifact_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (adjustment in c("unadjusted", "os_adjusted", "diagnosis")) {
+  datasets <- if (adjustment == "unadjusted") {
+    list(arrow::read_parquet(file.path(artifact_dir, "prepared.parquet")) |>
+      select(id, tx, pfs_time_days, event_pfs))
+  } else readRDS(file.path(artifact_dir, paste0("completed-", adjustment, ".rds")))
+
+  formula <- switch(adjustment,
+    unadjusted = survival::Surv(pfs_time_days, event_pfs) ~ tx,
+    os_adjusted = survival::Surv(pfs_time_days, event_pfs) ~ tx + ecog_binary + stage_binary + lung + mgps,
+    diagnosis = survival::Surv(pfs_time_days, event_pfs) ~ tx + ecog_binary + stage_binary + mgps + (1 | diagnosis)
+  )
+
+  coefficients <- switch(adjustment, unadjusted = 1L, os_adjusted = 6L, diagnosis = 5L)
+
+  for (index in seq_along(datasets)) {
+    fitting_data <- datasets[[index]]
+
+    if (adjustment != "unadjusted") {
+      assert_ecog_binary_consistent(fitting_data)
+      assert_mgps_consistent(fitting_data)
+    }
+
+    stopifnot(!anyNA(fitting_data), all(fitting_data$pfs_time_days > 0))
+
+    model_path <- file.path(model_dir, sprintf("%s-%02d.rds", adjustment, index))
+    input_hash <- digest::digest(list(fitting_data, deparse(formula), "pfs-ph-v1"))
+    model <- if (!force && file.exists(model_path)) readRDS(model_path) else NULL
+
+    if (!is.null(model) && identical(attr(model, "input_hash"), input_hash)) next
+
+    model <- rstanarm::stan_surv(
+      formula, data = fitting_data, basehaz = "ms", basehaz_ops = list(df = 5),
+      prior = rstanarm::normal(location = rep(0, coefficients), scale = c(0.55, rep(2.5, coefficients - 1L))),
+      prior_intercept = rstanarm::normal(0, 20), prior_aux = rstanarm::dirichlet(1),
+      prior_covariance = rstanarm::decov(),
+      chains = 4L, cores = 4L, iter = 2000L, warmup = 1000L, adapt_delta = 0.99, refresh = 0L,
+      seed = analysis_seed(config, "supporting", index, offset = switch(adjustment,
+        unadjusted = 2300L, os_adjusted = 2400L, diagnosis = 2500L))
+    )
+
+    attr(model, "input_hash") <- input_hash
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

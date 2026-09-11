@@ -1,0 +1,127 @@
+---
+title: "Progression-free survival — five covariate imputations"
+format: html
+execute:
+  freeze: false
+---
+
+Each adjusted analysis uses five MICE datasets, with 50 iterations and five
+donors. PFS event status and its Nelson–Aalen cumulative hazard inform both
+imputation models. Identifiers, randomized treatment, event status, and
+follow-up times are not imputed. Age, gender, bilirubin, and LDH are auxiliary
+covariates. Binary ECOG and categorical mGPS are derived from completed sources.
+
+The analysis with a lung indicator uses proportional-odds imputation
+for ordered ECOG and predictive mean matching for laboratories. The diagnosis
+analysis replaces lung with a diagnosis random intercept in every incomplete
+covariate's two-level predictive mean matching model. ECOG uses a numeric
+working model with observed integer categories as donors in this second run.
+
+```{r}
+#| label: impute-pfs
+#| include: false
+library(tidyverse)
+library(mice)
+library(miceadds)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+artifact_dir <- here::here("artifacts", "secondary", "pfs")
+figure_dir <- file.path(artifact_dir, "figures")
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(file.path(artifact_dir, "prepared.parquet")) |>
+  mutate(diagnosis = factor(diagnosis), gender = factor(gender))
+
+prepared$na_pfs <- mice::nelsonaalen(prepared, timevar = pfs_time_days, statusvar = event_pfs)
+
+imputations <- list()
+
+for (adjustment in c("os_adjusted", "diagnosis")) {
+  imputation_data <- if (adjustment == "os_adjusted") {
+    prepared |> select(-diagnosis) |> mutate(ecog_fstcnt = ordered(ecog_fstcnt))
+  } else {
+    prepared |> mutate(diagnosis_id = as.integer(diagnosis)) |> select(-diagnosis, -lung)
+  }
+
+  incomplete <- names(which(colSums(is.na(imputation_data)) > 0))
+
+  methods <- mice::make.method(imputation_data)
+  methods[] <- ""
+  methods[incomplete] <- if (adjustment == "os_adjusted") "pmm" else "2l.pmm"
+
+  if (adjustment == "os_adjusted") methods["ecog_fstcnt"] <- "polr"
+
+  predictors <- mice::make.predictorMatrix(imputation_data)
+  predictors[, c("id", "pfs_time_days")] <- 0
+  predictors[!nzchar(methods), ] <- 0
+
+  if (adjustment == "diagnosis") predictors[incomplete, "diagnosis_id"] <- -2
+
+  input_hash <- digest::digest(list(imputation_data, methods, predictors, config$imputation$supporting))
+  imputation_path <- file.path(artifact_dir, paste0("imputations-", adjustment, ".rds"))
+  imputation <- if (!force && file.exists(imputation_path)) readRDS(imputation_path) else NULL
+
+  if (is.null(imputation) || !identical(attr(imputation, "input_hash"), input_hash)) {
+    imputation <- mice::mice(
+      imputation_data, method = methods, predictorMatrix = predictors,
+      m = 5L, maxit = 50L, donors = 5L, printFlag = FALSE,
+      seed = analysis_seed(config, "supporting", offset = if (adjustment == "os_adjusted") 2200L else 2201L)
+    )
+    attr(imputation, "input_hash") <- input_hash
+    saveRDS(imputation, imputation_path, compress = "xz")
+  }
+
+  completed_datasets <- lapply(1:5, function(index) {
+    completed <- mice::complete(imputation, index) |>
+      mutate(diagnosis = prepared$diagnosis, ecog_binary = derive_ecog_binary(ecog_fstcnt),
+             mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2))
+
+    assert_ecog_binary_consistent(completed)
+    assert_mgps_consistent(completed)
+
+    stopifnot(!anyNA(completed), imputation$m == 5L,
+              all(as.numeric(as.character(completed$ecog_fstcnt)) %in% 0:4),
+              identical(completed$pfs_time_days, prepared$pfs_time_days),
+              identical(completed$event_pfs, prepared$event_pfs))
+    completed
+  })
+
+  if (adjustment == "diagnosis") {
+    stopifnot(all(imputation$predictorMatrix[incomplete, "diagnosis_id"] == -2))
+  }
+
+  saveRDS(completed_datasets, file.path(artifact_dir, paste0("completed-", adjustment, ".rds")))
+  imputations[[adjustment]] <- imputation
+
+  png(file.path(figure_dir, paste0("imputation-traces-", adjustment, ".png")), width = 1500, height = 1200, res = 150)
+  print(plot(imputation, layout = c(2, 5)))
+  dev.off()
+
+  png(file.path(figure_dir, paste0("imputation-distributions-", adjustment, ".png")), width = 1500, height = 900, res = 150)
+  print(densityplot(imputation, ~albumin + bilirubin + c_reactive_protein + lactate_dehydrogenase))
+  dev.off()
+}
+```
+
+```{r}
+#| label: fig-pfs-imputation-checks
+#| fig-cap: "Imputation traces and laboratory distributions: Adjusted (fixed) followed by Adjusted (hierarchical)"
+#| fig-alt: "Means and standard deviations across MICE iterations, and observed-versus-imputed laboratory densities, for each of the two five-imputation analyses."
+knitr::include_graphics(file.path(figure_dir, c(
+  "imputation-traces-os_adjusted.png", "imputation-distributions-os_adjusted.png",
+  "imputation-traces-diagnosis.png", "imputation-distributions-diagnosis.png"
+)))
+```
+
+```{r}
+#| label: tbl-pfs-imputation-events
+imap_dfr(imputations, function(imputation, adjustment) {
+  if (is.null(imputation$loggedEvents)) return(tibble())
+  imputation$loggedEvents |> count(dep, meth, out) |> mutate(adjustment = adjustment)
+}) |> knitr::kable()
+```

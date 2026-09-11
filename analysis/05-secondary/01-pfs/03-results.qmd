@@ -1,0 +1,252 @@
+---
+title: "Progression-free survival — results and diagnostics"
+format: html
+execute:
+  freeze: false
+---
+
+PFS counts progression or death as one composite endpoint. Adjusted hazard-ratio
+summaries combine 500 posterior draws from each of five imputations with equal
+weight; the unadjusted summary uses all retained draws. Standardized curves
+and day-182 contrasts use 500 draws per fitted model, averaging over patients
+within each draw. Adjusted (hierarchical) predictions retain the fitted diagnosis
+effects and use their corresponding completed covariates. All intervals are
+95% posterior credible intervals.
+
+The reported HR is `exp(beta_tx)`: Adjusted (fixed) conditions on its baseline
+covariates, and Adjusted (hierarchical) additionally conditions on the diagnosis
+random intercept. Changing the adjustment structure therefore changes the HR
+estimand. Hazard ratios are non-collapsible, so differences from the unadjusted
+HR need not reflect confounding alone. Pooling draws across imputations does
+not marginalize the HR over patients. In contrast, the standardized survival
+curves and day-182 survival differences are marginal over the analysis cohort.
+A hazard ratio derived from these marginal curves would generally vary with time.
+Curves extend to maximum observed PFS follow-up; the day-182 contrast is unchanged.
+
+```{r}
+#| label: summarize-pfs
+#| include: false
+library(tidyverse)
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+artifact_dir <- here::here("artifacts", "secondary", "pfs")
+result_dir <- here::here("results", "secondary", "pfs")
+figure_dir <- file.path(artifact_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(file.path(artifact_dir, "prepared.parquet"))
+max_follow_up <- max(prepared$pfs_time_days)
+labels <- c(unadjusted = "Unadjusted", os_adjusted = "Adjusted (fixed)", diagnosis = "Adjusted (hierarchical)")
+fits <- list()
+
+for (adjustment in names(labels)) {
+  datasets <- if (adjustment == "unadjusted") {
+    list(prepared |> select(id, tx, pfs_time_days, event_pfs))
+  } else readRDS(file.path(artifact_dir, paste0("completed-", adjustment, ".rds")))
+
+  for (index in seq_along(datasets)) {
+    fits[[paste(adjustment, index, sep = "-")]] <- list(
+      model = readRDS(file.path(artifact_dir, "models", sprintf("%s-%02d.rds", adjustment, index))),
+      data = datasets[[index]], adjustment = adjustment,
+      imputation = if (adjustment == "unadjusted") 0L else index
+    )
+  }
+}
+
+diagnostics <- map_dfr(fits, function(fit) {
+  parameters <- posterior::summarise_draws(posterior::as_draws_array(fit$model))
+  sampler <- rstan::get_sampler_params(fit$model$stanfit, inc_warmup = FALSE)
+
+  tibble(adjustment = fit$adjustment, imputation = fit$imputation,
+    max_rhat = max(parameters$rhat, na.rm = TRUE),
+    min_ess_bulk = min(parameters$ess_bulk, na.rm = TRUE),
+    min_ess_tail = min(parameters$ess_tail, na.rm = TRUE),
+    divergences = sum(vapply(sampler, function(x) sum(x[, "divergent__"]), numeric(1))),
+    treedepth_hits = sum(vapply(sampler, function(x) sum(x[, "treedepth__"] >= 10), numeric(1))),
+    min_bfmi = min(vapply(sampler, function(x) mean(diff(x[, "energy__"])^2) / var(x[, "energy__"]), numeric(1))))
+})
+
+arrow::write_parquet(diagnostics, file.path(result_dir, "diagnostics.parquet"))
+
+stopifnot(nrow(diagnostics) == 11L,
+          all(diagnostics$max_rhat <= config$diagnostics$max_rhat),
+          all(diagnostics$min_ess_bulk >= config$diagnostics$min_ess_bulk),
+          all(diagnostics$min_ess_tail >= config$diagnostics$min_ess_tail),
+          all(diagnostics$divergences == 0), all(diagnostics$treedepth_hits == 0),
+          all(diagnostics$min_bfmi >= config$diagnostics$min_bfmi))
+
+hr_draws <- map_dfr(fits, function(fit) {
+  hr <- exp(as.numeric(as.matrix(fit$model, pars = "tx")))
+
+  if (fit$imputation > 0L) {
+    set.seed(2600L + fit$imputation)
+    hr <- sample(hr, 500L)
+  }
+  if (fit$adjustment == "diagnosis") {
+    stopifnot(identical(fit$model$cnms$diagnosis, "(Intercept)"),
+              length(grep("^Sigma", colnames(as.matrix(fit$model)))) == 1L)
+  }
+  tibble(adjustment = fit$adjustment, imputation = fit$imputation,
+         draw = seq_along(hr), hazard_ratio = hr)
+})
+
+hr_summary <- hr_draws |>
+  summarise(median = median(hazard_ratio), lower_95 = quantile(hazard_ratio, 0.025),
+            upper_95 = quantile(hazard_ratio, 0.975), probability_hr_below_one = mean(hazard_ratio < 1),
+            .by = adjustment)
+
+curves <- map_dfr(fits, function(fit) {
+  posterior_standardized_survival_draws(fit$model, fit$data, horizon = max_follow_up,
+    n_points = 200L, n_draws = 500L, seed = 2600L + fit$imputation) |>
+    mutate(adjustment = fit$adjustment, imputation = fit$imputation)
+})
+
+stopifnot(min(curves$time) == 0, max(curves$time) == max_follow_up,
+          all(is.finite(curves$survival)), all(dplyr::between(curves$survival, 0, 1)))
+
+checks <- map_dfr(fits, function(fit) {
+  newdata <- fit$data |> mutate(tx = 1)
+  individual <- posterior_survfit_compatible(fit$model, newdata = newdata, times = 182,
+    extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 2600L)[[1]]
+
+  standardized <- posterior_survfit_compatible(fit$model, newdata = newdata, times = 182,
+    extrapolate = FALSE, standardise = TRUE, return_matrix = TRUE, draws = 100L, seed = 2600L)[[1]]
+
+  error <- max(abs(rowMeans(individual) - as.numeric(standardized)))
+  stopifnot(error < 1e-10)
+  diagnosis_range <- NA_real_
+
+  if (fit$adjustment == "diagnosis") {
+    contrast_data <- newdata[rep(1L, nlevels(newdata$diagnosis)), ]
+    contrast_data$diagnosis <- factor(levels(newdata$diagnosis), levels = levels(newdata$diagnosis))
+
+    predictions <- posterior_survfit_compatible(fit$model, newdata = contrast_data, times = 182,
+      extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 2600L)[[1]]
+
+    diagnosis_range <- max(apply(predictions, 1, function(x) diff(range(x))))
+
+    stopifnot(diagnosis_range > 1e-8)
+  }
+
+  tibble(adjustment = fit$adjustment, imputation = fit$imputation,
+         maximum_averaging_error = error, maximum_diagnosis_contrast = diagnosis_range)
+})
+
+
+landmark_draws <- map_dfr(fits, function(fit) {
+  predictions <- lapply(0:1, function(treatment) {
+    newdata <- fit$data |> mutate(tx = treatment)
+    as.numeric(posterior_survfit_compatible(fit$model, newdata = newdata, times = 182,
+      extrapolate = FALSE, standardise = TRUE, return_matrix = TRUE,
+      draws = 500L, seed = 2600L + fit$imputation)[[1]])
+  })
+  contrast <- predictions[[2]] - predictions[[1]]
+  stopifnot(length(contrast) == 500L, sd(contrast) > 0)
+  tibble(adjustment = fit$adjustment, imputation = fit$imputation, draw = 1:500,
+         control = predictions[[1]], intervention = predictions[[2]], contrast = contrast)
+})
+
+stopifnot(all((hr_draws |> filter(imputation > 0) |> count(adjustment, imputation))$n == 500L),
+          all(count(landmark_draws, adjustment, imputation)$n == 500L), nrow(landmark_draws) == 5500L)
+
+landmarks <- landmark_draws |>
+  summarise(control = median(control), intervention = median(intervention),
+            difference = median(contrast), lower_95 = quantile(contrast, 0.025),
+            upper_95 = quantile(contrast, 0.975), probability_difference_positive = mean(contrast > 0),
+            .by = adjustment)
+
+curve_summary <- curves |>
+  summarise(median = median(survival), lower_95 = quantile(survival, 0.025),
+            upper_95 = quantile(survival, 0.975), .by = c(adjustment, tx, time))
+
+arrow::write_parquet(hr_draws, file.path(result_dir, "hazard-ratio-draws.parquet"))
+arrow::write_parquet(hr_summary, file.path(result_dir, "summary.parquet"))
+arrow::write_parquet(landmark_draws, file.path(result_dir, "day-182-draws.parquet"))
+arrow::write_parquet(landmarks, file.path(result_dir, "day-182-summary.parquet"))
+arrow::write_parquet(checks, file.path(result_dir, "prediction-checks.parquet"))
+arrow::write_parquet(curves, file.path(artifact_dir, "standardized-survival-draws.parquet"))
+```
+
+```{r}
+#| label: tbl-pfs-hazard-ratios
+#| tbl-cap: "PFS treatment hazard ratios, intervention versus control"
+hr_summary |> mutate(adjustment = unname(labels[adjustment])) |> knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: fig-pfs-hazard-ratios
+#| fig-cap: "Unadjusted, Adjusted (fixed), and Adjusted (hierarchical) PFS hazard ratios"
+#| fig-alt: "Treatment hazard ratios with 95 percent credible intervals for the three PFS adjustment approaches and a reference line at one."
+#| fig-width: 8
+#| fig-height: 4
+hr_plot <- hr_summary |>
+  mutate(adjustment = factor(adjustment, levels = names(labels), labels = labels)) |>
+  ggplot(aes(median, adjustment, xmin = lower_95, xmax = upper_95)) +
+  geom_pointrange(orientation = "y") +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+  scale_x_log10() + labs(x = "Hazard ratio, intervention versus control", y = NULL) + theme_bw()
+
+ggsave(file.path(figure_dir, "hazard-ratios.png"), hr_plot, width = 8, height = 4, dpi = 150)
+
+hr_plot
+```
+
+```{r}
+#| label: fig-pfs-standardized
+#| fig-cap: "Marginal standardized progression-free survival through maximum observed follow-up, with 95% credible intervals"
+#| fig-alt: "Control and intervention PFS curves for each adjustment approach, standardized over the observed cohort with fitted diagnosis effects retained in the random-intercept model."
+#| fig-width: 11
+#| fig-height: 5
+survival_plot <- ggplot(curve_summary, aes(time, median, color = factor(tx), fill = factor(tx))) +
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), alpha = 0.15, color = NA) + geom_line() +
+  facet_wrap(~adjustment, labeller = as_labeller(labels)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(breaks = seq(0, max_follow_up, by = 100)) +
+  scale_color_discrete(labels = c("Control", "Intervention")) +
+  scale_fill_discrete(labels = c("Control", "Intervention")) +
+  labs(x = "Days from randomization", y = "Progression-free survival", color = NULL, fill = NULL) + theme_minimal()
+
+ggsave(file.path(figure_dir, "standardized-survival.png"), survival_plot, width = 11, height = 5, dpi = 150)
+
+survival_plot
+```
+
+```{r}
+#| label: tbl-pfs-day-182
+#| tbl-cap: "Day-182 progression-free survival and intervention-minus-control difference"
+landmarks |> mutate(adjustment = unname(labels[adjustment])) |> knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: fig-pfs-kaplan-meier
+#| fig-cap: "Observed progression-free survival with censor marks, numbers at risk, and cumulative progression-or-death events every 100 days"
+#| fig-alt: "Unadjusted Kaplan-Meier PFS curves for control and intervention participants, showing uncertainty, censoring, and numbers at risk."
+#| fig-width: 8
+#| fig-height: 6
+observed <- prepared |> mutate(tx_label = factor(tx, levels = 0:1, labels = c("Control", "Intervention")))
+km_fit <- ggsurvfit::survfit2(survival::Surv(pfs_time_days, event_pfs) ~ tx_label, data = observed)
+risk_times <- seq(0, max(observed$pfs_time_days), by = 100)
+
+km_plot <- ggsurvfit::ggsurvfit(km_fit) + ggsurvfit::add_confidence_interval() +
+  ggsurvfit::add_censor_mark() + scale_x_continuous(breaks = risk_times) +
+  ggsurvfit::add_risktable(times = risk_times, risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")) +
+  labs(x = "Days from randomization", y = "Progression-free survival")
+
+ggsave(file.path(figure_dir, "kaplan-meier.png"), ggsurvfit::ggsurvfit_build(km_plot), width = 8, height = 6, dpi = 150)
+
+km_plot
+```
+
+```{r}
+#| label: tbl-pfs-diagnostics
+diagnostics |> mutate(adjustment = unname(labels[adjustment])) |> knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: tbl-pfs-prediction-checks
+#| tbl-cap: "Prediction checks at day 182. Maximum averaging error compares standardized survival with the patient average within each posterior draw (zero indicates agreement). Maximum diagnosis contrast changes only diagnosis while holding other covariates fixed, verifying that fitted diagnosis effects enter predictions. This check applies only to Adjusted (hierarchical) models; NA denotes not applicable."
+checks |> mutate(adjustment = unname(labels[adjustment])) |> knitr::kable(digits = 10)
+```
