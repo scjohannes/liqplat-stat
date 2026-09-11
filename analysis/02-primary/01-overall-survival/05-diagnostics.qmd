@@ -1,6 +1,6 @@
 ---
 title: "Overall survival — primary diagnostics"
-subtitle: "Posterior diagnostics for 50 Bayesian survival fits"
+subtitle: "Adjusted (fixed): posterior diagnostics for 50 Bayesian survival fits"
 format: html
 execute:
   freeze: false
@@ -151,10 +151,7 @@ curve_summary$tx <- factor(
   levels = 0:1,
   labels = c("Control", "Intervention")
 )
-risk_times <- c(
-  seq(0, config$analysis$horizon_days - 30, by = 30),
-  config$analysis$horizon_days
-)
+risk_times <- seq(0, config$analysis$horizon_days, by = 100)
 
 survival_plot <- ggsurvfit::ggsurvfit(
   km_fit,
@@ -190,8 +187,8 @@ survival_plot <- ggsurvfit::ggsurvfit(
   ggplot2::theme_bw() +
   ggsurvfit::add_risktable(
     times = risk_times,
-    risktable_stats = "n.risk",
-    stats_label = list(n.risk = "At risk")
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
   )
 
 imputations <- readRDS(here::here(
@@ -350,7 +347,7 @@ arrow::write_parquet(
 ```{r}
 #| label: fig-os-km-model-check
 #| fig-cap: "Observed Kaplan–Meier estimates, numbers at risk, and pooled standardized posterior survival curves"
-#| fig-alt: "Survival plot by randomized group with an aligned number-at-risk table. Dashed steps show Kaplan–Meier estimates with censoring marks; solid lines and bands show median Bayesian model predictions and 95 percent credible intervals."
+#| fig-alt: "Survival plot by randomized group with aligned at-risk and cumulative-event counts every 100 days. Dashed steps show Kaplan–Meier estimates with censoring marks; solid lines and bands show median Bayesian model predictions and 95 percent credible intervals."
 #| fig-width: 8
 #| fig-height: 6.5
 #| echo: false
