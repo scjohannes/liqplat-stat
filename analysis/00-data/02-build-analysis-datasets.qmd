@@ -1,343 +1,191 @@
 ---
-title: "LIQPLAT analysis-ready data derivation"
-date: 2026-08-20
-format:
-  html:
-    toc: true
+title: "LIQPLAT analysis datasets"
+date: 2026-08-24
+format: html
 execute:
-  echo: false
+  echo: true
   warning: false
   message: false
 ---
 
-This stage joins approved pseudonymized domains and derives analysis-ready
-flags. It does not call REDCap, re-extract private fields, or replace missing
-source values with zero. Administrative censoring uses the configured lock and
-182-day horizon whenever the required event fields are available.
+This stage performs the small number of derivations shared by several
+analyses. Participant-level fields remain together in one wide cohort dataset;
+only repeated QoL, TAOOH, ctDNA-sample, and alteration records are long.
 
 ```{r}
-#| label: setup
-#| include: false
+#| label: build-analysis-datasets
 
-source(here::here("analysis", "_module-common.R"), local = FALSE)
-liqplat_source_public_helpers()
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "data-helpers.R"))
+
 config <- read_analysis_config()
-force <- module_force()
-stage_id <- "data_build_analysis_datasets"
-result_dir <- module_result_dir(file.path("analysis", "00-data"))
-checkpoint_path <- module_checkpoint_path(stage_id)
+# force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+force <- TRUE
+private_dir <- here::here(config_get(config, "paths", "private_data"))
+result_dir <- here::here("analysis", "00-data", "results")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 validation_path <- file.path(result_dir, "input-validation.parquet")
-cohort_path <- file.path(result_dir, "analysis-cohort.parquet")
-recruitment_path <- file.path(result_dir, "analysis-recruitment.parquet")
-ctdna_path <- file.path(result_dir, "analysis-ctdna-samples.parquet")
-alterations_path <- file.path(result_dir, "analysis-alterations.parquet")
-qol_path <- file.path(result_dir, "analysis-qol.parquet")
-taooh_path <- file.path(result_dir, "analysis-taooh.parquet")
-imaging_path <- file.path(result_dir, "analysis-imaging.parquet")
-progression_bsc_path <- file.path(result_dir, "analysis-progression-bsc.parquet")
-status_path <- file.path(result_dir, "build-status.parquet")
 
-manifest_info <- read_private_manifest_if_present(config)
-if (is.null(manifest_info)) stop("The input-validation manifest is missing.")
 if (!file.exists(validation_path)) {
-  stop("Run 00-data/01-validate-inputs.qmd before building analysis datasets.")
-}
-validation <- read_result_table(validation_path)
-if (any(validation$status %in% c("missing_required", "schema_missing",
-                                  "manifest_entry_missing", "manifest_marks_unavailable"))) {
-  stop("Input validation has required failures; analysis datasets are not built.")
+  stop("Run 00-data/01-validate-inputs.qmd first.")
 }
 
-private_files <- list.files(
-  project_path(config_get(config, "paths", "private_data")),
-  pattern = "\\.parquet$", full.names = TRUE, ignore.case = TRUE
+validation <- arrow::read_parquet(validation_path) |>
+  as.data.frame()
+domains <- c(
+  "recruitment",
+  "cohort_follow_up",
+  "qol",
+  "taooh",
+  "ctdna_samples",
+  "alterations"
 )
-schema_files <- list.files(project_path(config_get(config, "paths", "schema_dir")),
-                           pattern = "\\.yml$", full.names = TRUE, ignore.case = TRUE)
-input_paths <- c(validation_path, manifest_info$path, private_files, schema_files)
-output_paths <- c(cohort_path, recruitment_path, status_path)
-if (file.exists(private_domain_path(config, "ctdna_samples"))) {
-  output_paths <- c(output_paths, ctdna_path)
-}
-if (file.exists(private_domain_path(config, "alterations"))) {
-  output_paths <- c(output_paths, alterations_path)
-}
-passthrough_output_paths <- c(
-  qol = qol_path, taooh = taooh_path, imaging = imaging_path,
-  progression_bsc = progression_bsc_path
+output_paths <- c(
+  recruitment = file.path(result_dir, "analysis-recruitment.parquet"),
+  cohort_follow_up = file.path(result_dir, "analysis-cohort.parquet"),
+  qol = file.path(result_dir, "analysis-qol.parquet"),
+  taooh = file.path(result_dir, "analysis-taooh.parquet"),
+  ctdna_samples = file.path(result_dir, "analysis-ctdna-samples.parquet"),
+  alterations = file.path(result_dir, "analysis-alterations.parquet")
 )
-for (domain in names(passthrough_output_paths)) {
-  if (file.exists(private_domain_path(config, domain))) {
-    output_paths <- c(output_paths, unname(passthrough_output_paths[[domain]]))
-  }
+status_path <- file.path(result_dir, "build-status.parquet")
+if (!setequal(validation$domain[validation$status == "validated"], domains)) {
+  stop("All six private datasets must pass input validation.")
 }
-decision <- checkpoint_decision(
-  checkpoint_path, stage_id, input_paths = input_paths,
-  output_paths = output_paths,
-  code_paths = here::here("analysis", "00-data", "02-build-analysis-datasets.qmd"),
-  config = config, force = force
-)
 
-if (identical(decision, "skip")) {
-  build_status <- read_result_table(status_path)
+if (!force && all(file.exists(c(output_paths, status_path)))) {
+  build_status <- arrow::read_parquet(status_path) |>
+    as.data.frame()
 } else {
-  cohort_source <- load_private_domain(config, "cohort_follow_up", required = TRUE)
-  recruitment_source <- load_private_domain(config, "recruitment", required = TRUE)
-  require_public_columns(cohort_source,
-                         c("id", "randomization_date", "tx", "diagnosis"),
-                         "cohort_follow_up")
-  if (anyDuplicated(cohort_source$id)) {
-    stop("cohort_follow_up must contain one row per pseudonymized patient.")
-  }
-  cohort_source$randomization_date <- parse_analysis_date(
-    cohort_source$randomization_date, "randomization_date", allow_missing = FALSE
-  )
-  cohort_source$tx <- validate_binary(cohort_source$tx, "tx", allow_missing = FALSE)
-  require_public_columns(recruitment_source,
-                         c("id", "screened_date", "eligible"), "recruitment")
-  recruitment_source$screened_date <- parse_analysis_date(
-    recruitment_source$screened_date, "screened_date", allow_missing = FALSE
-  )
-  recruitment_source$eligible <- validate_binary(
-    recruitment_source$eligible, "eligible", allow_missing = FALSE
-  )
-  if ("randomization_date" %in% names(recruitment_source)) {
-    recruitment_source$randomization_date <- parse_analysis_date(
-      recruitment_source$randomization_date, "randomization_date"
-    )
-  }
-  if ("enrolled_date" %in% names(recruitment_source)) {
-    recruitment_source$enrolled_date <- parse_analysis_date(
-      recruitment_source$enrolled_date, "enrolled_date"
-    )
-  }
-  if ("tx" %in% names(recruitment_source)) {
-    recruitment_source$tx <- validate_binary(recruitment_source$tx, "tx")
-  }
-  write_module_table(recruitment_source, recruitment_path)
-  recruitment_groups <- split(seq_len(nrow(recruitment_source)),
-                               as.character(recruitment_source$id), drop = TRUE)
-  recruitment_rows <- lapply(recruitment_groups, function(index) {
-    part <- recruitment_source[index, , drop = FALSE]
-    result <- data.frame(
-      id = as.character(part$id[[1L]]),
-      screened_date = min(part$screened_date, na.rm = TRUE),
-      eligible = as.integer(max(part$eligible, na.rm = TRUE)),
-      recruitment_records = nrow(part),
-      stringsAsFactors = FALSE
-    )
-    if ("randomization_date" %in% names(part)) {
-      values <- part$randomization_date[!is.na(part$randomization_date)]
-      result$randomization_date <- if (length(values) == 0L) as.Date(NA) else min(values)
-    }
-    if ("enrolled_date" %in% names(part)) {
-      values <- part$enrolled_date[!is.na(part$enrolled_date)]
-      result$enrolled_date <- if (length(values) == 0L) as.Date(NA) else min(values)
-    }
-    if ("tx" %in% names(part)) {
-      values <- unique(part$tx[!is.na(part$tx)])
-      if (length(values) > 1L) stop("Conflicting recruitment assignment for patient.")
-      result$tx <- if (length(values) == 0L) NA_integer_ else as.integer(values[[1L]])
-    }
-    result
-  })
-  recruitment <- do.call(rbind, recruitment_rows)
-  rownames(recruitment) <- NULL
-  analysis_cohort <- merge(cohort_source, recruitment, by = "id", all = TRUE,
-                           suffixes = c("", ".recruitment"))
-  for (column_name in intersect(c("randomization_date", "tx"), names(recruitment))) {
-    recruitment_name <- paste0(column_name, ".recruitment")
-    if (recruitment_name %in% names(analysis_cohort)) {
-      analysis_cohort[[column_name]] <- coalesce_checked(
-        analysis_cohort[[column_name]], analysis_cohort[[recruitment_name]], column_name
-      )
-      analysis_cohort[[recruitment_name]] <- NULL
-    }
-  }
-  require_public_columns(analysis_cohort,
-                         c("id", "randomization_date", "tx", "diagnosis"),
-                         "analysis cohort")
-  if (anyNA(analysis_cohort$randomization_date) || anyNA(analysis_cohort$tx)) {
-    stop("Analysis cohort has missing randomization assignment after the domain join.")
-  }
+recruitment <- arrow::read_parquet(file.path(private_dir, "recruitment.parquet")) |>
+  as.data.frame()
+cohort <- arrow::read_parquet(file.path(private_dir, "cohort_follow_up.parquet")) |>
+  as.data.frame()
+qol <- arrow::read_parquet(file.path(private_dir, "qol.parquet")) |>
+  as.data.frame()
+taooh <- arrow::read_parquet(file.path(private_dir, "taooh.parquet")) |>
+  as.data.frame()
+ctdna <- arrow::read_parquet(file.path(private_dir, "ctdna_samples.parquet")) |>
+  as.data.frame()
+alterations <- arrow::read_parquet(file.path(private_dir, "alterations.parquet")) |>
+  as.data.frame()
 
-  death_status_observed <- FALSE
-  if ("status_death" %in% names(analysis_cohort)) {
-    analysis_cohort$status_death <- validate_binary(analysis_cohort$status_death,
-                                                    "status_death")
-    if (any(analysis_cohort$status_death == 1 &
-            is.na(analysis_cohort$death_date), na.rm = TRUE)) {
-      stop("status_death = 1 requires a recorded death_date.")
-    }
-    death_status_observed <- all(!is.na(analysis_cohort$status_death))
+required_columns <- list(
+  recruitment = c("informed_consent_date", "randomization_date", "group_assignment"),
+  cohort_follow_up = c(
+    "id", "randomization_date", "tx", "diagnosis", "death_date",
+    "follow_up_end_date", "status_death", "survival_time_days_unrestricted",
+    "status_death_unrestricted", "potential_follow_up_days", "invitation_offered", "invitation_accepted"
+  ),
+  qol = c("id", "assessment_id", "day", "q30", "baseline_q30"),
+  taooh = c("id", "week", "y_taooh"),
+  ctdna_samples = c("sample_id", "id", "sample_date", "lod_q1", "lod_q3"),
+  alterations = c("alteration_id", "sample_id", "id")
+)
+datasets <- list(
+  recruitment = recruitment,
+  cohort_follow_up = cohort,
+  qol = qol,
+  taooh = taooh,
+  ctdna_samples = ctdna,
+  alterations = alterations
+)
+for (domain in names(datasets)) {
+  missing_columns <- setdiff(required_columns[[domain]], names(datasets[[domain]]))
+  if (length(missing_columns) > 0L) {
+    stop(domain, " is missing: ", paste(missing_columns, collapse = ", "))
   }
-  if ("death_date" %in% names(analysis_cohort) &&
-      (any(!is.na(analysis_cohort$death_date)) || death_status_observed)) {
-    analysis_cohort$death_date <- parse_analysis_date(analysis_cohort$death_date, "death_date")
-    lock_date <- parse_analysis_date(config_get(config, "analysis", "data_lock"),
-                                     "data_lock", allow_missing = FALSE)
-    horizon_days <- as.integer(config_get(config, "analysis", "horizon_days"))
-    if (is.na(horizon_days) || horizon_days < 1L) {
-      stop("analysis.horizon_days must be a positive integer.")
-    }
-    origin <- parse_analysis_date(analysis_cohort$randomization_date,
-                                  "randomization_date", allow_missing = FALSE)
-    event_date <- analysis_cohort$death_date
-    follow_up_end <- if ("follow_up_end_date" %in% names(analysis_cohort)) {
-      parse_analysis_date(analysis_cohort$follow_up_end_date, "follow_up_end_date")
-    } else {
-      rep(lock_date, nrow(analysis_cohort))
-    }
-    follow_up_end[is.na(follow_up_end)] <- lock_date
-    follow_up_end <- pmin(follow_up_end, lock_date)
-    administrative_end <- pmin(origin + horizon_days, follow_up_end)
-    if (any(!is.na(event_date) & event_date < origin)) {
-      stop("death_date precedes randomization_date.")
-    }
-    if (any(!is.na(administrative_end) & administrative_end < origin)) {
-      stop("Follow-up end precedes randomization_date.")
-    }
-    event_death <- !is.na(event_date) & event_date <= administrative_end
-    event_or_censor_date <- administrative_end
-    event_or_censor_date[event_death] <- event_date[event_death]
-    analysis_cohort$survival_time_days <- as.numeric(
-      event_or_censor_date - origin
-    )
-    analysis_cohort$event_death <- as.integer(event_death)
-    analysis_cohort$censor_date <- administrative_end
-    analysis_cohort$event_or_censor_date <- event_or_censor_date
-  } else {
-    analysis_cohort$survival_derivation_status <- "pending_death_date"
-  }
-  write_module_table(analysis_cohort, cohort_path)
+}
 
-  ctdna <- load_private_domain(config, "ctdna_samples", required = FALSE)
-  status_rows <- list(data.frame(domain = "cohort_follow_up", status = "built",
-                                 n_rows = nrow(analysis_cohort),
-                                 stringsAsFactors = FALSE))
-  status_rows[[length(status_rows) + 1L]] <- data.frame(
-    domain = "recruitment", status = "joined", n_rows = nrow(recruitment_source),
-    stringsAsFactors = FALSE
-  )
-  if (!is.null(ctdna)) {
-    require_public_columns(ctdna, c("sample_id", "id"), "ctDNA samples")
-    if ("sample_date" %in% names(ctdna)) {
-      ctdna$sample_date <- parse_analysis_date(ctdna$sample_date, "sample_date")
-    }
-    if ("analysis_date" %in% names(ctdna)) {
-      ctdna$analysis_date <- parse_analysis_date(ctdna$analysis_date, "analysis_date")
-    }
-    lod_columns <- c("lod_q1", "lod_q3")
-    if (all(lod_columns %in% names(ctdna))) {
-      sample_dates <- parse_analysis_date(ctdna$sample_date, "sample_date")
-      lod_q1 <- suppressWarnings(as.numeric(as.character(ctdna$lod_q1)))
-      lod_q3 <- suppressWarnings(as.numeric(as.character(ctdna$lod_q3)))
-      ctdna$attempted_sample <- !is.na(sample_dates)
-      ctdna$ctdna_error_derived <- as.integer(
-        ctdna$attempted_sample & is.na(lod_q1) & is.na(lod_q3)
-      )
-      if ("ctdna_error" %in% names(ctdna)) {
-        ctdna$ctdna_error_qc <- validate_binary(ctdna$ctdna_error, "ctdna_error")
-      } else {
-        ctdna$ctdna_error_qc <- NA_real_
-      }
-      ctdna$valid_ctdna_result <- ctdna$attempted_sample &
-        ctdna$ctdna_error_derived == 0L
-    } else {
-      ctdna$valid_ctdna_result <- NA
-      ctdna$technical_validity_status <- "pending_lod_q1_q3"
-    }
-    write_module_table(ctdna, ctdna_path)
-    status_rows[[length(status_rows) + 1L]] <- data.frame(
-      domain = "ctdna_samples", status = if (all(lod_columns %in% names(ctdna)))
-        "built_with_validity" else "built_validity_pending",
-      n_rows = nrow(ctdna), stringsAsFactors = FALSE
-    )
-  } else {
-    status_rows[[length(status_rows) + 1L]] <- data.frame(
-      domain = "ctdna_samples", status = "optional_missing", n_rows = NA_integer_,
-      stringsAsFactors = FALSE
-    )
-  }
+if (anyDuplicated(cohort$id)) stop("cohort_follow_up must have one row per patient.")
+if (anyDuplicated(ctdna$sample_id)) stop("ctdna_samples must have one row per sample.")
 
-  alterations <- load_private_domain(config, "alterations", required = FALSE)
-  if (!is.null(alterations)) {
-    require_public_columns(alterations, c("alteration_id", "sample_id", "id"),
-                           "alterations")
-    if (!is.null(ctdna) && "valid_ctdna_result" %in% names(ctdna)) {
-      sample_lookup <- ctdna[, intersect(c("sample_id", "valid_ctdna_result",
-                                            "ctdna_detected"), names(ctdna)),
-                             drop = FALSE]
-      if (anyDuplicated(sample_lookup$sample_id)) stop("ctDNA sample IDs are not unique.")
-      alterations <- merge(alterations, sample_lookup, by = "sample_id", all.x = TRUE,
-                           suffixes = c("", ".sample"))
-    } else {
-      alterations$valid_ctdna_result <- NA
-    }
-    write_module_table(alterations, alterations_path)
-    status_rows[[length(status_rows) + 1L]] <- data.frame(
-      domain = "alterations", status = "built", n_rows = nrow(alterations),
-      stringsAsFactors = FALSE
-    )
-  } else {
-    status_rows[[length(status_rows) + 1L]] <- data.frame(
-      domain = "alterations", status = "optional_missing", n_rows = NA_integer_,
-      stringsAsFactors = FALSE
-    )
-  }
+cohort$randomization_date <- parse_analysis_date(
+  cohort$randomization_date,
+  "randomization_date",
+  allow_missing = FALSE
+)
+cohort$death_date <- parse_analysis_date(cohort$death_date, "death_date")
+cohort$follow_up_end_date <- parse_analysis_date(
+  cohort$follow_up_end_date,
+  "follow_up_end_date",
+  allow_missing = FALSE
+)
+source(here::here("R", "taooh-helpers.R"))
+validate_taooh_follow_up(taooh, cohort)
 
-  passthrough_domains <- list(
-    qol = list(path = qol_path, columns = c("id", "assessment_id", "day", "q30", "baseline_q30")),
-    taooh = list(path = taooh_path, columns = c("id", "week", "y_taooh")),
-    imaging = list(path = imaging_path, columns = c("imaging_id", "id", "imaging_date")),
-    progression_bsc = list(path = progression_bsc_path,
-                           columns = c("event_id", "id", "event_date", "event_type"))
-  )
-  for (domain in names(passthrough_domains)) {
-    value <- load_private_domain(config, domain, required = FALSE)
-    if (is.null(value)) next
-    require_public_columns(value, passthrough_domains[[domain]]$columns, domain)
-    write_module_table(value, passthrough_domains[[domain]]$path)
-    status_rows[[length(status_rows) + 1L]] <- data.frame(
-      domain = domain, status = "built", n_rows = nrow(value),
-      stringsAsFactors = FALSE
-    )
-  }
+cohort$tx <- validate_binary(cohort$tx, "tx", allow_missing = FALSE)
+cohort$event_death <- validate_binary(
+  cohort$status_death,
+  "status_death",
+  allow_missing = FALSE
+)
+# Dates have been shifted for privacy. The private preparation has already
+# applied the primary endpoint censoring, so the public build must not compare
+# shifted dates with the unshifted calendar data lock or truncate them again.
+cohort$survival_time_days <- as.numeric(
+  cohort$follow_up_end_date - cohort$randomization_date
+)
 
-  pending_rows <- data.frame(
-    domain = c("treatment_lines", "weekly_treatment", "solid_msi", "solid_tmb",
-               "treatment_details"),
-    status = "pending_source_contract",
-    n_rows = NA_integer_,
-    stringsAsFactors = FALSE
+ctdna$sample_date <- parse_analysis_date(ctdna$sample_date, "sample_date")
+lod_q1 <- suppressWarnings(as.numeric(as.character(ctdna$lod_q1)))
+lod_q3 <- suppressWarnings(as.numeric(as.character(ctdna$lod_q3)))
+ctdna$attempted_sample <- !is.na(ctdna$sample_date)
+ctdna$ctdna_error_derived <- as.integer(
+  ctdna$attempted_sample & is.na(lod_q1) & is.na(lod_q3)
+)
+ctdna$valid_ctdna_result <- ctdna$attempted_sample &
+  ctdna$ctdna_error_derived == 0L
+
+sample_lookup <- ctdna[c(
+  "sample_id",
+  "valid_ctdna_result",
+  "ctdna_detected"
+)]
+names(sample_lookup)[-1L] <- c(
+  "sample_valid_ctdna_result",
+  "sample_ctdna_detected"
+)
+alterations <- merge(alterations, sample_lookup, by = "sample_id", all.x = TRUE)
+if (anyNA(alterations$sample_valid_ctdna_result)) {
+  stop("Every alteration must refer to a ctDNA sample in ctdna_samples.parquet.")
+}
+alterations$valid_ctdna_result <- alterations$sample_valid_ctdna_result
+alterations$ctdna_detected <- alterations$sample_ctdna_detected
+alterations$sample_valid_ctdna_result <- NULL
+alterations$sample_ctdna_detected <- NULL
+
+datasets <- list(
+  recruitment = recruitment,
+  cohort_follow_up = cohort,
+  qol = qol,
+  taooh = taooh,
+  ctdna_samples = ctdna,
+  alterations = alterations
+)
+for (domain in names(datasets)) {
+  arrow::write_parquet(
+    datasets[[domain]],
+    output_paths[[domain]],
+    compression = "zstd"
   )
-  build_status <- rbind(do.call(rbind, status_rows), pending_rows)
-  rownames(build_status) <- NULL
-  write_module_table(build_status, status_path)
-  finalize_module_checkpoint(
-    stage_id = stage_id,
-    checkpoint_path = checkpoint_path,
-    input_paths = input_paths,
-    output_paths = c(cohort_path, recruitment_path, status_path,
-                     if (file.exists(ctdna_path)) ctdna_path else character(),
-                     if (file.exists(alterations_path)) alterations_path else character(),
-                     if (file.exists(qol_path)) qol_path else character(),
-                     if (file.exists(taooh_path)) taooh_path else character(),
-                     if (file.exists(imaging_path)) imaging_path else character(),
-                     if (file.exists(progression_bsc_path)) progression_bsc_path else character()),
-    config = config,
-    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
-                    status = "built"),
-    code_paths = here::here("analysis", "00-data", "02-build-analysis-datasets.qmd")
-  )
+}
+
+build_status <- data.frame(
+  domain = domains,
+  n_rows = vapply(datasets, nrow, integer(1)),
+  status = "built",
+  stringsAsFactors = FALSE
+)
+arrow::write_parquet(build_status, status_path, compression = "zstd")
 }
 ```
 
 ```{r}
 #| label: build-status
-#| tbl-cap: "Analysis-dataset build status"
+#| tbl-cap: "Analysis datasets"
+#| echo: false
 
 build_status |>
-  transform(n_rows = ifelse(is.na(n_rows), "not available", as.character(n_rows))) |>
   knitr::kable()
 ```

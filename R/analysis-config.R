@@ -55,8 +55,8 @@ validate_analysis_config <- function(config, production = FALSE) {
   }
 
   if (!identical(as.character(config_get(config, "analysis", "data_lock")),
-                 "2026-08-21")) {
-    stop("The data lock must be exactly 2026-08-21.")
+                 "2026-09-05")) {
+    stop("The data lock must be exactly 2026-09-05.")
   }
   if (!identical(as.integer(config_get(config, "analysis", "horizon_days")),
                  182L)) {
@@ -66,11 +66,18 @@ validate_analysis_config <- function(config, production = FALSE) {
   main_m <- as.integer(config_get(config, "imputation", "main", "m"))
   main_maxit <- as.integer(config_get(config, "imputation", "main", "maxit"))
   supporting <- as.integer(config_get(config, "imputation", "supporting", "indices"))
+  supporting_draws <- as.integer(config_get(
+    config,
+    "imputation", "supporting", "post_estimation_draws"
+  ))
   if (!identical(main_m, 50L) || !identical(main_maxit, 50L)) {
     stop("Main imputation settings must be m = 50 and maxit = 50.")
   }
   if (!identical(supporting, 1:5)) {
     stop("Supporting imputations must be exactly 1:5.")
+  }
+  if (!identical(supporting_draws, 500L)) {
+    stop("Five-imputation supporting analyses must use 500 posterior draws per imputation.")
   }
 
   markov <- config$markov

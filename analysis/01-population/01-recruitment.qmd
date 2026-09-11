@@ -1,154 +1,145 @@
 ---
 title: "LIQPLAT recruitment"
-date: 2026-08-20
+date: 2026-08-24
 format:
   html:
     toc: true
 execute:
-  echo: false
+  echo: true
   warning: false
   message: false
 ---
 
-Recruitment is summarized from the pseudonymized event interface. The source
-screening and random-selection dates are used only to build aggregate counts;
-individual dates and identifiers are never printed.
+Recruitment uses the dedicated three-column `recruitment.parquet` export.
+Randomization is counted on its recorded date; consent is counted on
+`informed_consent_date`. Rows with identical dates and assignments are distinct
+participants and are not deduplicated. No patient-level join is performed.
 
 ```{r}
-#| label: setup
-#| include: false
+#| label: recruitment
 
-source(here::here("analysis", "_module-common.R"), local = FALSE)
-liqplat_source_public_helpers()
-config <- read_analysis_config()
-force <- module_force()
-stage_id <- "population_recruitment"
-result_dir <- module_result_dir(file.path("analysis", "01-population"))
-checkpoint_path <- module_checkpoint_path(stage_id)
-recruitment_path <- file.path(result_dir, "recruitment-summary.parquet")
-figure_path <- file.path(result_dir, "recruitment-cumulative.svg")
-input_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
-                        "analysis-cohort.parquet")
-recruitment_input_path <- file.path(
-  module_result_dir(file.path("analysis", "00-data")),
-  "analysis-recruitment.parquet"
+source(here::here("R", "data-validation.R"))
+
+input_path <- here::here(
+  "analysis", "00-data", "results", "analysis-recruitment.parquet"
 )
-if (!file.exists(input_path) || !file.exists(recruitment_input_path)) {
-  stop("Recruitment requires the built analysis cohort and recruitment Parquet.")
-}
-input_paths <- c(input_path, recruitment_input_path)
-output_paths <- c(recruitment_path, figure_path)
-decision <- checkpoint_decision(
-  checkpoint_path, stage_id, input_paths = input_paths,
-  output_paths = output_paths,
-  code_paths = here::here("analysis", "01-population", "01-recruitment.qmd"),
-  config = config, force = force
+result_dir <- here::here("analysis", "01-population", "results")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+recruitment <- read_pseudonymized_parquet(
+  input_path, schema = here::here("data", "schema", "recruitment.yml")
+)
+randomized <- recruitment |>
+  dplyr::filter(!is.na(randomization_date), group_assignment %in% c(0, 1))
+recruitment_summary <- data.frame(
+  step = c(
+    "randomized_total",
+    "selected_for_invitation",
+    "not_selected",
+    "enrolled"
+  ),
+  n = c(
+    nrow(randomized),
+    sum(randomized$group_assignment == 1),
+    sum(randomized$group_assignment == 0),
+    sum(!is.na(randomized$informed_consent_date))
+  ),
+  stringsAsFactors = FALSE
+)
+arrow::write_parquet(
+  recruitment_summary,
+  file.path(result_dir, "recruitment-summary.parquet")
 )
 
-if (identical(decision, "skip")) {
-  recruitment_summary <- read_result_table(recruitment_path)
-} else {
-  recruitment <- read_result_table(recruitment_input_path)
-  require_public_columns(recruitment, c("id", "screened_date", "eligible"),
-                         "recruitment accounting")
-  recruitment$screened_date <- parse_analysis_date(recruitment$screened_date,
-                                                   "screened_date", allow_missing = FALSE)
-  recruitment$eligible <- validate_binary(recruitment$eligible, "eligible",
-                                          allow_missing = FALSE)
-  if ("randomization_date" %in% names(recruitment)) {
-    recruitment$randomization_date <- parse_analysis_date(recruitment$randomization_date,
-                                                           "randomization_date")
-  }
-  if ("enrolled_date" %in% names(recruitment)) {
-    recruitment$enrolled_date <- parse_analysis_date(recruitment$enrolled_date,
-                                                     "enrolled_date")
-  }
-  if ("tx" %in% names(recruitment)) recruitment$tx <- validate_binary(recruitment$tx, "tx")
-  if (anyDuplicated(recruitment$id)) {
-    id_groups <- split(seq_len(nrow(recruitment)), as.character(recruitment$id), drop = TRUE)
-    recruitment_rows <- lapply(id_groups, function(index) {
-      part <- recruitment[index, , drop = FALSE]
-      result <- data.frame(
-        id = as.character(part$id[[1L]]),
-        screened_date = min(part$screened_date, na.rm = TRUE),
-        eligible = as.integer(max(part$eligible, na.rm = TRUE)),
-        recruitment_records = nrow(part),
-        stringsAsFactors = FALSE
-      )
-      if ("randomization_date" %in% names(part)) {
-        values <- part$randomization_date[!is.na(part$randomization_date)]
-        result$randomization_date <- if (length(values) == 0L) as.Date(NA) else min(values)
-      }
-      if ("enrolled_date" %in% names(part)) {
-        values <- part$enrolled_date[!is.na(part$enrolled_date)]
-        result$enrolled_date <- if (length(values) == 0L) as.Date(NA) else min(values)
-      }
-      if ("tx" %in% names(part)) {
-        values <- unique(part$tx[!is.na(part$tx)])
-        if (length(values) > 1L) stop("Conflicting recruitment assignment for patient.")
-        result$tx <- if (length(values) == 0L) NA_integer_ else as.integer(values[[1L]])
-      }
-      result
-    })
-    recruitment <- do.call(rbind, recruitment_rows)
-    rownames(recruitment) <- NULL
-  }
-  recruitment_summary <- data.frame(
-    step = c("screened", "eligible", "selected_for_invitation", "not_selected"),
-    n = c(
-      nrow(recruitment),
-      sum(recruitment$eligible == 1),
-      if ("tx" %in% names(recruitment)) sum(recruitment$eligible == 1 & recruitment$tx == 1,
-                                             na.rm = TRUE) else NA_integer_,
-      if ("tx" %in% names(recruitment)) sum(recruitment$eligible == 1 & recruitment$tx == 0,
-                                             na.rm = TRUE) else NA_integer_
-    ),
-    stringsAsFactors = FALSE
-  )
-  if ("enrolled_date" %in% names(recruitment)) {
-    recruitment_summary <- rbind(
-      recruitment_summary,
-      data.frame(step = "enrolled", n = sum(!is.na(recruitment$enrolled_date)),
-                 stringsAsFactors = FALSE)
-    )
-  }
-  write_module_table(recruitment_summary, recruitment_path)
+accepted <- randomized |>
+  dplyr::filter(group_assignment == 1, !is.na(informed_consent_date))
 
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    stop("Package 'ggplot2' is required for the recruitment figure.")
-  }
-  selected <- recruitment[!is.na(recruitment$randomization_date), , drop = FALSE]
-  if (nrow(selected) > 0L) {
-    selected <- selected[order(selected$randomization_date), , drop = FALSE]
-    selected$cumulative_n <- seq_len(nrow(selected))
-    plot <- ggplot2::ggplot(selected, ggplot2::aes(randomization_date, cumulative_n)) +
-      ggplot2::geom_step() +
-      ggplot2::labs(x = "Calendar month", y = "Cumulative selected patients") +
-      ggplot2::theme_minimal()
-  } else {
-    plot <- ggplot2::ggplot() +
-      ggplot2::labs(x = "Calendar month", y = "Cumulative selected patients",
-                    subtitle = "No random-selection dates available at the data lock.") +
-      ggplot2::theme_minimal()
-  }
-  assert_artifact_path(figure_path)
-  ggplot2::ggsave(figure_path, plot = plot, width = 8, height = 4, units = "in")
-  finalize_module_checkpoint(
-    stage_id = stage_id,
-    checkpoint_path = checkpoint_path,
-    input_paths = input_paths,
-    output_paths = output_paths,
-    config = config,
-    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
-                    status = "built"),
-    code_paths = here::here("analysis", "01-population", "01-recruitment.qmd")
+recruitment_colors <- c(
+  "Randomized comparison (total)" = "#777777",
+  "Selected for invitation" = "#000000",
+  "Accepted invitation" = "#068194"
+)
+recruitment_events <- dplyr::bind_rows(
+  randomized |>
+    dplyr::transmute(date = randomization_date,
+                     group = "Randomized comparison (total)"),
+  randomized |>
+    dplyr::filter(group_assignment == 1) |>
+    dplyr::transmute(date = randomization_date,
+                     group = "Selected for invitation"),
+  accepted |>
+    dplyr::transmute(date = informed_consent_date, group = "Accepted invitation")
+)
+stopifnot(nrow(recruitment_events) > 0)
+plot_dates <- seq(min(recruitment_events$date) - 1,
+                  max(recruitment_events$date), by = "day")
+recruitment_cumulative <- recruitment_events |>
+  dplyr::count(group, date) |>
+  tidyr::complete(group = names(recruitment_colors), date = plot_dates,
+                  fill = list(n = 0L)) |>
+  dplyr::arrange(group, date) |>
+  dplyr::group_by(group) |>
+  dplyr::mutate(cumulative_n = cumsum(n)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(group = factor(group, levels = names(recruitment_colors)))
+
+recruitment_plot <- ggplot2::ggplot(
+  recruitment_cumulative,
+  ggplot2::aes(date, cumulative_n, color = group, fill = group)
+) +
+  ggplot2::geom_area(position = "identity", alpha = 0.12, color = NA) +
+  ggplot2::geom_line(linewidth = 0.7) +
+  ggplot2::geom_point(
+    data = dplyr::filter(recruitment_cumulative, n > 0), size = 1
+  ) +
+  ggplot2::geom_hline(yintercept = 150, linetype = "dashed", color = "#068194") +
+  ggplot2::annotate(
+    "text", x = min(plot_dates), y = 150,
+    label = "Uptake target: 150", hjust = 0, vjust = -0.6,
+    color = "#068194", size = 4
+  ) +
+  ggplot2::scale_color_manual(values = recruitment_colors, drop = FALSE) +
+  ggplot2::scale_fill_manual(values = recruitment_colors, drop = FALSE) +
+  ggplot2::scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  ggplot2::scale_y_continuous(
+    limits = c(0, NA), breaks = scales::breaks_width(50),
+    minor_breaks = scales::breaks_width(25),
+    expand = ggplot2::expansion(mult = c(0, 0.08))
+  ) +
+  ggplot2::labs(x = NULL, y = "Cumulative number of patients",
+                color = NULL, fill = NULL) +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(
+    legend.position = "bottom",
+    panel.grid.major.x = ggplot2::element_blank(),
+    panel.grid.minor.x = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_line(color = "gray80"),
+    panel.grid.minor.y = ggplot2::element_line(color = "gray95"),
+    plot.background = ggplot2::element_rect(fill = "white", color = NA)
   )
-}
+ggplot2::ggsave(
+  file.path(result_dir, "recruitment-cumulative.svg"),
+  recruitment_plot,
+  width = 10,
+  height = 5
+)
+```
+
+```{r}
+#| label: fig-recruitment
+#| echo: false
+#| fig-width: 10
+#| fig-height: 5
+#| fig-cap: "Cumulative recruitment: both randomized groups combined, patients selected for invitation (group_assignment = 1), and selected patients with recorded informed consent. Randomized and selected patients are counted on their randomization date; acceptance is counted on the informed consent date. Shaded areas overlap and are not additive."
+#| fig-alt: "Three cumulative recruitment curves for the randomized comparison, selection for invitation, and invitation acceptance, with a dashed uptake target at 150 patients."
+
+recruitment_plot
 ```
 
 ```{r}
 #| label: recruitment-table
 #| tbl-cap: "Aggregate recruitment accounting"
+#| echo: false
 
 recruitment_summary |>
   knitr::kable()

@@ -1,6 +1,8 @@
 ---
 title: "TAOOH — primary preparation"
 subtitle: "Observed weekly histories and patient-level covariates"
+params:
+  horizon_days: 182
 format: html
 execute:
   freeze: false
@@ -9,25 +11,31 @@ execute:
 The weekly state is 1 = alive/out of hospital, 2 = planned admission,
 3 = emergency room, 4 = unplanned admission, and 5 = dead. Unobserved states
 remain missing. This stage constructs the observed first- and second-order
-history and removes rows after either previous state is 5.
+history through the requested horizon (182 days by default). Death appears
+in its observed week only for fitting; empirical SOPs carry death forward
+through the plotting horizon. Censored living states are never carried forward.
 
 ```{r}
 #| label: prepare-taooh-data
 #| include: false
+source(here::here("R", "taooh-helpers.R"))
+horizon_days <- params$horizon_days
+horizon_weeks <- taooh_horizon_weeks(horizon_days)
+
 library(tidyverse)
+source(here::here("R", "analysis-config.R"))
+config <- read_analysis_config()
 
 
 cohort_path <- here::here(
   "analysis", "00-data", "results", "analysis-cohort.parquet"
 )
-taooh_path <- here::here(
+taooh_input_path <- here::here(
   "analysis", "00-data", "results", "analysis-taooh.parquet"
 )
-output_path <- here::here(
-  "artifacts", "primary", "taooh", "prepared.parquet"
+output_path <- taooh_path("artifacts", horizon_days, "prepared.parquet"
 )
-figure_path <- here::here(
-  "artifacts", "primary", "taooh", "figures",
+figure_path <- taooh_path("artifacts", horizon_days, "figures",
   "empirical-state-occupancy.png"
 )
 dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
@@ -35,8 +43,18 @@ dir.create(dirname(figure_path), recursive = TRUE, showWarnings = FALSE)
 
 cohort <- arrow::read_parquet(cohort_path) |>
   as.data.frame()
-taooh <- arrow::read_parquet(taooh_path) |>
+taooh <- arrow::read_parquet(taooh_input_path) |>
   as.data.frame()
+
+validate_taooh_follow_up(taooh, cohort)
+# Keep unrestricted input intact; apply the requested fitting/plotting horizon here.
+taooh <- taooh |> filter(week <= horizon_weeks)
+cohort <- cohort |>
+  mutate(
+    survival_time_days = pmin(survival_time_days_unrestricted, horizon_days),
+    event_death = as.integer(status_death_unrestricted == 1L &
+                             survival_time_days_unrestricted <= horizon_days)
+  )
 
 if (any(!is.na(taooh$y_taooh) & !taooh$y_taooh %in% 1:5)) {
   stop("Observed TAOOH states must be in 1:5.")
@@ -57,7 +75,8 @@ cohort <- cohort |>
 # after entry into the absorbing death state for transition-model fitting.
 empirical_sop_data <- cohort |>
   select(id, tx) |>
-  left_join(taooh, by = "id") |>
+  left_join(taooh_empirical_history(taooh, horizon_days), by = "id") |>
+  filter(week >= 1L) |>
   mutate(
     y_taooh = factor(
       y_taooh,
@@ -73,7 +92,7 @@ empirical_sop_data <- cohort |>
     tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
   )
 
-empirical_sop_plot <- markov.misc::plot_sops(
+empirical_sop_plot <- mostr::plot_sops(
   empirical_sop_data,
   facet_var = NULL,
   time_var = "week",
@@ -118,13 +137,13 @@ analysis_data <- cohort |>
   group_by(id) |>
   mutate(
     y = as.integer(y_taooh),
-    yprev = lag(y, 1L),
-    ypprev = lag(y, 2L)
+    yprev = if_else(week - lag(week) == 1L, lag(y), NA_integer_),
+    ypprev = if_else(week - lag(week, 2L) == 2L, lag(y, 2L), NA_integer_)
   ) |>
   ungroup() |>
   filter(
     week >= 1L,
-    !is.na(y), #this results in 296 patients, two exclusions because first week missing
+    !is.na(y),
     !is.na(yprev),
     !is.na(ypprev),
     yprev != 5L,

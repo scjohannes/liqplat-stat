@@ -5,6 +5,41 @@ questions that must be resolved in the private preparation environment before
 the corresponding public Parquet can be marked analyzable. No value is
 imputed merely because a field is absent.
 
+## Public data boundary
+
+- `cohort_follow_up.parquet` is the single participant-level wide table. It
+  contains recruitment and invitation fields, baseline covariates, follow-up
+  and event dates, MTB fields, and the aggregate blood-product, CT, MRI,
+  PET/PET-CT, total-imaging, and unique-biopsy-day outcomes.
+- `recruitment.parquet` contains only `informed_consent_date`,
+  `randomization_date`, and `group_assignment` (0 = comparator, 1 = invitation).
+  It is used for calendar recruitment plots without joining to shifted cohort
+  dates. Identical rows are valid and must not be deduplicated.
+- Separate Parquet files also hold repeated observations:
+  `qol.parquet`, `taooh.parquet`, `ctdna_samples.parquet`, and
+  `alterations.parquet`.
+- Missing participant-level counts remain missing. The private build does not
+  infer zero from the absence of an event row.
+
+## TAOOH observation rule
+
+- Weekly exports continue to valid death by the lock, or last-known-alive
+  censoring capped at the lock (2026-09-05), without a 182-day/26-week cap.
+- The public pipeline uses `survival_time_days_unrestricted` and
+  `status_death_unrestricted` from the private export. Shifted dates must not
+  be compared with the unshifted lock. The primary `follow_up_end_date`
+  remains capped at 182 days and must not truncate unrestricted TAOOH.
+- Positive weeks run from day 1, with terminal week `ceiling(days / 7)`;
+  a day-zero death is assigned week 1. Baseline weeks are retained.
+- No exported rows follow the patient endpoint. The final week may be partial;
+  its state summarizes only observed days. Death is state 5 in the death week.
+- Empirical SOPs carry death forward through the selected plotting horizon.
+  Model fitting uses observed rows only, retaining entry into death but no
+  post-death transitions. Living censored states are never carried forward.
+- QoL and all three blood-product counts remain capped at 182 days.
+  `n_blood_products` is the combined count; `n_erythrocyte_concentrates` and
+  `n_thrombocyte_concentrates` are its components. Missing counts remain missing.
+
 ## Baseline and treatment fields
 
 - `plan_fstcnt_coded` must be confirmed as treatment intent at baseline. The
@@ -43,19 +78,37 @@ imputed merely because a field is absent.
 
 ## CHIP and actionability
 
-- `chip_suspicion` is expected at variant level. Preserve links to variant,
+- `chip_suspicion` is expected at mutation level and comes from the slot-specific
+  `ctdna_chip1`--`ctdna_chip20` fields, not the sample-level
+  `ctdna_suspicion_chip` summary. Preserve links to variant,
   gene, sample, and pseudonymous patient, retain the sample time point, record
   coding for uncertain/unclassifiable variants, and document duplicate
   variants across samples. The canonical public name is `chip_suspicion`.
+  CHIP status is not applicable to CNV and fusion records; these records remain
+  eligible for actionability summaries rather than being excluded as missing.
 - Actionability is taken from exact OncoKB sensitivity-level and
   resistance-level fields. Keep mutation, CNV, and fusion records in a long
-  table; do not rank or collapse levels. Alteration-level counts include every
-  exact recorded level. Patient-level proportions use patients with at least
-  one valid ctDNA result as denominator and allow a patient to occupy multiple
-  levels. CHIP alterations are excluded from actionability summaries.
+  table; do not collapse levels or use their order as a numeric analysis
+  variable. Display and explain the published sensitivity order 1, 2, 3A, 3B,
+  4 and the separate resistance order R1, R2. Show these seven canonical rows
+  even when their count is zero, and append every other exact non-empty string
+  as a separate row. Preserve the recorded OncoKB version and update date for
+  every alteration. CHIP alterations are excluded from actionability summaries.
+- The alteration-count table reports evidence direction, exact level, OncoKB
+  category, position within direction, definition, recorded version(s), update
+  range, mutation/CNV/fusion record counts, and total alteration-record count.
+- The evidence-level patient table reports unique patients with at least one
+  mutation, CNV, fusion, and any alteration at each exact level, together with
+  the common denominator of patients with at least one valid ctDNA result and
+  the any-alteration patient proportion. Type-specific patient counts may
+  overlap and are not summed.
+- A separate overall patient table reports any sensitivity evidence, any
+  resistance evidence, their union, their intersection, and no actionable
+  finding, with patient count, common valid-ctDNA denominator, and proportion.
 - “No actionable finding” means no non-CHIP alteration has any recorded exact
   sensitivity/resistance evidence. Unknown, not-assessed, and missing values
-  remain visible as recorded/missing states and are not treated as evidence.
+  remain visible in a separate completeness/QC table with alteration-record and
+  patient counts; they are not treated as evidence.
 
 ## Solid pathology outcomes (pending)
 
@@ -78,23 +131,11 @@ imputed merely because a field is absent.
 
 ## Follow-up pathology utilization
 
-Event-level non-liquid pathology records must retain pseudonymous patient and
-sample codes, extraction/sampling date, material type, order identifier, and
-topography. Use the pathology extraction date as the preferred sampling date;
-maintain an explicit exclusion list for liquid-biopsy material/codes. The
-primary count is unique patient/date/sample combinations after randomization,
-with strict `sample_date > randomization_date` when timestamps are unavailable;
-same-day records are examined separately. A sample count is not called a
-procedure count. Common horizons or time-at-risk adjustment are required, and
-the event-level count must be reconciled to any aggregate biopsy field. The
-private extraction should join
-`CDWH.V_IL_DIM_LABOR_SAMPLE_PATHOLOGY_CID` to
-`CDWH.V_IL_DIM_LABOR_ORDER_PATHOLOGY_CID` on `LOP_BK`, link `PAT_BK` through
-the authorized crosswalk, and retain the CDWH extraction/data-lock version.
-Suggested repeating fields are `other_biopsy_sample_code`,
-`other_biopsy_sample_date`, `other_biopsy_material_type_code`,
-`other_biopsy_order_id`, `other_biopsy_topography_code`,
-`other_biopsy_source`, and `other_biopsy_extract_date`.
+The analysis uses the REDCap participant-level field
+`n_solid_biopsy_analyses`, defined in the data dictionary as the number of
+unique days on which tissue was sampled. Its public name is
+`unique_biopsy_days`. It is analyzed with the prespecified exposure offset;
+missing values remain missing. No separate biopsy-event export is required.
 
 ## MTB
 

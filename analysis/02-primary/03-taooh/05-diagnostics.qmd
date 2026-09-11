@@ -1,6 +1,8 @@
 ---
 title: "TAOOH — primary diagnostics"
-subtitle: "Second-order Markov diagnostics for 50 completed datasets"
+subtitle: "Full proportional-odds second-order diagnostics for 50 imputations"
+params:
+  horizon_days: 182
 format: html
 execute:
   freeze: false
@@ -9,23 +11,25 @@ execute:
 ```{r}
 #| label: check-taooh-models
 #| include: false
+source(here::here("R", "taooh-helpers.R"))
+horizon_days <- params$horizon_days
+horizon_weeks <- taooh_horizon_weeks(horizon_days)
+
 library(dplyr)
 source(here::here("R", "analysis-config.R"))
 source(here::here("R", "markov-helpers.R"))
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
-indices <- seq_len(config$imputation$main$m)[1:2]
+indices <- seq_len(config$imputation$main$m)
 taooh_diagnostic_thresholds <- config$diagnostics
 taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
-model_dir <- here::here("artifacts", "primary", "taooh", "models")
-diagnostic_dir <- here::here("artifacts", "primary", "taooh", "diagnostics")
-trace_dir <- file.path(diagnostic_dir, "trace-plots")
+model_dir <- taooh_path("artifacts", horizon_days, "models")
+diagnostic_dir <- taooh_path("artifacts", horizon_days, "diagnostics")
 stan_dx_dir <- file.path(diagnostic_dir, "stan-dx")
-figure_dir <- here::here("artifacts", "primary", "taooh", "figures")
-result_path <- here::here("results", "primary", "taooh", "diagnostics.parquet")
+figure_dir <- taooh_path("artifacts", horizon_days, "figures")
+result_path <- taooh_path("results", horizon_days, "diagnostics.parquet")
 dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(dirname(result_path), recursive = TRUE, showWarnings = FALSE)
@@ -36,7 +40,7 @@ for (index in indices) {
     diagnostic_dir,
     sprintf("diagnostics-%02d.parquet", index)
   )
-  if (!force && file.exists(output_path)) next
+  if (!force && taooh_outputs_current(output_path, model_path)) next
 
   diagnostics <- markov_diagnostics(
     readRDS(model_path),
@@ -62,45 +66,10 @@ diagnostics <- lapply(diagnostic_paths, function(path) {
 arrow::write_parquet(do.call(rbind, diagnostics), result_path)
 ```
 
-One trace plot is saved for every fitted model. The trace selection uses the
-indexed raw Stan parameter names produced by `rmsb`, retaining ordinal
-intercepts, regression coefficients, partial-proportional-odds coefficients,
-and random-effect scale parameters while excluding pointwise log likelihoods.
-Numerical diagnostics continue to cover the full posterior.
-
-```{r}
-#| label: save-taooh-trace-plots
-#| include: false
-
-for (index in indices) {
-  trace_path <- file.path(trace_dir, sprintf("trace-%02d.png", index))
-  if (!force && file.exists(trace_path)) next
-
-  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
-  draws <- posterior::as_draws_array(rmsb::stanGet(model))
-  trace_variables <- posterior::variables(draws)
-  trace_variables <- trace_variables[grepl(
-    "^(alpha|beta|tau|sigma|sd)(\\[|$)",
-    trace_variables
-  )]
-  if (length(trace_variables) == 0L) {
-    stop("No TAOOH alpha, beta, tau, or scale parameters were found for trace plotting.")
-  }
-  trace_plot <- bayesplot::mcmc_trace(draws, pars = trace_variables)
-  ggplot2::ggsave(
-    trace_path,
-    trace_plot,
-    width = 11,
-    height = max(6, 1.05 * length(trace_variables)),
-    dpi = 180,
-    limitsize = FALSE
-  )
-}
-```
-
-The full `rmsb` Stan diagnostic report and diagnostic plot are saved for every
-fitted model, allowing divergences, treedepth, E-BFMI, R-hat, effective sample
-sizes, and chain behavior to be reviewed by imputation.
+The full `rmsb` Stan diagnostic report and `stanDxplot()` output are saved for
+every fitted model. This replaces separate `mcmc_trace()` figures and keeps
+divergences, treedepth, E-BFMI, R-hat, effective sample sizes, and chain
+behavior together for review by imputation.
 
 ```{r}
 #| label: save-taooh-stan-diagnostics
@@ -117,8 +86,10 @@ for (index in indices) {
   )
   if (
     !force &&
-      file.exists(stan_dx_text_path) &&
-      file.exists(stan_dx_plot_path)
+      taooh_outputs_current(
+        c(stan_dx_text_path, stan_dx_plot_path),
+        file.path(model_dir, sprintf("model-%02d.rds", index))
+      )
   ) next
 
   model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
@@ -138,7 +109,7 @@ for (index in indices) {
 ```
 
 The empirical graphical checks use the observed weekly dataset with death
-carried forward through week 26. Model-derived checks use the first completed
+carried forward through the requested horizon. Model-derived checks use the first completed
 dataset and its fitted model as a representative imputation-specific
 diagnostic. SOPs, transition proportions, correlations, and variograms are
 kept as separate files so they can be compared directly. Correlation plots are
@@ -151,7 +122,7 @@ time-by-time correlation structure estimable.
 
 diagnostic_index <- indices[[1L]]
 data <- arrow::read_parquet(file.path(
-  here::here("artifacts", "primary", "taooh", "imputations"),
+  taooh_path("artifacts", horizon_days, "imputations"),
   sprintf("imputation-%02d.parquet", diagnostic_index)
 )) |>
   as.data.frame()
@@ -167,6 +138,7 @@ empirical_data <- arrow::read_parquet(here::here(
   "analysis", "00-data", "results", "analysis-taooh.parquet"
 )) |>
   as.data.frame() |>
+  taooh_empirical_history(horizon_days) |>
   left_join(cohort |> select(id, tx), by = "id") |>
   arrange(id, week) |>
   group_by(id) |>
@@ -175,7 +147,7 @@ empirical_data <- arrow::read_parquet(here::here(
     yprev = lag(y)
   ) |>
   ungroup() |>
-  filter(between(week, 1L, 26L)) |>
+  filter(between(week, 1L, horizon_weeks)) |>
   mutate(
     y = factor(y, levels = 1:5, ordered = TRUE),
     yprev = factor(yprev, levels = 1:5),
@@ -184,13 +156,13 @@ empirical_data <- arrow::read_parquet(here::here(
 
 model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", diagnostic_index)))
 sops <- arrow::read_parquet(file.path(
-  here::here("artifacts", "primary", "taooh", "estimand"),
+  taooh_path("artifacts", horizon_days, "estimand"),
   sprintf("sops-draws-%02d.parquet", diagnostic_index)
 ))
-diagnostic_times <- c(1L, 3L, 6L, 9L, 12L, 16L, 20, 24, 26)
+diagnostic_times <- unique(as.integer(round(seq(1, horizon_weeks, length.out = 9))))
 diagnostic_seed <- analysis_seed(config, "diagnostics", diagnostic_index)
 
-empirical_sop_plot <- markov.misc::plot_sops(
+empirical_sop_plot <- mostr::plot_sops(
   empirical_data,
   time_var = "week",
   y_var = "y",
@@ -200,7 +172,7 @@ empirical_sop_plot <- markov.misc::plot_sops(
 ) +
   ggplot2::scale_color_brewer(palette = "Dark2")
 
-empirical_transition_plot <- markov.misc::plot_transitions(
+empirical_transition_plot <- mostr::plot_transitions(
   empirical_data,
   times = diagnostic_times,
   time_var = "week",
@@ -212,7 +184,7 @@ empirical_transition_plot <- markov.misc::plot_transitions(
 )
 empirical_transition_plot$layers[[2]]$aes_params$colour <- "white"
 
-model_transition_plot <- markov.misc::plot_transitions(
+model_transition_plot <- mostr::plot_transitions(
   model,
   times = diagnostic_times,
   y_levels = 1:5,
@@ -229,9 +201,9 @@ model_transition_plot <- markov.misc::plot_transitions(
 
 model_transition_plot$layers[[2]]$aes_params$colour <- "white"
 
-empirical_correlation_plot <- markov.misc::plot_correlation(
+empirical_correlation_plot <- mostr::plot_correlation(
   empirical_data,
-  times = 1:26,
+  times = seq_len(horizon_weeks),
   y_levels = 1:5,
   id_var = "id",
   time_var = "week",
@@ -240,9 +212,9 @@ empirical_correlation_plot <- markov.misc::plot_correlation(
   show_values = TRUE
 )
 
-model_correlation_plot <- markov.misc::plot_correlation(
+model_correlation_plot <- mostr::plot_correlation(
   model,
-  times = 1:26,
+  times = seq_len(horizon_weeks),
   y_levels = 1:5,
   absorb = 5L,
   id_var = "id",
@@ -254,18 +226,18 @@ model_correlation_plot <- markov.misc::plot_correlation(
   n_draws = 50L,
   show_values = TRUE
 )
-empirical_variogram_plot <- markov.misc::plot_variogram(
+empirical_variogram_plot <- mostr::plot_variogram(
   empirical_data,
-  times = 1:26,
+  times = seq_len(horizon_weeks),
   y_levels = 1:5,
   id_var = "id",
   time_var = "week",
   y_var = "y",
   # facet_var = "tx"
 )
-model_variogram_plot <- markov.misc::plot_variogram(
+model_variogram_plot <- mostr::plot_variogram(
   model,
-  times = 1:26,
+  times = seq_len(horizon_weeks),
   y_levels = 1:5,
   absorb = 5L,
   id_var = "id",

@@ -47,7 +47,7 @@ validate_binary <- function(x, field_name = "indicator", allow_missing = TRUE) {
 
 censor_at_lock <- function(data, origin_col, event_date_col,
                            follow_up_end_col = NULL,
-                           lock_date = as.Date("2026-08-21"),
+                           lock_date = as.Date("2026-09-05"),
                            horizon_days = 182,
                            time_col = "follow_up_days",
                            event_col = "event") {
@@ -92,7 +92,7 @@ censor_at_lock <- function(data, origin_col, event_date_col,
 derive_survival_endpoint <- function(data, origin_col = "randomization_date",
                                      death_date_col = "death_date",
                                      follow_up_end_col = NULL,
-                                     lock_date = as.Date("2026-08-21"),
+                                     lock_date = as.Date("2026-09-05"),
                                      horizon_days = 182) {
   censor_at_lock(
     data = data,

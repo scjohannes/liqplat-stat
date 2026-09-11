@@ -6,7 +6,7 @@
 analysis:
   name: LIQPLAT
   config_version: 1
-  data_lock: "2026-08-21"
+  data_lock: "2026-09-05"
   horizon_days: 182
 
 imputation:
@@ -19,6 +19,7 @@ imputation:
     m: 5
     maxit: 50
     donors: 5
+    post_estimation_draws: 500
   method: mice
 
 markov:
@@ -73,4 +74,3 @@ paths:
   results: results
   reports: reports
   logs: logs
-  checkpoints: artifacts/checkpoints

@@ -1,6 +1,8 @@
 ---
 title: "TAOOH — primary estimand"
-subtitle: "Weeks alive and out of hospital over 26 weeks"
+subtitle: "Weeks alive and out of hospital over the requested horizon"
+params:
+  horizon_days: 182
 format: html
 execute:
   freeze: false
@@ -9,11 +11,16 @@ execute:
 Both treatment paths are predicted for every participant with at least one
 observed weekly TAOOH outcome. The participant-specific results are averaged
 by `avg_sops()` and `avg_comparisons()`; 200 posterior draws from each
-imputation are then pooled with equal weight.
+completed dataset are pooled with equal weight. The workflow targets all 50
+imputations and resumes from existing per-imputation checkpoints.
 
 ```{r}
 #| label: derive-taooh-estimand
 #| include: false
+source(here::here("R", "taooh-helpers.R"))
+horizon_days <- params$horizon_days
+horizon_weeks <- taooh_horizon_weeks(horizon_days)
+
 
 source(here::here("R", "analysis-config.R"))
 source(here::here("R", "model-helpers.R"))
@@ -24,11 +31,11 @@ config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
 # force <- TRUE
 indices <- seq_len(config$imputation$main$m)
-data_dir <- here::here("artifacts", "primary", "taooh", "imputations")
-model_dir <- here::here("artifacts", "primary", "taooh", "models")
-estimand_dir <- here::here("artifacts", "primary", "taooh", "estimand")
-result_dir <- here::here("results", "primary", "taooh")
-figure_dir <- here::here("artifacts", "primary", "taooh", "figures")
+data_dir <- taooh_path("artifacts", horizon_days, "imputations")
+model_dir <- taooh_path("artifacts", horizon_days, "models")
+estimand_dir <- taooh_path("artifacts", horizon_days, "estimand")
+result_dir <- taooh_path("results", horizon_days)
+figure_dir <- taooh_path("artifacts", horizon_days, "figures")
 dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
@@ -58,17 +65,17 @@ for (index in indices) {
     comparison_summary_path,
     comparison_draws_path
   )
-  if (!force && all(file.exists(estimand_paths))) next
+  if (!force && taooh_outputs_current(estimand_paths, c(data_path, model_path))) next
 
   data <- arrow::read_parquet(data_path) |>
     as.data.frame()
   # This is the same observed-weekly-outcome population used for model fitting.
   model <- readRDS(model_path)
 
-  sops <- markov.misc::avg_sops(
+  sops <- mostr::avg_sops(
     model = model,
     variables = list(tx = c(0, 1)),
-    times = 1:26,
+    times = seq_len(horizon_weeks),
     y_levels = 1:5,
     absorb = 5,
     p_var = "yprev",
@@ -81,12 +88,12 @@ for (index in indices) {
     posterior_summary = "median",
     return_draws = TRUE
   )
-  comparisons <- markov.misc::avg_comparisons(
+  comparisons <- mostr::avg_comparisons(
     model = model,
     variables = list(tx = c(0, 1)),
     estimand = "time_in_state",
     state_sets = 1,
-    times = 1:26,
+    times = seq_len(horizon_weeks),
     y_levels = 1:5,
     absorb = 5,
     id_var = "id",
@@ -134,7 +141,20 @@ comparison_draw_paths <- file.path(
 summary_path <- file.path(result_dir, "home-time-summary.parquet")
 draws_path <- file.path(result_dir, "home-time-comparison-draws.parquet")
 
-if (force || !file.exists(summary_path) || !file.exists(draws_path)) {
+pooled_output_is_current <- FALSE
+if (taooh_outputs_current(c(summary_path, draws_path), comparison_draw_paths)) {
+  existing_pooled_draws <- arrow::read_parquet(draws_path) |>
+    as.data.frame()
+  pooled_output_is_current <-
+    all(c("imputation", "draw") %in% names(existing_pooled_draws)) &&
+    setequal(unique(existing_pooled_draws$imputation), indices) &&
+    all(
+      table(existing_pooled_draws$imputation) ==
+        config$markov$post_estimation_draws
+    )
+}
+
+if (force || !pooled_output_is_current) {
   comparison_draws <- lapply(seq_along(comparison_draw_paths), function(index) {
     draws <- arrow::read_parquet(comparison_draw_paths[[index]]) |>
       as.data.frame()
@@ -161,7 +181,9 @@ if (force || !file.exists(summary_path) || !file.exists(draws_path)) {
   summary <- summarize_posterior_draws(pooled$draw)
   summary$probability_benefit <- posterior_probability(pooled$draw)
   summary$state <- 1L
-  summary$horizon_weeks <- 26L
+  summary$horizon_weeks <- horizon_weeks
+  summary$imputations <- length(indices)
+  summary$draws_per_imputation <- config$markov$post_estimation_draws
 
   arrow::write_parquet(
     as.data.frame(summary),
@@ -173,8 +195,8 @@ if (force || !file.exists(summary_path) || !file.exists(draws_path)) {
 ```
 
 The model-derived state occupancy probabilities pool equal numbers of
-posterior draws from all 50 completed datasets. The lines are posterior
-medians and the ribbons are 95% credible intervals.
+posterior draws from every completed fit included in this run. The lines are
+posterior medians and the ribbons are 95% credible intervals.
 
 ```{r}
 #| label: build-taooh-estimand-plots
@@ -228,7 +250,7 @@ arrow::write_parquet(
 )
 
 model_sop_plot <- suppressMessages(
-  markov.misc::plot_sops(
+  mostr::plot_sops(
     pooled_sop_summary,
     facet_var = NULL,
     time_var = "time",
@@ -254,13 +276,19 @@ model_sop_plot <- suppressMessages(
     title = NULL
   ) +
   theme_minimal()
-
+#   theme(
+#   panel.background = ggplot2::element_rect(fill = "#e0e0e0", color = NA),
+#   plot.background = ggplot2::element_rect(fill = "#e0e0e0", color = NA),
+#   legend.background = ggplot2::element_rect(fill = "#e0e0e0", color = NA),
+#   legend.box.background = ggplot2::element_rect(fill = "#e0e0e0", color = NA)
+# )
 
 ggsave(
   file.path(figure_dir, "model-state-occupancy-pooled.png"),
   model_sop_plot,
-  width = 9,
-  height = 5.5,
+  width = 10,
+  height = 5,
+  # bg = "#e0e0e0",
   dpi = 300
 )
 
@@ -283,7 +311,7 @@ home_time_posterior_plot <- ggplot(
   ) +
   labs(
     x = paste0(
-      "Difference in time alive and out of hospital over 26 weeks ",
+      "Difference in time alive and out of hospital over ", horizon_weeks, " weeks ",
       "(intervention - control), weeks"
     ),
     y = NULL
@@ -308,7 +336,7 @@ ggsave(
 ```{r}
 #| label: fig-taooh-model-state-occupancy
 #| fig-cap: "Pooled model-derived TAOOH state occupancy probabilities by treatment group"
-#| fig-alt: "Line chart of pooled posterior TAOOH state occupancy probabilities over 26 weeks. Colors identify the five states, line types identify treatment groups, and ribbons show 95 percent credible intervals."
+#| fig-alt: "Line chart of pooled posterior TAOOH state occupancy probabilities over the requested horizon. Colors identify the five states, line types identify treatment groups, and ribbons show 95 percent credible intervals."
 #| fig-width: 9
 #| fig-height: 5.5
 #| echo: false
@@ -318,7 +346,7 @@ model_sop_plot
 
 ```{r}
 #| label: fig-taooh-home-time-posterior
-#| fig-cap: "Posterior distribution of the treatment difference in time alive and out of hospital over 26 weeks"
+#| fig-cap: "Posterior distribution of the treatment difference in time alive and out of hospital over the requested horizon"
 #| fig-alt: "A half-eye density above a posterior dot plot of the intervention-minus-control difference in weeks alive and out of hospital. Thick and thin intervals show the 66 and 95 percent credible intervals, and a dashed vertical line marks zero weeks."
 #| fig-width: 8
 #| fig-height: 5

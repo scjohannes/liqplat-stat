@@ -1,155 +1,139 @@
 ---
-title: "LIQPLAT data-interface validation"
-date: 2026-08-20
-format:
-  html:
-    toc: true
+title: "LIQPLAT input validation"
+date: 2026-08-24
+format: html
 execute:
-  echo: false
+  echo: true
   warning: false
   message: false
 ---
 
-This module validates only the pseudonymized Parquet hand-off. Raw REDCap
-extracts, linkage tables, free text, and direct identifiers are outside the
-public pipeline. Required, optional, and pending domains are reported
-separately; a required domain or the data-lock manifest cannot be silently
-treated as absent.
+The public analysis starts from six pseudonymized Parquet files in
+`data/private/`. This stage checks that those files match the tracked schemas
+and the fixed data-lock manifest. Raw REDCap exports are never read here.
 
 ```{r}
-#| label: setup
-#| include: false
+#| label: validate-inputs
 
-source(here::here("analysis", "_module-common.R"), local = FALSE)
-liqplat_source_public_helpers()
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "data-validation.R"))
+
 config <- read_analysis_config()
-force <- module_force()
-stage_id <- "data_validate_inputs"
-result_dir <- module_result_dir(file.path("analysis", "00-data"))
-checkpoint_path <- module_checkpoint_path(stage_id)
+data_lock <- config_get(config, "analysis", "data_lock")
+private_dir <- here::here(config_get(config, "paths", "private_data"))
+schema_dir <- here::here(config_get(config, "paths", "schema_dir"))
+result_dir <- here::here("analysis", "00-data", "results")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 validation_path <- file.path(result_dir, "input-validation.parquet")
 
-domain_registry <- data.frame(
-  domain = c(
-    "cohort_follow_up", "recruitment", "ctdna_samples", "alterations",
-    "trial_referral", "biopsy", "blood_products", "imaging", "qol",
-    "taooh", "physical_function", "progression_bsc", "treatment_lines",
-    "weekly_treatment", "solid_msi", "solid_tmb", "treatment_details"
-  ),
-  role = c(
-    "required", "required", rep("optional", 10), rep("pending", 5)
-  ),
-  schema_available = c(rep(TRUE, 14), FALSE, FALSE, FALSE),
-  stringsAsFactors = FALSE
+domains <- c(
+  "recruitment",
+  "cohort_follow_up",
+  "qol",
+  "taooh",
+  "ctdna_samples",
+  "alterations"
 )
 
-manifest_info <- read_private_manifest_if_present(config)
-if (is.null(manifest_info)) {
-  stop("The pseudonymized data manifest is missing under data/private; ",
-       "the lock and domain availability cannot be validated.")
-}
-manifest <- manifest_info$manifest
-validate_data_manifest(
-  manifest,
-  expected_lock = config_get(config, "analysis", "data_lock"),
-  private_dir = project_path(config_get(config, "paths", "private_data"))
-)
-
-parquet_files <- list.files(
-  project_path(config_get(config, "paths", "private_data")),
-  pattern = "\\.parquet$", full.names = TRUE, ignore.case = TRUE
-)
-file_domains <- tools::file_path_sans_ext(basename(parquet_files))
-unknown_files <- setdiff(file_domains, domain_registry$domain)
-if (length(unknown_files) > 0L) {
-  stop("Private Parquet has no approved public schema: ", paste(unknown_files, collapse = ", "))
+manifest_path <- file.path(private_dir, "manifest.yml")
+if (!file.exists(manifest_path)) {
+  stop("Missing data/private/manifest.yml. Build the private analysis datasets first.")
 }
 
-schema_paths <- vapply(
-  domain_registry$domain[domain_registry$schema_available],
-  function(domain) schema_domain_path(config, domain),
-  character(1)
-)
-input_paths <- c(parquet_files, manifest_info$path, schema_paths[file.exists(schema_paths)])
-decision <- checkpoint_decision(
-  checkpoint_path, stage_id, input_paths = input_paths,
-  output_paths = validation_path,
-  code_paths = here::here("analysis", "00-data", "01-validate-inputs.qmd"),
-  config = config, force = force
-)
+manifest <- read_data_manifest(manifest_path)
+validate_data_manifest(manifest, expected_lock = data_lock, private_dir = private_dir)
 
-if (identical(decision, "skip")) {
-  validation_summary <- read_result_table(validation_path)
-} else {
-manifest_domains <- manifest$domains
-manifest_names <- names(manifest_domains)
-validation_rows <- lapply(seq_len(nrow(domain_registry)), function(index) {
-  domain <- domain_registry$domain[[index]]
-  role <- domain_registry$role[[index]]
-  file_path <- private_domain_path(config, domain)
-  schema_path <- schema_domain_path(config, domain)
-  manifest_record <- if (domain %in% manifest_names) manifest_domains[[domain]] else NULL
-  status <- if (role == "pending") "pending" else "missing_optional"
-  message <- NA_character_
-  n_rows <- NA_integer_
-  if (role == "pending") {
-    message <- "Source fields are not part of the approved public contract."
-  } else if (!file.exists(file_path)) {
-    status <- if (role == "required") "missing_required" else "missing_optional"
-    message <- "No pseudonymized Parquet was supplied at the data lock."
-  } else if (!file.exists(schema_path)) {
-    status <- "schema_missing"
-    message <- "Approved schema is missing."
-  } else if (is.null(manifest_record)) {
-    status <- "manifest_entry_missing"
-    message <- "Domain is not recorded in the data manifest."
-  } else if (!isTRUE(manifest_record$available)) {
-    status <- if (role == "required") "manifest_marks_unavailable" else "unavailable"
-    message <- "The data manifest marks this domain unavailable."
-  } else {
-    validated <- validate_private_parquet(file_path, schema_path)
-    status <- "validated"
-    n_rows <- nrow(validated$data)
-    message <- "Schema, primary key, requiredness, lock, and PHI checks passed."
+expected_files <- paste0(domains, ".parquet")
+observed_files <- list.files(private_dir, pattern = "\\.parquet$", ignore.case = TRUE)
+if (!setequal(observed_files, expected_files)) {
+  stop(
+    "data/private must contain exactly: ", paste(expected_files, collapse = ", "),
+    ". Found: ", paste(observed_files, collapse = ", ")
+  )
+}
+
+if (!setequal(names(manifest$domains), domains)) {
+  stop("manifest.yml must describe exactly the six public analysis datasets.")
+}
+
+validation_rows <- vector("list", length(domains))
+for (index in seq_along(domains)) {
+  domain <- domains[[index]]
+  data_path <- file.path(private_dir, paste0(domain, ".parquet"))
+  schema_path <- file.path(schema_dir, paste0(domain, ".yml"))
+  manifest_record <- manifest$domains[[domain]]
+
+  if (!isTRUE(manifest_record$available)) {
+    stop("The manifest marks ", domain, " as unavailable.")
   }
-  data.frame(
+  if (!identical(as.character(manifest_record$file), basename(data_path))) {
+    stop("The manifest filename for ", domain, " does not match the public contract.")
+  }
+
+  schema <- read_data_schema(schema_path)
+  data <- arrow::read_parquet(data_path) |>
+    as.data.frame()
+  required_columns <- names(schema_columns(schema))[vapply(
+    schema_columns(schema),
+    function(column) isTRUE(column$required),
+    logical(1)
+  )]
+  missing_columns <- setdiff(required_columns, names(data))
+  if (length(missing_columns) > 0L) {
+    stop(domain, " is missing: ", paste(missing_columns, collapse = ", "))
+  }
+  if (identical(domain, "cohort_follow_up")) {
+    if ("site_id" %in% names(data)) {
+      stop("cohort_follow_up still contains site_id. Rebuild the private data with setting_id.")
+    }
+    if ("eligible" %in% names(data) && !is.character(data$eligible)) {
+      stop("cohort_follow_up$eligible must be the REDCap string field.")
+    }
+  }
+  if (identical(domain, "recruitment")) {
+    validate_data_schema(data, schema)
+    if (any(!is.na(data$group_assignment) & !data$group_assignment %in% 0:1)) {
+      stop("Recruitment group_assignment must be 0/1 or missing.")
+    }
+  }
+  if (identical(domain, "cohort_follow_up")) {
+    validate_blood_product_counts(data)
+  }
+  key <- as.character(schema$primary_key)
+  if (length(key) > 0L &&
+      (any(!stats::complete.cases(data[key])) || anyDuplicated(data[key]))) {
+    stop(domain, " has a missing or duplicated primary key.")
+  }
+  assert_no_phi_columns(data)
+  validation_rows[[index]] <- data.frame(
     domain = domain,
-    role = role,
-    status = status,
-    n_rows = n_rows,
-    message = message,
+    file = basename(data_path),
+    n_rows = nrow(data),
+    status = "validated",
     stringsAsFactors = FALSE
   )
-})
+}
+
+source(here::here("R", "taooh-helpers.R"))
+validate_taooh_follow_up(
+  arrow::read_parquet(file.path(private_dir, "taooh.parquet")),
+  arrow::read_parquet(file.path(private_dir, "cohort_follow_up.parquet"))
+)
+qol <- arrow::read_parquet(file.path(private_dir, "qol.parquet"))
+if (any(qol$day > config$analysis$horizon_days, na.rm = TRUE)) {
+  stop("QoL export extends beyond 182 days.")
+}
+
 validation_summary <- do.call(rbind, validation_rows)
 rownames(validation_summary) <- NULL
-
-if (any(validation_summary$status %in% c("missing_required", "schema_missing",
-                                          "manifest_entry_missing", "manifest_marks_unavailable"))) {
-  write_module_table(validation_summary, validation_path)
-  stop("Required public input validation did not pass; inspect input-validation.parquet.")
-}
-
-write_module_table(validation_summary, validation_path)
-finalize_module_checkpoint(
-  stage_id = stage_id,
-  checkpoint_path = checkpoint_path,
-  input_paths = input_paths,
-  output_paths = validation_path,
-  config = config,
-  metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
-                  status = "validated"),
-  code_paths = here::here("analysis", "00-data", "01-validate-inputs.qmd")
-)
-}
+arrow::write_parquet(validation_summary, validation_path)
 ```
 
 ```{r}
 #| label: validation-status
-#| tbl-cap: "Public input-domain validation status"
+#| tbl-cap: "Validated analysis inputs"
+#| echo: false
 
 validation_summary |>
-  transform(n_rows = ifelse(is.na(n_rows), "not available", as.character(n_rows))) |>
-  subset(select = c(domain, role, status, n_rows, message)) |>
   knitr::kable()
 ```

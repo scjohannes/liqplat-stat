@@ -8,7 +8,7 @@ test_that("fixed-lock censoring uses the lock and horizon as administrative boun
   )
   out <- censor_at_lock(
     data, origin_col = "origin", event_date_col = "event",
-    follow_up_end_col = "follow_up_end", lock_date = as.Date("2026-08-21"),
+    follow_up_end_col = "follow_up_end", lock_date = as.Date("2026-09-05"),
     horizon_days = 182, time_col = "time", event_col = "status"
   )
 
@@ -36,6 +36,30 @@ test_that("missing values are not silently converted to zero", {
   expect_error(assert_missing_not_zero(c(1, NA)), "missing")
   expect_error(coalesce_missing_zero(c(1, NA), field_name = "events"), "events")
   expect_equal(coalesce_missing_zero(c(1, NA), missing_is_zero = TRUE), c(1, 0))
+})
+
+test_that("participant-level outcomes share the wide cohort contract", {
+  schema <- read_data_schema(liqplat_path("data", "schema", "cohort_follow_up.yml"))
+  columns <- names(schema_columns(schema))
+  expect_true(all(c(
+    "setting_id", "screened_date", "eligible", "invitation_offered", "invitation_accepted",
+    "progression_date", "bsc_date", "mtb_reg", "n_mtb",
+    "n_blood_products", "n_imaging_ct", "n_imaging_mri",
+    "n_imaging_pet_ct", "n_imaging_total", "unique_biopsy_days"
+  ) %in% columns))
+  expect_false("site_id" %in% columns)
+
+  build <- paste(
+    readLines(
+      liqplat_path("analysis", "00-data", "02-build-analysis-datasets.qmd"),
+      warn = FALSE
+    ),
+    collapse = "\n"
+  )
+  expect_false(grepl(
+    "analysis-(imaging|biopsy|blood-products|progression-bsc)\\.parquet",
+    build
+  ))
 })
 
 test_that("count models require an observed positive exposure", {

@@ -5,12 +5,20 @@ validated against the corresponding YAML document in [`schema/`](schema/)
 before an analysis stage reads it. Schemas define the primary key, type,
 requiredness, unit/coding, and whether a field is sensitive or private.
 
+The hand-off contains six files. `cohort_follow_up.parquet` is the single
+wide participant-level dataset, including recruitment, follow-up, process,
+imaging-count, biopsy-day, blood-product, progression, BSC, and MTB fields.
+The separate `recruitment.parquet` contains exactly `informed_consent_date`,
+`randomization_date`, and `group_assignment`, without a patient key. Repeated
+observations remain separate: `qol.parquet`, `taooh.parquet`,
+`ctdna_samples.parquet`, and `alterations.parquet`.
+
 Raw extracts, direct identifiers, source-system linkage tables, free-text
 clinical notes, and any re-identification key stay outside this repository in
 the private preparation environment. They must never be copied into
 `data/private/`, committed, or written to a report artifact. The private
 preparation contract exports only the approved pseudonymized columns and the
-fixed data-lock metadata (`2026-08-21`).
+fixed data-lock metadata (`2026-09-05`).
 
 Dates are ISO-8601 dates and are interpreted relative to the documented study
 origin. Missing values are not silently converted to zero. Patient identifiers

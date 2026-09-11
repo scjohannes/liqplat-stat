@@ -25,7 +25,7 @@ MICE `m = 50`, `maxit = 50`; supporting analyses intentionally use imputations
 ## Privacy and data contract
 
 The private preparation environment must export only pseudonymized Parquet
-files conforming to the YAML schemas and locked at `2026-08-21`. See
+files conforming to the YAML schemas and locked at `2026-09-05`. See
 [`data/README.md`](data/README.md) for the boundary. Raw extracts, source
 linkage keys, direct identifiers, and free-text reports remain outside this
 repository. The ignored `data/private/` directory is only a local hand-off
@@ -35,7 +35,8 @@ location; it is never a place to commit or archive data.
 
 - R 4.6.1, Quarto, and a working Stan toolchain
 - Packages specified by the project lockfile, including `yaml`, `here`,
-  `arrow`, `mice`, `miceadds`, `rmsb`, `rstanarm`, `posterior`, and `digest`
+  `arrow`, `mice`, `miceadds`, `rmsb`, `rstanarm`, `posterior`, `ggsurvfit`,
+  and `digest`
 - The reviewed clean `markov.misc` release exposing `blrm_markov()`,
   `avg_sops()`, and `sops()`
 
@@ -68,11 +69,9 @@ Run a bounded range by one-based index or stage id:
 Rscript scripts/run-all.R --from primary_qol_imputation --to primary_qol_estimand
 ```
 
-`--force` (or `LIQPLAT_FORCE=1`) is passed to stage code when a deliberate
-re-render is required. Stage code can use the SHA-256 checkpoint helpers in
-`R/checkpoints.R` to skip only when every input, code file, output, and config
-hash matches. A failed stage stops the run; it is safe to resume after fixing
-the cause.
+`--force` (or `LIQPLAT_FORCE=1`) re-creates outputs that already exist.
+Otherwise, expensive imputation and model loops keep completed branch files
+and continue with the first missing branch. A failed stage stops the run.
 
 Run the no-PHI structural/contract suite and report smoke test with the
 project's pinned R 4.6.1 runtime:
@@ -91,7 +90,7 @@ The default Quarto project supports the public report and SAP as resources but
 does not implicitly render every notebook. Render either explicitly:
 
 ```text
-quarto render reports/analysis-report.qmd
+quarto render reports
 quarto render sap/SAP.qmd
 ```
 

@@ -1,18 +1,26 @@
 ---
 title: "TAOOH — primary model fitting"
-subtitle: "Second-order Bayesian ordinal transition models with random intercepts"
+subtitle: "Full proportional-odds second-order models in 50 imputations"
+params:
+  horizon_days: 182
 format: html
 execute:
   freeze: false
 ---
 
-The primary model conditions on `yprev` and `ypprev` and includes the
-patient-level random intercept specified in the SAP. One model is saved per
-completed dataset.
+The primary model conditions on `yprev` and `ypprev`, uses full proportional
+odds, and includes the patient-level random intercept specified in the SAP.
+The workflow targets all 50 completed datasets and saves one model per
+completed dataset. Existing model and diagnostic checkpoints are skipped, so
+later renders resume with the first incomplete imputation.
 
 ```{r}
 #| label: fit-taooh-models
 #| include: false
+source(here::here("R", "taooh-helpers.R"))
+horizon_days <- params$horizon_days
+horizon_weeks <- taooh_horizon_weeks(horizon_days)
+
 
 source(here::here("R", "analysis-config.R"))
 source(here::here("R", "markov-helpers.R"))
@@ -25,9 +33,9 @@ taooh_diagnostic_thresholds <- config$diagnostics
 # A small number of divergences is retained for review rather than causing an
 # automatic full refit. Twenty or more divergences still trigger the retry.
 taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
-data_dir <- here::here("artifacts", "primary", "taooh", "imputations")
-model_dir <- here::here("artifacts", "primary", "taooh", "models")
-diagnostic_dir <- here::here("artifacts", "primary", "taooh", "diagnostics")
+data_dir <- taooh_path("artifacts", horizon_days, "imputations")
+model_dir <- taooh_path("artifacts", horizon_days, "models")
+diagnostic_dir <- taooh_path("artifacts", horizon_days, "diagnostics")
 dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -38,7 +46,9 @@ for (index in indices) {
     diagnostic_dir,
     sprintf("diagnostics-%02d.parquet", index)
   )
-  if (!force && file.exists(model_path) && file.exists(diagnostic_path)) next
+  if (!force && taooh_outputs_current(
+    c(model_path, diagnostic_path), data_path
+  )) next
 
   data <- arrow::read_parquet(data_path) |>
     as.data.frame() |> 
@@ -55,7 +65,7 @@ for (index in indices) {
   fit_seed <- analysis_seed(config, "taooh", index)
 
   fit <- tryCatch(
-    markov.misc::blrm_markov(
+    mostr::blrm_markov(
       formula = model_formula,
       data = data,
       id_var = "id",
@@ -81,7 +91,7 @@ for (index in indices) {
     )
 
   if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
-    fit <- markov.misc::blrm_markov(
+    fit <- mostr::blrm_markov(
       formula = model_formula,
       data = data,
       id_var = "id",
@@ -100,6 +110,9 @@ for (index in indices) {
     diagnostics <- markov_diagnostics(fit, taooh_diagnostic_thresholds)
   }
 
+  if (!isTRUE(fit$pppo == 0L) || !is.null(fit$cppo)) {
+    stop("The primary TAOOH model must be a full proportional-odds model.")
+  }
   assert_markov_diagnostics(diagnostics)
   saveRDS(fit, model_path, compress = "xz")
   diagnostic_output <- as.data.frame(diagnostics$summary)

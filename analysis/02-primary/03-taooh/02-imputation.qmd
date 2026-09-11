@@ -1,6 +1,8 @@
 ---
 title: "TAOOH — primary imputation"
 subtitle: "Patient-level baseline-covariate imputation"
+params:
+  horizon_days: 182
 format: html
 execute:
   freeze: false
@@ -15,6 +17,10 @@ is then joined back to the unchanged, already lagged weekly history.
 ```{r}
 #| label: impute-taooh
 #| include: false
+source(here::here("R", "taooh-helpers.R"))
+horizon_days <- params$horizon_days
+horizon_weeks <- taooh_horizon_weeks(horizon_days)
+
 library(tidyverse)
 library(mice)
 source(here::here("R", "analysis-config.R"))
@@ -22,8 +28,8 @@ source(here::here("R", "analysis-config.R"))
 
 config <- read_analysis_config()
 indices <- seq_len(config$imputation$main$m)
-input_path <- here::here("artifacts", "primary", "taooh", "prepared.parquet")
-branch_dir <- here::here("artifacts", "primary", "taooh", "imputations")
+input_path <- taooh_path("artifacts", horizon_days, "prepared.parquet")
+branch_dir <- taooh_path("artifacts", horizon_days, "imputations")
 dir.create(branch_dir, recursive = TRUE, showWarnings = FALSE)
 
 prepared <- arrow::read_parquet(input_path) |>

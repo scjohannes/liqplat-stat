@@ -1,10 +1,16 @@
 name: cohort_follow_up
-version: 1
-description: Pseudonymized patient-level cohort and follow-up interface.
+version: 2
+description: Pseudonymized participant-level cohort, follow-up, process, and aggregate outcome interface.
 primary_key: [id]
 privacy_boundary: No direct identifiers; source-system linkage remains private.
 columns:
   id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
+  setting_id: {type: number, required: false, unit: category, coding: "source code 1/2 for inpatient or outpatient setting at first contact", sensitive: false, private: false}
+  screened_date: {type: date, required: false, unit: date, coding: ISO-8601 screening date, sensitive: true, private: false}
+  eligible: {type: string, required: false, unit: category, coding: "Eligible | Not eligible", sensitive: true, private: false}
+  enrolled_date: {type: date, required: false, unit: date, coding: ISO-8601 consent or enrolment date, sensitive: true, private: false}
+  invitation_offered: {type: integer, required: false, unit: binary, coding: "0 = not offered; 1 = offered", sensitive: true, private: false}
+  invitation_accepted: {type: integer, required: false, unit: binary, coding: "0 = not accepted; 1 = accepted", sensitive: true, private: false}
   randomization_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: false, private: false}
   tx: {type: integer, required: true, unit: binary, coding: "0 = external comparator; 1 = SAT invitation", sensitive: false, private: false}
   diagnosis: {type: string, required: true, unit: category, coding: SAP diagnosis category, sensitive: true, private: false}
@@ -13,6 +19,40 @@ columns:
   ecog_fstcnt: {type: integer, required: false, unit: score, coding: "0-4; source missing remains missing", sensitive: true, private: false}
   albumin: {type: number, required: false, unit: g/L, coding: laboratory value, sensitive: true, private: false}
   c_reactive_protein: {type: number, required: false, unit: mg/L, coding: laboratory value, sensitive: true, private: false}
+  bilirubin: {type: number, required: false, unit: source unit, coding: laboratory value, sensitive: true, private: false}
+  creatinine: {type: number, required: false, unit: source unit, coding: laboratory value, sensitive: true, private: false}
+  lactate_dehydrogenase: {type: number, required: false, unit: source unit, coding: laboratory value, sensitive: true, private: false}
+  leukocytes: {type: number, required: false, unit: source unit, coding: laboratory value, sensitive: true, private: false}
+  lymphocytes_relative: {type: number, required: false, unit: percent, coding: laboratory value, sensitive: true, private: false}
+  hemoglobin: {type: number, required: false, unit: source unit, coding: laboratory value, sensitive: true, private: false}
+  platelet_count: {type: number, required: false, unit: source unit, coding: laboratory value, sensitive: true, private: false}
+  plan_fstcnt_coded: {type: integer, required: false, unit: category, coding: source treatment-intent coding, sensitive: true, private: false}
+  baseline_q30: {type: integer, required: false, unit: "ordinal state 1-7", coding: "pre-derived baseline analysis state; 1 best and 7 worst", sensitive: true, private: false}
+  stage_binary: {type: integer, required: false, unit: binary, coding: "0 = locally advanced; 1 = metastatic", sensitive: true, private: false}
+  lung: {type: integer, required: false, unit: binary, coding: "0 = other diagnosis; 1 = lung cancer", sensitive: true, private: false}
+  treatment_start_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
   death_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
-  follow_up_end_date: {type: date, required: false, unit: date, coding: ISO-8601 administrative/source end, sensitive: false, private: false}
-  status_death: {type: integer, required: false, unit: binary, coding: "0 = alive; 1 = dead", sensitive: true, private: false}
+  last_known_alive_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: true, private: false}
+  follow_up_end_date: {type: date, required: true, unit: date, coding: shifted date after primary 182-day censoring in the private preparation, sensitive: false, private: false}
+  status_death: {type: integer, required: true, unit: binary, coding: "primary 182-day endpoint: 0 = censored; 1 = death", sensitive: true, private: false}
+  survival_time_days_unrestricted: {type: number, required: true, unit: days, coding: death or censoring time from randomization through all available follow-up, sensitive: true, private: false}
+  status_death_unrestricted: {type: integer, required: true, unit: binary, coding: "unrestricted endpoint: 0 = censored; 1 = death", sensitive: true, private: false}
+  potential_follow_up_days: {type: number, required: true, unit: days, coding: follow-up from randomization through the data cutoff for participants without death and capped at the death day for participants who died, sensitive: true, private: false}
+  survival_time_days: {type: number, required: false, unit: days, coding: public-build alias of the prepared primary 182-day follow-up duration, sensitive: true, private: false}
+  event_death: {type: integer, required: false, unit: binary, coding: "public-build alias of status_death: 0 = censored; 1 = death", sensitive: true, private: false}
+  progression_date: {type: date, required: false, unit: date, coding: first documented progression on or after randomization, sensitive: true, private: false}
+  progression: {type: integer, required: false, unit: binary, coding: source progression indicator, sensitive: true, private: false}
+  bsc_date: {type: date, required: false, unit: date, coding: best-supportive-care date, sensitive: true, private: false}
+  bsc: {type: integer, required: false, unit: binary, coding: source best-supportive-care indicator, sensitive: true, private: false}
+  mtb_reg: {type: integer, required: false, unit: binary, coding: molecular-tumour-board registration, sensitive: true, private: false}
+  n_mtb: {type: number, required: false, unit: count, coding: number of molecular-tumour-board discussions, sensitive: true, private: false}
+  n_erythrocyte_concentrates: {type: number, required: false, unit: count, coding: "erythrocyte concentrates over 182-day follow-up; source missing remains missing", sensitive: true, private: false}
+  n_thrombocyte_concentrates: {type: number, required: false, unit: count, coding: "thrombocyte concentrates over 182-day follow-up; source missing remains missing", sensitive: true, private: false}
+  n_blood_products: {type: number, required: false, unit: count, coding: combined red-cell and platelet products over 182-day follow-up; source missing remains missing, sensitive: true, private: false}
+  n_imaging_ct: {type: number, required: false, unit: count, coding: CT examinations; source missing remains missing, sensitive: true, private: false}
+  n_imaging_mri: {type: number, required: false, unit: count, coding: MRI examinations; source missing remains missing, sensitive: true, private: false}
+  n_imaging_pet_ct: {type: number, required: false, unit: count, coding: PET or PET-CT examinations; source missing remains missing, sensitive: true, private: false}
+  n_imaging_total: {type: number, required: false, unit: count, coding: sum of CT, MRI, and PET/PET-CT only when all three source counts are observed, sensitive: true, private: false}
+  unique_biopsy_days: {type: number, required: false, unit: count, coding: number of unique days with tissue sampling; source missing remains missing, sensitive: true, private: false}
+  baseline_ctdna_sample_id: {type: string, required: false, unit: "", coding: pseudonymized earliest valid pre-treatment sample, sensitive: false, private: false}
+  baseline_ctdna_detected: {type: integer, required: false, unit: binary, coding: "0 = not detected; 1 = detected; no qualifying sample remains missing", sensitive: true, private: false}

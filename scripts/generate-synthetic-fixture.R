@@ -16,7 +16,7 @@ synthetic_fixture <- function(root = tempfile("liqplat-synthetic-"),
   }
 
   dirs <- file.path(root, c(
-    "data/schema", "results/population", "results/os", "artifacts/checkpoints",
+    "data/schema", "results/population", "results/os",
     "report-project/reports/sections", "report-project/R"
   ))
   for (directory in dirs) dir.create(directory, recursive = TRUE, showWarnings = FALSE)
@@ -37,8 +37,11 @@ synthetic_fixture <- function(root = tempfile("liqplat-synthetic-"),
     albumin = c(40, 32),
     c_reactive_protein = c(4, 16),
     death_date = as.Date(c(NA, "2026-02-01")),
-    follow_up_end_date = as.Date(c("2026-07-01", NA)),
+    follow_up_end_date = as.Date(c("2026-07-01", "2026-02-01")),
     status_death = c(0L, 1L),
+    survival_time_days_unrestricted = c(181, 24),
+    status_death_unrestricted = c(0L, 1L),
+    potential_follow_up_days = c(232, 225),
     stringsAsFactors = FALSE
   )
   cohort_schema <- read_data_schema(file.path(root, "data", "schema", "cohort_follow_up.yml"))
@@ -50,7 +53,7 @@ synthetic_fixture <- function(root = tempfile("liqplat-synthetic-"),
 
   survival <- derive_survival_endpoint(
     cohort, origin_col = "randomization_date", death_date_col = "death_date",
-    follow_up_end_col = "follow_up_end_date", lock_date = as.Date("2026-08-21"),
+    follow_up_end_col = "follow_up_end_date", lock_date = as.Date("2026-09-05"),
     horizon_days = 182L
   )
   survival$mgps <- derive_mgps(survival$albumin, survival$c_reactive_protein)
@@ -77,39 +80,20 @@ synthetic_fixture <- function(root = tempfile("liqplat-synthetic-"),
   report_table_read <- read_result_table(report_table_path)
   report_state <- report_section_state("population", root = root)
 
-  # Hash/checkpoint exercise: all files are local synthetic text artifacts.
-  checkpoint_input <- file.path(root, "checkpoint-input.txt")
-  checkpoint_output <- file.path(root, "checkpoint-output.txt")
-  checkpoint_code <- file.path(root, "checkpoint-code.R")
-  checkpoint_path <- file.path(root, "artifacts", "checkpoints", "synthetic.yml")
-  writeLines("synthetic input", checkpoint_input, useBytes = TRUE)
-  writeLines("synthetic output", checkpoint_output, useBytes = TRUE)
-  writeLines("synthetic code", checkpoint_code, useBytes = TRUE)
-  checkpoint_config <- list(data_lock = "2026-08-21", synthetic = TRUE)
-  finalize_checkpoint(
-    checkpoint_path, "synthetic", checkpoint_input, checkpoint_output,
-    checkpoint_code, checkpoint_config, metadata = list(status = "complete")
-  )
-  checkpoint_current <- checkpoint_is_current(
-    checkpoint_path, "synthetic", checkpoint_input, checkpoint_output,
-    checkpoint_code, checkpoint_config
-  )
-  if (!isTRUE(checkpoint_current)) stop("Synthetic checkpoint did not round-trip.")
-
-  # Make a self-contained report project.  The .here marker ensures
-  # here::here() resolves the temporary root during Quarto rendering.
+  # Make a self-contained report-book project.
   report_project <- file.path(root, "report-project")
-  file.create(file.path(report_project, ".here"))
   report_source <- file.path(project_root, "reports")
-  file.copy(file.path(report_source, "analysis-report.qmd"),
-            file.path(report_project, "reports"), overwrite = TRUE)
+  file.copy(
+    file.path(report_source, c("_quarto.yml", "index.qmd")),
+    file.path(report_project, "reports"),
+    overwrite = TRUE
+  )
   section_source <- file.path(report_source, "sections")
   section_target <- file.path(report_project, "reports", "sections")
   file.copy(list.files(section_source, full.names = TRUE), section_target,
             recursive = FALSE, overwrite = TRUE)
   file.copy(file.path(project_root, "R", "report-reader.R"),
             file.path(report_project, "R"), overwrite = TRUE)
-
   list(
     root = root,
     project_root = project_root,
@@ -119,9 +103,7 @@ synthetic_fixture <- function(root = tempfile("liqplat-synthetic-"),
     survival = survival,
     report_table = report_table_read,
     report_state = report_state,
-    checkpoint_path = checkpoint_path,
-    checkpoint_current = checkpoint_current,
     report_project = report_project,
-    report_qmd = file.path(report_project, "reports", "analysis-report.qmd")
+    report_qmd = file.path(report_project, "reports")
   )
 }

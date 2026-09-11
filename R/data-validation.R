@@ -1,5 +1,25 @@
 # Schema-aware validation for pseudonymized Parquet interfaces.
 
+validate_blood_product_counts <- function(data) {
+  fields <- c("n_blood_products", "n_erythrocyte_concentrates",
+              "n_thrombocyte_concentrates")
+  if (!all(fields %in% names(data))) stop("The cohort is missing blood-product count columns.")
+  for (field in fields) {
+    x <- data[[field]]
+    if (!is.numeric(x) || any(!is.na(x) &
+        (!is.finite(x) | x < 0 | x != floor(x)))) {
+      stop(field, " must contain nonnegative integer counts or missing values.")
+    }
+  }
+  complete <- stats::complete.cases(data[fields])
+  if (any(data$n_blood_products[complete] !=
+          data$n_erythrocyte_concentrates[complete] +
+          data$n_thrombocyte_concentrates[complete])) {
+    stop("Combined blood-product counts differ from the sum of components.")
+  }
+  invisible(data)
+}
+
 read_data_schema <- function(path) {
   if (!requireNamespace("yaml", quietly = TRUE)) {
     stop("Package 'yaml' is required to read data schemas.")
@@ -77,17 +97,20 @@ validate_data_schema <- function(data, schema, check_missing = TRUE,
   if (length(missing_columns) > 0L) {
     stop("Required data columns are missing: ", paste(missing_columns, collapse = ", "))
   }
+  if (isTRUE(schema$exact_columns) && !setequal(names(data), names(columns))) {
+    stop("Data must contain exactly the schema columns.")
+  }
   for (column_name in intersect(names(columns), names(data))) {
     specification <- columns[[column_name]]
     if (!schema_type_ok(data[[column_name]], specification$type)) {
       stop("Column ", column_name, " does not have schema type ", specification$type)
     }
-    if (isTRUE(check_missing) && isTRUE(specification$required) &&
+    if (isTRUE(check_missing) && isTRUE(specification$required) && !isTRUE(specification$nullable) &&
         anyNA(data[[column_name]])) {
       stop("Required column contains missing values: ", column_name)
     }
   }
-  if (isTRUE(check_primary_key)) {
+  if (isTRUE(check_primary_key) && length(schema$primary_key) > 0L) {
     key <- as.character(schema$primary_key)
     if (any(!stats::complete.cases(data[, key, drop = FALSE]))) {
       stop("Primary key contains missing values.")
@@ -158,7 +181,7 @@ read_data_manifest <- function(path) {
   manifest
 }
 
-validate_data_manifest <- function(manifest, expected_lock = "2026-08-21",
+validate_data_manifest <- function(manifest, expected_lock = "2026-09-05",
                                    private_dir = NULL) {
   if (!is.list(manifest)) stop("Data manifest must be a YAML mapping.")
   lock <- manifest$data_lock

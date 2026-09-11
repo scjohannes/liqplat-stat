@@ -1,14 +1,10 @@
 name: recruitment
 version: 1
-description: Pseudonymized recruitment and invitation records.
-primary_key: [recruitment_id]
-privacy_boundary: Site and participant identifiers are pseudonymized before export.
+description: Calendar recruitment export; one row per participant, without identifiers.
+primary_key: []
+exact_columns: true
+privacy_boundary: Approved recruitment dates and assignment only; never join to patient records.
 columns:
-  recruitment_id: {type: string, required: true, unit: "", coding: unique pseudonymized recruitment record, sensitive: false, private: false}
-  id: {type: string, required: true, unit: "", coding: pseudonymized study identifier, sensitive: false, private: false}
-  site_id: {type: string, required: true, unit: "", coding: pseudonymized site code, sensitive: true, private: false}
-  screened_date: {type: date, required: true, unit: date, coding: ISO-8601, sensitive: false, private: false}
-  eligible: {type: integer, required: true, unit: binary, coding: "0 = no; 1 = yes", sensitive: false, private: false}
-  enrolled_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: false, private: false}
-  randomization_date: {type: date, required: false, unit: date, coding: ISO-8601, sensitive: false, private: false}
-  tx: {type: integer, required: false, unit: binary, coding: "0 = external comparator; 1 = SAT invitation", sensitive: false, private: false}
+  informed_consent_date: {type: date, required: true, nullable: true, unit: date, coding: "consent date; missing when no consent recorded", private: false}
+  randomization_date: {type: date, required: true, nullable: true, unit: date, coding: "randomization date; missing when not randomized", private: false}
+  group_assignment: {type: integer, required: true, nullable: true, unit: binary, coding: "0 = external comparator; 1 = SAT invitation", private: false}
