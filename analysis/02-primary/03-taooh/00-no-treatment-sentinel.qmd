@@ -6,7 +6,7 @@ execute:
   freeze: false
 ---
 
-This reduced model checks the second-order `markov.misc::blrm_markov()` call
+This reduced model checks the second-order `mostr::blrm_markov()` call
 before the 50 full models. It contains no treatment term and does not calculate
 posterior estimands.
 
@@ -20,7 +20,7 @@ source(here::here("R", "model-helpers.R"))
 source(here::here("R", "markov-helpers.R"))
 library(tidyverse)
 library(rmsb)
-library(markov.misc)
+library(mostr)
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
@@ -34,7 +34,16 @@ surv_path <- here::here(
 output_path <- here::here(
   "artifacts", "primary", "taooh", "no-treatment-sentinel.rds"
 )
+stan_dx_text_path <- here::here(
+  "artifacts", "primary", "taooh", "diagnostics", "stan-dx",
+  "no-treatment-sentinel.txt"
+)
+stan_dx_plot_path <- here::here(
+  "artifacts", "primary", "taooh", "diagnostics", "stan-dx",
+  "no-treatment-sentinel.png"
+)
 dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(stan_dx_text_path), recursive = TRUE, showWarnings = FALSE)
 
 if (force || !file.exists(output_path)) {
   data <- arrow::read_parquet(taooh_path) |>
@@ -81,7 +90,7 @@ if (force || !file.exists(output_path)) {
 
   model_formula <- y ~ rms::rcs(week, 4) + yprev + ypprev + cluster(id)
   fit_seed <- analysis_seed(config, "taooh")
-  fit <- markov.misc::blrm_markov(
+  fit <- mostr::blrm_markov(
     formula = model_formula,
     data = data,
     id_var = "id",
@@ -99,7 +108,7 @@ if (force || !file.exists(output_path)) {
   diagnostics <- markov_diagnostics(fit, config$diagnostics)
 
   if (!isTRUE(diagnostics$passed)) {
-    fit <- markov.misc::blrm_markov(
+    fit <- mostr::blrm_markov(
       formula = model_formula,
       data = data,
       id_var = "id",
@@ -119,5 +128,23 @@ if (force || !file.exists(output_path)) {
 
   assert_markov_diagnostics(diagnostics)
   saveRDS(list(model = fit, diagnostics = diagnostics), output_path)
+}
+
+if (
+  force ||
+    !file.exists(stan_dx_text_path) ||
+    !file.exists(stan_dx_plot_path)
+) {
+  sentinel <- readRDS(output_path)
+  writeLines(capture.output(rmsb::stanDx(sentinel$model)), stan_dx_text_path)
+  stan_dx_plot <- rmsb::stanDxplot(sentinel$model)
+  ggplot2::ggsave(
+    stan_dx_plot_path,
+    stan_dx_plot,
+    width = 11,
+    height = max(6, 1.05 * length(unique(stan_dx_plot$data$param))),
+    dpi = 180,
+    limitsize = FALSE
+  )
 }
 ```
