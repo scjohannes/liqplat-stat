@@ -1,0 +1,115 @@
+---
+title: "QoL unadjusted landmark — model fitting"
+subtitle: "Computationally reduced analysis using primary imputations 1–5"
+format: html
+execute:
+  freeze: false
+---
+
+This supporting analysis uses exactly the first five completed datasets from
+the primary six-month QoL analysis. It fits an unadjusted Bayesian
+proportional-odds model to the same death-inclusive endpoint. The outcome is
+ordered from best QoL (1) through death (8), so a negative treatment
+coefficient favours intervention. The treatment log-odds ratio uses the same
+$N(0, 0.5)$ prior as the primary analysis.
+
+```{r}
+#| label: fit-supporting-qol-unadjusted-landmark
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+imputations <- readRDS(here::here(
+  "artifacts", "primary", "quality-of-life", "imputations.rds"
+))
+indices <- config$imputation$supporting$indices
+model_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "models"
+)
+diagnostic_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "diagnostics"
+)
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  diagnostic_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!force && file.exists(model_path) && file.exists(diagnostic_path)) next
+
+  data <- imputations[[index]] |>
+    dplyr::mutate(y_landmark = ordered(y_landmark, levels = 1:8))
+  dd <- rms::datadist(data)
+  options(datadist = "dd")
+
+  fit_seed <- analysis_seed(config, "supporting", index, offset = 400L)
+  model <- rmsb::blrm(
+    y_landmark ~ tx,
+    pcontrast = pcontrast_tx,
+    data = data,
+    chains = config$markov$chains,
+    iter = config$markov$iterations,
+    warmup = config$markov$warmup,
+    seed = fit_seed
+  )
+  draws <- posterior::as_draws_df(rmsb::stanGet(model))
+  diagnostics <- posterior::summarise_draws(draws) |>
+    as.data.frame()
+  finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+  finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+  finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+  passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+    length(finite_tail) > 0L &&
+    all(finite_rhat <= config$diagnostics$max_rhat) &&
+    all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+    all(finite_tail >= config$diagnostics$min_ess_tail)
+
+  if (!passed) {
+    model <- rmsb::blrm(
+      y_landmark ~ tx,
+      pcontrast = pcontrast_tx,
+      data = data,
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      seed = fit_seed + 500000L
+    )
+    draws <- posterior::as_draws_df(rmsb::stanGet(model))
+    diagnostics <- posterior::summarise_draws(draws) |>
+      as.data.frame()
+    finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+    finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+    finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+    passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+      length(finite_tail) > 0L &&
+      all(finite_rhat <= config$diagnostics$max_rhat) &&
+      all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+      all(finite_tail >= config$diagnostics$min_ess_tail)
+  }
+  if (!passed) {
+    stop(
+      "Persistent convergence failure in unadjusted landmark QoL imputation ",
+      index,
+      "."
+    )
+  }
+
+  saveRDS(model, model_path, compress = "xz")
+  arrow::write_parquet(diagnostics, diagnostic_path, compression = "zstd")
+}
+
+options(datadist = NULL)
+```

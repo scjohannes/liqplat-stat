@@ -1,0 +1,222 @@
+---
+title: "QoL unadjusted landmark — descriptive summaries"
+subtitle: "Observed, imputed, and unadjusted model-derived state distributions"
+format: html
+execute:
+  freeze: false
+---
+
+This stage applies the primary QoL descriptive check to the unadjusted
+supporting analysis. It uses the same prepared data and primary completed
+datasets, restricted to imputations 1–5. Missing outcomes remain an explicit
+grey category in the raw-data panel. The model-derived bars use the median of
+the stacked posterior state-probability draws across the five imputations.
+
+```{r}
+#| label: describe-supporting-qol-unadjusted
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+prepared <- arrow::read_parquet(here::here(
+  "artifacts", "primary", "quality-of-life", "prepared.parquet"
+))
+imputations <- readRDS(here::here(
+  "artifacts", "primary", "quality-of-life", "imputations.rds"
+))
+indices <- config$imputation$supporting$indices
+model_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "models"
+)
+result_dir <- here::here(
+  "results", "supporting", "qol-unadjusted-landmark", "descriptive"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "figures"
+)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+state_levels <- as.character(1:8)
+display_levels <- c(state_levels, "Missing")
+
+raw_summary <- prepared |>
+  dplyr::group_by(tx) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    deaths_by_day_182 = sum(event_death == 1L, na.rm = TRUE),
+    baseline_qol_observed = sum(!is.na(baseline_q30)),
+    baseline_qol_missing = sum(is.na(baseline_q30)),
+    landmark_qol_observed = sum(!is.na(landmark_q30)),
+    landmark_qol_missing = sum(is.na(landmark_q30)),
+    composite_observed = sum(!is.na(y_landmark)),
+    composite_missing = sum(is.na(y_landmark)),
+    .groups = "drop"
+  )
+
+raw_counts <- prepared |>
+  dplyr::mutate(
+    state = dplyr::if_else(
+      is.na(y_landmark),
+      "Missing",
+      as.character(y_landmark)
+    ),
+    state = factor(state, levels = display_levels)
+  ) |>
+  dplyr::count(tx, state, .drop = FALSE, name = "n") |>
+  dplyr::group_by(tx) |>
+  dplyr::mutate(
+    proportion = n / sum(n),
+    source = "Observed raw data"
+  ) |>
+  dplyr::ungroup()
+
+imputed_probabilities <- purrr::map_dfr(indices, function(index) {
+  imputations[[index]] |>
+    dplyr::mutate(state = factor(y_landmark, levels = 1:8)) |>
+    dplyr::count(tx, state, .drop = FALSE, name = "n") |>
+    dplyr::group_by(tx) |>
+    dplyr::mutate(
+      imputation = index,
+      proportion = n / sum(n)
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::select(imputation, tx, state, proportion)
+})
+
+imputed_summary <- imputed_probabilities |>
+  dplyr::group_by(tx, state) |>
+  dplyr::summarise(proportion = mean(proportion), .groups = "drop") |>
+  dplyr::mutate(
+    n = NA_integer_,
+    source = "Mean across completed datasets"
+  )
+
+model_draws <- purrr::map_dfr(indices, function(index) {
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  data <- imputations[[index]]
+  set.seed(analysis_seed(config, "supporting", index, offset = 700L))
+  selected <- sample.int(
+    nrow(model$draws),
+    config$imputation$supporting$post_estimation_draws,
+    replace = FALSE
+  )
+  model$draws <- model$draws[selected, , drop = FALSE]
+
+  purrr::map_dfr(0:1, function(treatment) {
+    newdata <- data |>
+      dplyr::mutate(tx = treatment)
+    probabilities <- predict(
+      model,
+      newdata = newdata,
+      type = "fitted.ind",
+      posterior.summary = "all"
+    )
+    standardized <- apply(probabilities, c(1, 3), mean)
+    tidyr::expand_grid(
+      draw = seq_len(nrow(standardized)),
+      state = state_levels
+    ) |>
+      dplyr::mutate(
+        imputation = index,
+        tx = treatment,
+        probability = as.vector(t(standardized))
+      )
+  })
+})
+
+model_summary <- model_draws |>
+  dplyr::group_by(tx, state) |>
+  dplyr::summarise(
+    proportion = median(probability),
+    q025 = quantile(probability, 0.025, names = FALSE),
+    q975 = quantile(probability, 0.975, names = FALSE),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    n = NA_integer_,
+    source = "Median unadjusted proportional-odds prediction"
+  )
+
+plot_data <- dplyr::bind_rows(
+  raw_counts |>
+    dplyr::select(tx, state, n, proportion, source),
+  imputed_summary |>
+    dplyr::select(tx, state, n, proportion, source),
+  model_summary |>
+    dplyr::select(tx, state, n, proportion, source)
+) |>
+  dplyr::mutate(
+    state = factor(state, levels = display_levels),
+    tx = factor(tx, levels = 0:1, labels = c("Control", "Intervention")),
+    source = factor(
+      source,
+      levels = c(
+        "Observed raw data",
+        "Mean across completed datasets",
+        "Median unadjusted proportional-odds prediction"
+      )
+    )
+  )
+
+state_colours <- c(
+  stats::setNames(grDevices::hcl.colors(8L, "viridis"), state_levels),
+  Missing = "grey75"
+)
+state_plot <- ggplot2::ggplot(
+  plot_data,
+  ggplot2::aes(x = tx, y = proportion, fill = state)
+) +
+  ggplot2::geom_col(width = 0.72) +
+  ggplot2::facet_wrap(ggplot2::vars(source), nrow = 1L) +
+  ggplot2::scale_fill_manual(values = state_colours, drop = FALSE) +
+  ggplot2::scale_y_continuous(labels = scales::label_percent()) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Proportion",
+    fill = "QoL/death state"
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    panel.grid.major.x = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(angle = 25, hjust = 1)
+  )
+
+arrow::write_parquet(raw_summary, file.path(result_dir, "raw-summary.parquet"))
+arrow::write_parquet(raw_counts, file.path(result_dir, "raw-state-counts.parquet"))
+arrow::write_parquet(
+  imputed_probabilities,
+  file.path(result_dir, "imputed-state-probabilities.parquet")
+)
+arrow::write_parquet(
+  model_summary,
+  file.path(result_dir, "model-state-probabilities.parquet")
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "observed-imputed-model-state-distributions.png"),
+  state_plot,
+  width = 12,
+  height = 5,
+  dpi = 300
+)
+```
+
+```{r}
+#| label: tbl-supporting-qol-unadjusted-raw-summary
+#| tbl-cap: "Availability of the raw QoL variables by randomized group"
+#| echo: false
+
+knitr::kable(raw_summary)
+```
+
+```{r}
+#| label: fig-supporting-qol-unadjusted-state-distributions
+#| fig-cap: "Observed, imputed, and unadjusted model-derived distributions of the six-month QoL/death state"
+#| fig-alt: "Three faceted stacked bar charts compare QoL and death states 1 through 8 by treatment group. The raw-data panel also includes a grey missing category."
+#| fig-width: 12
+#| fig-height: 5
+#| echo: false
+
+state_plot
+```

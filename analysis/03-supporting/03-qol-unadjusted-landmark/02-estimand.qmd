@@ -1,0 +1,130 @@
+---
+title: "QoL unadjusted landmark — estimand"
+subtitle: "Pooled unadjusted treatment odds for a worse six-month outcome"
+format: html
+execute:
+  freeze: false
+---
+
+Five hundred deterministically selected posterior treatment draws are retained
+from each of primary QoL imputations 1–5. Equal numbers of draws give every
+completed dataset equal weight. Odds ratios below one favour intervention.
+
+```{r}
+#| label: derive-supporting-qol-unadjusted-estimand
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- config$imputation$supporting$indices
+model_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "models"
+)
+estimand_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "estimand"
+)
+result_dir <- here::here(
+  "results", "supporting", "qol-unadjusted-landmark"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "figures"
+)
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  draw_path <- file.path(estimand_dir, sprintf("draws-%02d.parquet", index))
+  if (!force && file.exists(draw_path)) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  draws <- as.data.frame(model$draws)
+  if (!"tx" %in% names(draws)) {
+    stop("The unadjusted QoL posterior does not contain the coefficient `tx`.")
+  }
+  set.seed(analysis_seed(config, "supporting", index, offset = 450L))
+  selected <- sample.int(
+    nrow(draws),
+    config$imputation$supporting$post_estimation_draws,
+    replace = FALSE
+  )
+  estimand <- tibble::tibble(
+    imputation = index,
+    draw = seq_len(config$imputation$supporting$post_estimation_draws),
+    log_odds_ratio_worse = draws$tx[selected],
+    odds_ratio_worse = exp(log_odds_ratio_worse)
+  )
+  arrow::write_parquet(estimand, draw_path, compression = "zstd")
+}
+
+draws <- purrr::map_dfr(indices, function(index) {
+  arrow::read_parquet(file.path(
+    estimand_dir,
+    sprintf("draws-%02d.parquet", index)
+  ))
+})
+
+summary <- draws |>
+  dplyr::summarise(
+    estimand = paste(
+      "unadjusted proportional odds ratio for a worse six-month",
+      "QoL/death state"
+    ),
+    posterior_mean = mean(odds_ratio_worse),
+    posterior_median = median(odds_ratio_worse),
+    q025 = quantile(odds_ratio_worse, 0.025, names = FALSE),
+    q975 = quantile(odds_ratio_worse, 0.975, names = FALSE),
+    probability_benefit = mean(log_odds_ratio_worse < 0),
+    imputations = dplyr::n_distinct(imputation),
+    posterior_draws_per_imputation =
+      config$imputation$supporting$post_estimation_draws,
+    computationally_reduced = TRUE
+  )
+
+arrow::write_parquet(
+  draws,
+  file.path(result_dir, "estimand-draws.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  summary,
+  file.path(result_dir, "summary.parquet"),
+  compression = "zstd"
+)
+
+posterior_plot <- ggplot2::ggplot(
+  draws,
+  ggplot2::aes(x = odds_ratio_worse)
+) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(
+    .width = c(0.66, 0.95),
+    point_interval = ggdist::median_qi
+  ) +
+  ggplot2::geom_vline(
+    xintercept = 1,
+    linetype = "dashed",
+    colour = "grey40"
+  ) +
+  ggplot2::labs(
+    x = "Unadjusted treatment odds ratio for a worse six-month QoL/death state",
+    y = NULL
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    axis.text.y = ggplot2::element_blank(),
+    axis.ticks.y = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor.y = ggplot2::element_blank()
+  )
+
+ggplot2::ggsave(
+  file.path(figure_dir, "qol-unadjusted-odds-ratio-posterior.png"),
+  posterior_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```

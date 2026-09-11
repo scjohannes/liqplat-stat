@@ -1,0 +1,83 @@
+---
+title: "QoL unadjusted landmark — diagnostics"
+subtitle: "Convergence across primary imputations 1–5"
+format: html
+execute:
+  freeze: false
+---
+
+The unadjusted supporting analysis must satisfy the same R-hat and effective-
+sample-size thresholds as the primary QoL analysis. Trace plots are stored for
+all ordinal intercepts and the treatment coefficient in every fitted model.
+
+```{r}
+#| label: diagnose-supporting-qol-unadjusted
+#| echo: false
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- config$imputation$supporting$indices
+diagnostic_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "diagnostics"
+)
+model_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "models"
+)
+trace_dir <- file.path(diagnostic_dir, "trace-plots")
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+
+diagnostics <- purrr::map_dfr(indices, function(index) {
+  path <- file.path(diagnostic_dir, sprintf("diagnostics-%02d.parquet", index))
+  if (!file.exists(path)) stop("Missing unadjusted QoL diagnostic artifact: ", path)
+  arrow::read_parquet(path) |>
+    dplyr::mutate(imputation = index)
+})
+
+finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+passed <- length(finite_rhat) > 0L && length(finite_bulk) > 0L &&
+  length(finite_tail) > 0L &&
+  all(finite_rhat <= config$diagnostics$max_rhat) &&
+  all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+  all(finite_tail >= config$diagnostics$min_ess_tail)
+if (!passed) stop("The pooled unadjusted landmark QoL diagnostic check failed.")
+
+diagnostic_summary <- tibble::tibble(
+  models = length(indices),
+  maximum_rhat = max(finite_rhat),
+  minimum_ess_bulk = min(finite_bulk),
+  minimum_ess_tail = min(finite_tail),
+  passed = passed
+)
+knitr::kable(diagnostic_summary)
+```
+
+```{r}
+#| label: save-supporting-qol-unadjusted-trace-plots
+#| include: false
+
+for (index in indices) {
+  trace_path <- file.path(trace_dir, sprintf("trace-%02d.png", index))
+  if (!force && file.exists(trace_path)) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  draws <- posterior::as_draws_array(rmsb::stanGet(model))
+  trace_variables <- posterior::variables(draws)
+  trace_variables <- trace_variables[grepl("^(alpha|beta)\\[", trace_variables)]
+  if (length(trace_variables) == 0L) {
+    stop("No unadjusted QoL alpha or beta parameters were found for trace plotting.")
+  }
+  trace_plot <- bayesplot::mcmc_trace(draws, pars = trace_variables)
+  ggplot2::ggsave(
+    trace_path,
+    trace_plot,
+    width = 10,
+    height = max(4, 1.2 * length(trace_variables)),
+    dpi = 180,
+    limitsize = FALSE
+  )
+}
+```

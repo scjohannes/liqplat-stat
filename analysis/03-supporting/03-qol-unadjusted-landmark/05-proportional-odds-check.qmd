@@ -1,0 +1,207 @@
+---
+title: "QoL unadjusted landmark — proportional-odds check"
+subtitle: "Common and threshold-specific unadjusted treatment odds ratios"
+format: html
+execute:
+  freeze: false
+---
+
+The proportional-odds assumption is examined in the same way as for the main
+QoL analysis, but every model contains treatment only. The common treatment
+log-odds ratio is compared with treatment effects from seven binary logistic
+models. For threshold (k), the binary event is (Y_{182} > k), so positive
+values indicate greater odds of a worse outcome under intervention. Estimates
+and variances are pooled across primary imputations 1–5 using Rubin's rules.
+
+This is a frequentist graphical model check, not a replacement for the
+Bayesian supporting estimand.
+
+```{r}
+#| label: check-supporting-qol-unadjusted-proportional-odds
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+imputations <- readRDS(here::here(
+  "artifacts", "primary", "quality-of-life", "imputations.rds"
+))
+indices <- config$imputation$supporting$indices
+thresholds <- 1:7
+
+estimates <- purrr::map_dfr(indices, function(index) {
+  data <- imputations[[index]] |>
+    dplyr::mutate(y_landmark = ordered(y_landmark, levels = 1:8))
+
+  common_fit <- rms::lrm(
+    y_landmark ~ tx,
+    data = data,
+    x = TRUE,
+    y = TRUE
+  )
+  common_estimate <- tibble::tibble(
+    imputation = index,
+    threshold = NA_integer_,
+    comparison = "Common proportional-odds effect",
+    estimate = unname(stats::coef(common_fit)["tx"]),
+    variance = unname(stats::vcov(common_fit)["tx", "tx"])
+  )
+
+  binary_estimates <- purrr::map_dfr(thresholds, function(threshold) {
+    binary_data <- data |>
+      dplyr::mutate(
+        binary_worse = as.integer(as.integer(y_landmark) > threshold)
+      )
+    binary_fit <- rms::lrm(
+      binary_worse ~ tx,
+      data = binary_data,
+      x = TRUE,
+      y = TRUE
+    )
+    tibble::tibble(
+      imputation = index,
+      threshold = threshold,
+      comparison = paste0("Y > ", threshold),
+      estimate = unname(stats::coef(binary_fit)["tx"]),
+      variance = unname(stats::vcov(binary_fit)["tx", "tx"])
+    )
+  })
+
+  dplyr::bind_rows(common_estimate, binary_estimates)
+})
+
+pooled <- estimates |>
+  dplyr::group_by(comparison) |>
+  dplyr::group_modify(function(data, key) {
+    m <- nrow(data)
+    q_bar <- mean(data$estimate)
+    u_bar <- mean(data$variance)
+    between <- stats::var(data$estimate)
+    total <- u_bar + (1 + 1 / m) * between
+    degrees_freedom <- if (is.finite(between) && between > 0) {
+      (m - 1) * (1 + u_bar / ((1 + 1 / m) * between))^2
+    } else {
+      Inf
+    }
+    critical_value <- if (is.finite(degrees_freedom)) {
+      stats::qt(0.975, df = degrees_freedom)
+    } else {
+      stats::qnorm(0.975)
+    }
+    standard_error <- sqrt(total)
+    tibble::tibble(
+      threshold = data$threshold[[1L]],
+      log_odds_ratio = q_bar,
+      standard_error = standard_error,
+      conf_low = q_bar - critical_value * standard_error,
+      conf_high = q_bar + critical_value * standard_error,
+      odds_ratio = exp(q_bar),
+      odds_ratio_low = exp(q_bar - critical_value * standard_error),
+      odds_ratio_high = exp(q_bar + critical_value * standard_error),
+      imputations = m
+    )
+  }) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(order = dplyr::coalesce(threshold, 0L)) |>
+  dplyr::arrange(order)
+
+binary_pooled <- pooled |>
+  dplyr::filter(!is.na(threshold)) |>
+  dplyr::mutate(comparison = factor(comparison, levels = rev(comparison)))
+common_pooled <- pooled |>
+  dplyr::filter(is.na(threshold))
+common_repeated <- binary_pooled |>
+  dplyr::mutate(
+    log_odds_ratio = common_pooled$log_odds_ratio[[1L]],
+    conf_low = common_pooled$conf_low[[1L]],
+    conf_high = common_pooled$conf_high[[1L]]
+  )
+
+comparison_plot <- ggplot2::ggplot() +
+  ggplot2::geom_vline(
+    xintercept = common_pooled$log_odds_ratio[[1L]],
+    colour = "grey65",
+    linewidth = 0.5
+  ) +
+  ggplot2::geom_errorbarh(
+    data = binary_pooled,
+    ggplot2::aes(y = comparison, xmin = conf_low, xmax = conf_high),
+    height = 0.12,
+    position = ggplot2::position_nudge(y = 0.08),
+    colour = "black"
+  ) +
+  ggplot2::geom_point(
+    data = binary_pooled,
+    ggplot2::aes(x = log_odds_ratio, y = comparison),
+    position = ggplot2::position_nudge(y = 0.08),
+    size = 2.5,
+    colour = "black"
+  ) +
+  ggplot2::geom_errorbarh(
+    data = common_repeated,
+    ggplot2::aes(y = comparison, xmin = conf_low, xmax = conf_high),
+    height = 0.12,
+    position = ggplot2::position_nudge(y = -0.08),
+    colour = "steelblue"
+  ) +
+  ggplot2::geom_point(
+    data = common_repeated,
+    ggplot2::aes(x = log_odds_ratio, y = comparison),
+    position = ggplot2::position_nudge(y = -0.08),
+    size = 2.5,
+    colour = "steelblue"
+  ) +
+  ggplot2::labs(
+    x = "Unadjusted treatment log odds ratio for a worse outcome",
+    y = "Binary threshold"
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(panel.grid.major.y = ggplot2::element_blank())
+
+result_dir <- here::here(
+  "results", "supporting", "qol-unadjusted-landmark",
+  "proportional-odds-check"
+)
+figure_dir <- here::here(
+  "artifacts", "supporting", "qol-unadjusted-landmark", "figures"
+)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+arrow::write_parquet(
+  estimates,
+  file.path(result_dir, "imputation-estimates.parquet")
+)
+arrow::write_parquet(
+  pooled,
+  file.path(result_dir, "pooled-estimates.parquet")
+)
+ggplot2::ggsave(
+  file.path(figure_dir, "common-vs-binary-log-odds-ratios.png"),
+  comparison_plot,
+  width = 8,
+  height = 5.5,
+  dpi = 300
+)
+```
+
+```{r}
+#| label: tbl-supporting-qol-unadjusted-proportional-odds-check
+#| tbl-cap: "Pooled common and threshold-specific unadjusted treatment odds ratios for a worse six-month outcome"
+#| echo: false
+
+knitr::kable(pooled[c(
+  "comparison", "odds_ratio", "odds_ratio_low", "odds_ratio_high",
+  "log_odds_ratio", "conf_low", "conf_high"
+)])
+```
+
+```{r}
+#| label: fig-supporting-qol-unadjusted-proportional-odds-check
+#| fig-cap: "Common and threshold-specific unadjusted treatment log odds ratios pooled across five completed datasets"
+#| fig-alt: "A horizontal dot-and-interval plot compares the common unadjusted proportional-odds treatment coefficient with seven binary logistic treatment coefficients for progressively worse QoL thresholds."
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+comparison_plot
+```
