@@ -3,6 +3,15 @@
 # Reports are read-only consumers.  Missing artifacts are represented by an
 # explicit status and are never converted to zero or to a successful result.
 
+# Report chunks check each absolute artifact path before including a figure.
+# Keep knitr's relative paths for portable HTML and Typst output, but skip its
+# second existence check: that check is evaluated from the report working
+# directory rather than the chapter output directory on Windows.
+options(
+  knitr.graphics.rel_path = TRUE,
+  knitr.graphics.error = FALSE
+)
+
 if (!exists("%||%", mode = "function")) {
   `%||%` <- function(x, y) if (is.null(x) || length(x) == 0L) y else x
 }
@@ -192,10 +201,14 @@ report_artifact_candidates <- function(section) {
       "results/os/rmst_summary.parquet"
     ),
     qol = c(
+      "results/primary/quality-of-life/summary.parquet",
+      "results/primary/quality-of-life/estimand-draws.parquet",
       "results/main/qol/summary.parquet", "results/main/qol/summary.csv",
       "results/qol/summary.parquet", "results/qol/summary.csv"
     ),
     taooh = c(
+      "results/primary/taooh/home-time-summary.parquet",
+      "results/primary/taooh/state-occupancy-summary.parquet",
       "results/main/taooh/summary.parquet", "results/main/taooh/summary.csv",
       "results/taooh/summary.parquet", "results/taooh/summary.csv"
     ),
@@ -276,6 +289,8 @@ report_render_section <- function(section, root = NULL, artifact_paths = NULL,
 read_qol_analysis_decision <- function(root = NULL) {
   root <- report_project_root(root)
   candidates <- c(
+    file.path(root, "results", "primary", "overall-survival", "qol-decision.yml"),
+    file.path(root, "results", "primary", "overall-survival", "qol_decision.yml"),
     file.path(root, "results", "os", "qol-decision.yml"),
     file.path(root, "results", "os", "qol_decision.yml"),
     file.path(root, "results", "main", "os", "qol-decision.yml"),
@@ -327,7 +342,7 @@ qol_primary_label <- function(decision) {
   if (identical(decision$primary, "principal_stratum")) {
     return("Principal-stratum QoL is the primary analysis; death-inclusive longitudinal QoL is supporting.")
   }
-  "Six-month death-inclusive ordinal QoL is the primary analysis; death-inclusive longitudinal QoL is supporting."
+  "Six-month death-inclusive ordinal QoL is the primary analysis; principal-stratum and death-inclusive longitudinal QoL analyses are supporting."
 }
 
 list_public_report_outputs <- function(root = report_project_root("reports")) {

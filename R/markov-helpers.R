@@ -72,17 +72,46 @@ markov_diagnostics <- function(model, thresholds = NULL) {
   finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
   finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
   finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+  sampler_diagnostics <- model$diagnostics$diagnostic_summary
+  divergent_transitions <- if (
+    is.data.frame(sampler_diagnostics) &&
+      "num_divergent" %in% names(sampler_diagnostics)
+  ) {
+    sum(sampler_diagnostics$num_divergent, na.rm = TRUE)
+  } else {
+    0L
+  }
+  treedepth_exceeded <- if (
+    is.data.frame(sampler_diagnostics) &&
+      "num_max_treedepth" %in% names(sampler_diagnostics)
+  ) {
+    sum(sampler_diagnostics$num_max_treedepth, na.rm = TRUE)
+  } else {
+    0L
+  }
+  min_bfmi <- if (
+    is.data.frame(sampler_diagnostics) &&
+      "ebfmi" %in% names(sampler_diagnostics) &&
+      any(is.finite(sampler_diagnostics$ebfmi))
+  ) {
+    min(sampler_diagnostics$ebfmi, na.rm = TRUE)
+  } else {
+    NA_real_
+  }
   passed <- length(finite_rhat) > 0L &&
     all(finite_rhat <= as.numeric(thresholds$max_rhat)) &&
     length(finite_bulk) > 0L &&
     all(finite_bulk >= as.numeric(thresholds$min_ess_bulk)) &&
     length(finite_tail) > 0L &&
-    all(finite_tail >= as.numeric(thresholds$min_ess_tail))
+    all(finite_tail >= as.numeric(thresholds$min_ess_tail)) &&
+    divergent_transitions <= as.numeric(thresholds$max_divergent_transitions) &&
+    treedepth_exceeded <= as.numeric(thresholds$max_treedepth_exceeded) &&
+    (is.na(min_bfmi) || min_bfmi >= as.numeric(thresholds$min_bfmi))
   list(
     summary = diagnostics,
-    divergent_transitions = 0L,
-    treedepth_exceeded = 0L,
-    min_bfmi = NA_real_,
+    divergent_transitions = divergent_transitions,
+    treedepth_exceeded = treedepth_exceeded,
+    min_bfmi = min_bfmi,
     passed = isTRUE(passed),
     thresholds = thresholds
   )

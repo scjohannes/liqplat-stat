@@ -69,15 +69,18 @@ reshape_actionability_long <- function(data, id_col = "id", alteration_col = "al
   long
 }
 
-# Unknown/not-assessed entries are retained as exact recorded levels in the
-# alteration table, but are not evidence of an actionable level. No ordering
-# or ranking is applied to source levels.
+# Unknown/not-assessed entries are retained in the long source and completeness
+# output, but are not evidence of an actionable level. The published OncoKB
+# ordering may be displayed as metadata; it is not used as a numeric variable.
 is_recorded_actionability_evidence <- function(x) {
   values <- trimws(as.character(x))
   missing_or_non_evidence <- is.na(values) | !nzchar(values) |
     tolower(values) %in% c("unknown", "not_assessed", "not assessed",
                            "not available", "not_applicable", "not applicable",
-                           "none", "na", "n/a")
+                           "not tested", "not_tested", "not performed",
+                           "not_performed", "not reported", "not_reported",
+                           "pending", "no evidence", "no_evidence", "no level",
+                           "no_level", "none", "na", "n/a")
   !missing_or_non_evidence
 }
 
@@ -168,8 +171,7 @@ summarize_actionability_levels <- function(data, id_col = "id",
     data[valid, , drop = FALSE], id_col, alteration_col,
     sensitivity_col, resistance_col, chip_col, alteration_type_col
   )
-  long <- long[!is.na(long$actionability_level) &
-                 nzchar(long$actionability_level) &
+  long <- long[is_recorded_actionability_evidence(long$actionability_level) &
                  long$non_chip, , drop = FALSE]
   if (nrow(long) == 0L) {
     level_summary <- data.frame(

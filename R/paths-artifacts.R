@@ -52,7 +52,7 @@ write_atomic <- function(path, writer, overwrite = TRUE) {
   on.exit(if (file.exists(temporary)) unlink(temporary), add = TRUE)
   writer(temporary)
   if (!file.exists(temporary)) stop("Artifact writer did not create: ", temporary)
-  if (file.exists(path) && !unlink(path, force = TRUE)) {
+  if (file.exists(path) && unlink(path, force = TRUE) != 0L) {
     stop("Could not replace existing artifact: ", path)
   }
   if (!file.rename(temporary, path)) stop("Could not move artifact into place: ", path)

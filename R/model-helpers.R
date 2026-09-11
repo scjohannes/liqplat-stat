@@ -90,11 +90,11 @@ standardized_marginal_probability <- function(fit, newdata, ndraws = NULL) {
   if (!is.data.frame(newdata) || nrow(newdata) == 0L) {
     stop("`newdata` must contain at least one row.")
   }
-  draws <- brms::posterior_epred(fit, newdata = newdata, re_formula = NA)
-  if (is.null(dim(draws)) || ncol(draws) != nrow(newdata)) {
-    stop("Posterior predictions did not match the standardization rows.")
-  }
-  values <- rowMeans(draws)
+  draws <- marginaleffects::avg_predictions(
+    fit, newdata = newdata, type = "response", re_formula = NA
+  ) |>
+    marginaleffects::get_draws()
+  values <- draws$draw
   if (!is.null(ndraws)) {
     ndraws <- as.integer(ndraws)
     if (is.na(ndraws) || ndraws < 1L) stop("`ndraws` must be positive.")

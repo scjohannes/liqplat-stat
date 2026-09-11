@@ -59,6 +59,32 @@ fit_survival_model <- function(data, formula, fit_args = list()) {
 }
 
 # Return standardized posterior survival curves in one stable long format.
+# The survival branch passes every factor's levels to separate fixed/random
+# frames and still calls lme4's deprecated mkReTrms forwarding function.
+# ponytail: local copies depend on survival-branch internals; remove when upstream fixes these calls.
+posterior_survfit_compatible <- function(object, ...) {
+  if (!inherits(object, "stansurv") || !isTRUE(object$has_bars)) {
+    return(rstanarm::posterior_survfit(object, ...))
+  }
+  scope <- new.env(parent = asNamespace("rstanarm"))
+  for (name in c("posterior_survfit.stansurv", ".pp_calculate_surv", ".pp_data_surv")) {
+    fun <- getFromNamespace(name, "rstanarm")
+    environment(fun) <- scope
+    assign(name, fun, envir = scope)
+  }
+  scope$make_model_frame <- function(formula, data, xlevs = NULL, ...) {
+    getFromNamespace("make_model_frame", "rstanarm")(
+      formula, data, xlevs = xlevs[intersect(names(xlevs), all.vars(formula))], ...
+    )
+  }
+  environment(scope$make_model_frame) <- scope
+  body(scope$.pp_data_surv) <- parse(text = gsub(
+    "lme4::mkReTrms", "reformulas::mkReTrms",
+    paste(deparse(body(scope$.pp_data_surv)), collapse = "\n"), fixed = TRUE
+  ))[[1L]]
+  scope$posterior_survfit.stansurv(object, ...)
+}
+
 # rstanarm currently returns a list of matrices for `posterior_survfit()` when
 # standardising over a data frame; this wrapper also accepts the matrix form so
 # that the endpoint notebooks do not depend on that implementation detail.
@@ -89,26 +115,16 @@ posterior_standardized_survival <- function(model, data, treatment,
   }
   newdata <- data
   newdata[[treatment_col]] <- treatment
-  old_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  old_seed <- if (old_exists) get(".Random.seed", envir = .GlobalEnv) else NULL
-  if (!is.null(seed)) set.seed(seed)
-  raw <- tryCatch(
-    rstanarm::posterior_survfit(
-      model,
-      newdata = newdata,
-      times = 0,
-      extrapolate = TRUE,
-      standardise = TRUE,
-      control = list(edist = horizon, epoints = n_points),
-      return_matrix = TRUE,
-      draws = n_draws
-    ),
-    finally = {
-      if (old_exists) assign(".Random.seed", old_seed, envir = .GlobalEnv)
-      else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-        rm(".Random.seed", envir = .GlobalEnv)
-      }
-    }
+  raw <- posterior_survfit_compatible(
+    model,
+    newdata = newdata,
+    times = 0,
+    extrapolate = TRUE,
+    standardise = TRUE,
+    control = list(edist = horizon, epoints = n_points),
+    return_matrix = TRUE,
+    draws = n_draws,
+    seed = seed
   )
   matrix_value <- if (is.matrix(raw)) raw else {
     if (!is.list(raw) || length(raw) == 0L) {
@@ -117,15 +133,24 @@ posterior_standardized_survival <- function(model, data, treatment,
     do.call(cbind, raw)
   }
   matrix_value <- as.matrix(matrix_value)
-  times <- attr(raw, "times")
-  if (is.null(times) && is.list(raw)) times <- attr(raw[[1L]], "times")
+  times <- if (is.list(raw)) {
+    vapply(raw, function(curve) {
+      curve_time <- attr(curve, "times")
+      if (length(curve_time) != 1L || !is.finite(curve_time)) {
+        stop("Each standardized survival curve must contain one time point.")
+      }
+      as.numeric(curve_time)
+    }, numeric(1))
+  } else {
+    attr(raw, "times")
+  }
   if (is.null(times)) times <- seq(0, horizon, length.out = ncol(matrix_value))
   times <- as.numeric(times)
-  if (length(times) != ncol(matrix_value)) {
-    stop("Survival-curve time points do not match the posterior matrix.")
-  }
   if (nrow(matrix_value) < n_draws && ncol(matrix_value) == n_draws) {
     matrix_value <- t(matrix_value)
+  }
+  if (length(times) != ncol(matrix_value)) {
+    stop("Survival-curve time points do not match the posterior matrix.")
   }
   if (nrow(matrix_value) < 1L) stop("Standardized survival curves contain no draws.")
   if (nrow(matrix_value) > n_draws) matrix_value <- matrix_value[seq_len(n_draws), , drop = FALSE]
@@ -154,7 +179,7 @@ posterior_standardized_survival_draws <- function(model, data,
       horizon = horizon,
       n_points = n_points,
       n_draws = n_draws,
-      seed = if (is.null(seed)) NULL else as.integer(seed + (index - 1L) * 1000L)
+      seed = seed
     )
   })
   do.call(rbind, out)
