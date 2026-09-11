@@ -1,0 +1,121 @@
+---
+title: "TAOOH first-order — model fitting"
+subtitle: "Full proportional-odds models in 50 imputations"
+format: html
+execute:
+  freeze: false
+---
+
+This supporting analysis uses the same completed datasets, covariates, spline
+terms, previous-state interaction, priors,
+sampling settings, and random-intercept structure as the primary second-order
+model. It omits only `ypprev` and `week %ia% ypprev`. The workflow targets all
+50 imputations and resumes from existing model and diagnostic checkpoints.
+
+```{r}
+#| label: fit-taooh-first-order-models
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "markov-helpers.R"))
+library(rmsb)
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)
+taooh_diagnostic_thresholds <- config$diagnostics
+# A small number of divergences is retained for review rather than causing an
+# automatic full refit. Twenty or more divergences still trigger the retry.
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
+data_dir <- here::here("artifacts", "primary", "taooh", "imputations")
+model_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "models"
+)
+diagnostic_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "diagnostics"
+)
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  diagnostic_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!force && file.exists(model_path) && file.exists(diagnostic_path)) next
+
+  data <- arrow::read_parquet(data_path) |>
+    as.data.frame() |>
+    dplyr::mutate(ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE))
+  # The primary imputation branches contain only participants with at least
+  # one observed weekly TAOOH outcome.
+
+  dd <- rms::datadist(data)
+  options(datadist = "dd")
+  model_formula <- y ~ tx + rms::rcs(week, 4) + yprev +
+    week %ia% yprev +
+    ecog_fstcnt + diagnosis + rms::rcs(albumin, 3) +
+    rms::rcs(c_reactive_protein, 3) + cluster(id)
+  fit_seed <- analysis_seed(config, "supporting", index, offset = 2000L)
+
+  fit <- tryCatch(
+    mostr::blrm_markov(
+      formula = model_formula,
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$iterations,
+      warmup = config$markov$warmup,
+      refresh = 1,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed,
+        parallel_chains = config$markov$chains
+      )
+    ),
+    error = identity
+  )
+
+  diagnostics <- if (inherits(fit, "error")) NULL else
+    tryCatch(
+      markov_diagnostics(fit, taooh_diagnostic_thresholds),
+      error = function(error) NULL
+    )
+
+  if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
+    fit <- mostr::blrm_markov(
+      formula = model_formula,
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      refresh = 0L,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed + 500000L,
+        parallel_chains = config$markov$chains
+      )
+    )
+    diagnostics <- markov_diagnostics(fit, taooh_diagnostic_thresholds)
+  }
+
+  if (!isTRUE(fit$pppo == 0L) || !is.null(fit$cppo)) {
+    stop("The first-order TAOOH model must be a full proportional-odds model.")
+  }
+  assert_markov_diagnostics(diagnostics)
+  saveRDS(fit, model_path, compress = "xz")
+  diagnostic_output <- as.data.frame(diagnostics$summary)
+  diagnostic_output$imputation <- index
+  diagnostic_output$divergent_transitions <- diagnostics$divergent_transitions
+  diagnostic_output$treedepth_exceeded <- diagnostics$treedepth_exceeded
+  diagnostic_output$min_bfmi <- diagnostics$min_bfmi
+  arrow::write_parquet(diagnostic_output, diagnostic_path)
+}
+```

@@ -1,0 +1,273 @@
+---
+title: "TAOOH — first- versus second-order model fit"
+subtitle: "PSIS-LOO comparison across 50 imputations"
+format: html
+execute:
+  freeze: false
+---
+
+The first- and second-order models use the same completed datasets and
+the same full proportional-odds specification. The first-order model omits
+only the second lag and its interaction with week. PSIS-LOO is calculated
+after fitting because including it in every sampling run is slow. The workflow
+targets all 50 imputations and resumes from the stored LOO and model
+checkpoints.
+
+For each imputation, a difference in expected log predictive density (ELPD) is
+calculated as second order minus first order. Positive values favor the
+second-order model. We describe an improvement as substantial when the ELPD
+difference is greater than twice its standard error. Results are kept separate by
+imputation. We use
+ordinary observation-level PSIS-LOO, which evaluates conditional weekly
+transition prediction. We do not sum the conditional likelihood by patient:
+with patient-specific random intercepts, valid leave-one-patient-out
+prediction requires integrating those random effects out, and `rmsb` does not
+currently provide that marginal likelihood. Simply grouping the stored
+conditional likelihood would still reuse each patient's fitted random effect.
+
+```{r}
+#| label: compare-taooh-markov-order
+#| include: false
+
+library(tidyverse)
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)
+second_order_model_dir <- here::here(
+  "artifacts", "primary", "taooh", "models"
+)
+first_order_model_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "models"
+)
+loo_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "loo"
+)
+result_dir <- here::here("results", "supporting", "taooh-first-order")
+dir.create(loo_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+comparison_rows <- vector("list", length(indices))
+
+for (position in seq_along(indices)) {
+  index <- indices[[position]]
+  second_order_model_path <- file.path(
+    second_order_model_dir,
+    sprintf("model-%02d.rds", index)
+  )
+  first_order_model_path <- file.path(
+    first_order_model_dir,
+    sprintf("model-%02d.rds", index)
+  )
+  second_order <- readRDS(second_order_model_path)
+  first_order <- readRDS(first_order_model_path)
+
+  if (
+    !isTRUE(second_order$pppo == 0L) || !is.null(second_order$cppo) ||
+      !isTRUE(first_order$pppo == 0L) || !is.null(first_order$cppo)
+  ) {
+    stop("LOO comparison requires full proportional odds in both models.")
+  }
+
+  second_terms <- attr(terms(formula(second_order)), "term.labels")
+  first_terms <- attr(terms(formula(first_order)), "term.labels")
+  second_order_only <- setdiff(second_terms, first_terms)
+  first_order_only <- setdiff(first_terms, second_terms)
+  if (
+    !setequal(second_order_only, c("ypprev", "week %ia% ypprev")) ||
+      length(first_order_only) > 0L
+  ) {
+    stop(
+      "The compared models differ by terms other than the second-order ",
+      "state and its interaction with week."
+    )
+  }
+
+  second_order_loo_path <- file.path(
+    loo_dir,
+    sprintf("second-order-loo-%02d.rds", index)
+  )
+  first_order_loo_path <- file.path(
+    loo_dir,
+    sprintf("first-order-loo-%02d.rds", index)
+  )
+
+  if (!force && !is.null(second_order$loo)) {
+    second_order_loo <- second_order$loo
+  } else if (!force && file.exists(second_order_loo_path)) {
+    second_order_loo <- readRDS(second_order_loo_path)
+  } else {
+    second_order_loo <- rmsb::stanGet(second_order)$loo()
+    saveRDS(second_order_loo, second_order_loo_path, compress = "xz")
+  }
+  if (!file.exists(second_order_loo_path)) {
+    saveRDS(second_order_loo, second_order_loo_path, compress = "xz")
+  }
+  if (!force && !is.null(first_order$loo)) {
+    first_order_loo <- first_order$loo
+  } else if (!force && file.exists(first_order_loo_path)) {
+    first_order_loo <- readRDS(first_order_loo_path)
+  } else {
+    first_order_loo <- rmsb::stanGet(first_order)$loo()
+    saveRDS(first_order_loo, first_order_loo_path, compress = "xz")
+  }
+  if (!file.exists(first_order_loo_path)) {
+    saveRDS(first_order_loo, first_order_loo_path, compress = "xz")
+  }
+
+  # compareBmods() reads the $loo element from each rmsb model object. Store
+  # each calculated LOO object with its fitted model as well as in the separate
+  # cache so later inspection does not require recalculation.
+  second_order$loo <- second_order_loo
+  first_order$loo <- first_order_loo
+  saveRDS(second_order, second_order_model_path, compress = "xz")
+  saveRDS(first_order, first_order_model_path, compress = "xz")
+  stacking_weights <- rmsb::compareBmods(
+    first_order = first_order,
+    second_order = second_order,
+    method = "stacking"
+  )
+  loo_comparison <- loo::loo_compare(list(
+    first_order = first_order_loo,
+    second_order = second_order_loo
+  ))
+
+  first_pointwise <- first_order_loo$pointwise[, "elpd_loo"]
+  second_pointwise <- second_order_loo$pointwise[, "elpd_loo"]
+  if (length(first_pointwise) != length(second_pointwise)) {
+    stop("The two LOO objects do not contain the same number of observations.")
+  }
+  pointwise_difference <- second_pointwise - first_pointwise
+  delta_elpd <- sum(pointwise_difference)
+  se_delta_elpd <- sqrt(
+    length(pointwise_difference) * stats::var(pointwise_difference)
+  )
+
+  comparison_rows[[position]] <- tibble(
+    imputation = index,
+    n_observations = length(pointwise_difference),
+    elpd_loo_first_order =
+      first_order_loo$estimates["elpd_loo", "Estimate"],
+    se_elpd_loo_first_order =
+      first_order_loo$estimates["elpd_loo", "SE"],
+    elpd_loo_second_order =
+      second_order_loo$estimates["elpd_loo", "Estimate"],
+    se_elpd_loo_second_order =
+      second_order_loo$estimates["elpd_loo", "SE"],
+    delta_elpd_second_minus_first = delta_elpd,
+    se_delta_elpd = se_delta_elpd,
+    delta_elpd_over_se = delta_elpd / se_delta_elpd,
+    first_order_stacking_weight = unname(stacking_weights[["first_order"]]),
+    second_order_stacking_weight = unname(stacking_weights[["second_order"]]),
+    max_pareto_k_first_order = max(loo::pareto_k_values(first_order_loo)),
+    max_pareto_k_second_order = max(loo::pareto_k_values(second_order_loo)),
+    substantial_second_order_improvement =
+      delta_elpd > 2 * se_delta_elpd,
+    substantial_first_order_improvement =
+      delta_elpd < -2 * se_delta_elpd
+  )
+
+  arrow::write_parquet(
+    as.data.frame(loo_comparison) |>
+      rownames_to_column("model"),
+    file.path(loo_dir, sprintf("loo-compare-%02d.parquet", index)),
+    compression = "zstd"
+  )
+}
+
+model_comparison <- bind_rows(comparison_rows)
+arrow::write_parquet(
+  model_comparison,
+  file.path(result_dir, "loo-model-comparison.parquet"),
+  compression = "zstd"
+)
+
+n_substantial_second <- sum(
+  model_comparison$substantial_second_order_improvement
+)
+n_substantial_first <- sum(
+  model_comparison$substantial_first_order_improvement
+)
+n_favor_second <- sum(
+  model_comparison$delta_elpd_second_minus_first > 0
+)
+pareto_warning <- any(
+  model_comparison$max_pareto_k_first_order > 0.7 |
+    model_comparison$max_pareto_k_second_order > 0.7
+)
+
+interpretation <- case_when(
+  n_substantial_second == length(indices) ~ paste0(
+    "The second-order model has a substantial predictive-fit advantage in ",
+    "all completed datasets included in this run."
+  ),
+  n_substantial_second >= ceiling(length(indices) / 2) ~ paste0(
+    "The second-order model has a substantial predictive-fit advantage in ",
+    n_substantial_second,
+    " of ", length(indices),
+    " completed datasets, with positive ELPD differences in ",
+    n_favor_second,
+    " of ", length(indices),
+    ". The advantage is directionally consistent but not uniform."
+  ),
+  n_substantial_first >= ceiling(length(indices) / 2) ~ paste0(
+    "The first-order model has a substantial predictive-fit advantage in ",
+    n_substantial_first,
+    " of ", length(indices), " completed datasets."
+  ),
+  TRUE ~ paste0(
+    "The comparison does not show a consistent substantial predictive-fit ",
+    "advantage for either Markov order. The second-order ELPD is higher in ",
+    n_favor_second,
+    " of ", length(indices), " completed datasets."
+  )
+)
+if (pareto_warning) {
+  interpretation <- paste0(
+    interpretation,
+    " At least one fit has a Pareto-k value above 0.7, so the affected ",
+    "PSIS-LOO comparison requires caution."
+  )
+}
+
+interpretation_result <- tibble(
+  imputations = length(indices),
+  substantial_second_order = n_substantial_second,
+  substantial_first_order = n_substantial_first,
+  favor_second_order = n_favor_second,
+  pareto_k_warning = pareto_warning,
+  interpretation = interpretation
+)
+arrow::write_parquet(
+  interpretation_result,
+  file.path(result_dir, "loo-interpretation.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-taooh-markov-order-comparison
+#| tbl-cap: "PSIS-LOO comparison of first- and second-order TAOOH models"
+#| echo: false
+
+model_comparison |>
+  select(
+    imputation,
+    delta_elpd_second_minus_first,
+    se_delta_elpd,
+    first_order_stacking_weight,
+    second_order_stacking_weight,
+    max_pareto_k_first_order,
+    max_pareto_k_second_order
+  ) |>
+  knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: interpret-taooh-markov-order-comparison
+#| results: asis
+#| echo: false
+
+cat(interpretation)
+```

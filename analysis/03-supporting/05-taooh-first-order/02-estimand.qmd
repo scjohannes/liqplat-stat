@@ -1,0 +1,335 @@
+---
+title: "TAOOH first-order — estimand"
+subtitle: "Weeks alive and out of hospital over 26 weeks"
+format: html
+execute:
+  freeze: false
+---
+
+Both treatment paths are predicted for the same observed participants used by
+the primary TAOOH analysis. Two hundred posterior draws from each of 50
+completed datasets are pooled with equal weight. Existing per-imputation
+checkpoints are reused on later renders.
+
+```{r}
+#| label: derive-taooh-first-order-estimand
+#| include: false
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "model-helpers.R"))
+library(tidyverse)
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)
+data_dir <- here::here("artifacts", "primary", "taooh", "imputations")
+model_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "models"
+)
+estimand_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "estimand"
+)
+result_dir <- here::here("results", "supporting", "taooh-first-order")
+figure_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "figures"
+)
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  sop_summary_path <- file.path(
+    estimand_dir,
+    sprintf("sops-summary-%02d.parquet", index)
+  )
+  sop_draws_path <- file.path(
+    estimand_dir,
+    sprintf("sops-draws-%02d.parquet", index)
+  )
+  comparison_summary_path <- file.path(
+    estimand_dir,
+    sprintf("comparisons-summary-%02d.parquet", index)
+  )
+  comparison_draws_path <- file.path(
+    estimand_dir,
+    sprintf("comparisons-draws-%02d.parquet", index)
+  )
+  estimand_paths <- c(
+    sop_summary_path,
+    sop_draws_path,
+    comparison_summary_path,
+    comparison_draws_path
+  )
+  if (!force && all(file.exists(estimand_paths))) next
+
+  data <- arrow::read_parquet(data_path) |>
+    as.data.frame()
+  model <- readRDS(model_path)
+
+  sops <- mostr::avg_sops(
+    model = model,
+    variables = list(tx = c(0, 1)),
+    times = 1:26,
+    y_levels = 1:5,
+    absorb = 5L,
+    p_var = "yprev",
+    id_var = "id",
+    time_var = "week",
+    include_re = TRUE,
+    n_draws = config$markov$post_estimation_draws,
+    seed = index,
+    posterior_summary = "median",
+    return_draws = TRUE
+  )
+  comparisons <- mostr::avg_comparisons(
+    model = model,
+    variables = list(tx = c(0, 1)),
+    estimand = "time_in_state",
+    state_sets = 1L,
+    times = 1:26,
+    y_levels = 1:5,
+    absorb = 5L,
+    id_var = "id",
+    time_var = "week",
+    p_var = "yprev",
+    include_re = TRUE,
+    n_draws = config$markov$post_estimation_draws,
+    seed = index,
+    posterior_summary = "median",
+    return_draws = TRUE
+  )
+  sop_draws <- attr(sops, "draws")
+  comparison_draws <- attr(comparisons, "draws")
+  if (is.null(sop_draws) || is.null(comparison_draws)) {
+    stop("First-order TAOOH post-estimation must retain posterior draws.")
+  }
+
+  arrow::write_parquet(
+    as.data.frame(sops),
+    sop_summary_path,
+    compression = "zstd"
+  )
+  arrow::write_parquet(
+    as.data.frame(sop_draws),
+    sop_draws_path,
+    compression = "zstd"
+  )
+  arrow::write_parquet(
+    as.data.frame(comparisons),
+    comparison_summary_path,
+    compression = "zstd"
+  )
+  arrow::write_parquet(
+    as.data.frame(comparison_draws),
+    comparison_draws_path,
+    compression = "zstd"
+  )
+}
+
+comparison_draw_paths <- file.path(
+  estimand_dir,
+  sprintf("comparisons-draws-%02d.parquet", indices)
+)
+summary_path <- file.path(result_dir, "home-time-summary.parquet")
+draws_path <- file.path(result_dir, "home-time-comparison-draws.parquet")
+
+pooled_output_is_current <- FALSE
+if (file.exists(summary_path) && file.exists(draws_path)) {
+  existing_pooled_draws <- arrow::read_parquet(draws_path) |>
+    as.data.frame()
+  pooled_output_is_current <-
+    all(c("imputation", "draw") %in% names(existing_pooled_draws)) &&
+    setequal(unique(existing_pooled_draws$imputation), indices) &&
+    all(
+      table(existing_pooled_draws$imputation) ==
+        config$markov$post_estimation_draws
+    )
+}
+
+if (force || !pooled_output_is_current) {
+  comparison_draws <- lapply(seq_along(comparison_draw_paths), function(position) {
+    draws <- arrow::read_parquet(comparison_draw_paths[[position]]) |>
+      as.data.frame()
+    if (!all(c("draw_id", "estimate") %in% names(draws))) {
+      stop("First-order TAOOH contrasts must contain draw_id and estimate.")
+    }
+    if (
+      nrow(draws) != config$markov$post_estimation_draws ||
+        anyDuplicated(draws$draw_id)
+    ) {
+      stop("Each first-order fit must provide one contrast per posterior draw.")
+    }
+    draws |>
+      mutate(
+        imputation = indices[[position]],
+        draw = estimate
+      ) |>
+      select(
+        draw_id,
+        imputation,
+        draw,
+        any_of(c("contrast", "comparison", "term", "state"))
+      )
+  })
+  pooled <- bind_rows(comparison_draws)
+  summary <- summarize_posterior_draws(pooled$draw)
+  summary$probability_benefit <- posterior_probability(pooled$draw)
+  summary$state <- 1L
+  summary$horizon_weeks <- 26L
+  summary$imputations <- length(indices)
+  summary$draws_per_imputation <- config$markov$post_estimation_draws
+
+  arrow::write_parquet(
+    as.data.frame(summary),
+    summary_path,
+    compression = "zstd"
+  )
+  arrow::write_parquet(pooled, draws_path, compression = "zstd")
+}
+```
+
+```{r}
+#| label: build-taooh-first-order-plots
+#| include: false
+
+sop_draw_paths <- file.path(
+  estimand_dir,
+  sprintf("sops-draws-%02d.parquet", indices)
+)
+sop_draws <- lapply(seq_along(sop_draw_paths), function(position) {
+  draws <- arrow::read_parquet(sop_draw_paths[[position]]) |>
+    as.data.frame()
+  if (!all(c("draw_id", "estimate", "time", "state", "tx") %in% names(draws))) {
+    stop("First-order SOP draws lack required columns.")
+  }
+  if (
+    length(unique(draws$draw_id)) !=
+      config$markov$post_estimation_draws
+  ) {
+    stop("Each first-order SOP object must contain the configured draws.")
+  }
+  draws$imputation <- indices[[position]]
+  draws
+}) |>
+  bind_rows()
+
+state_labels <- c(
+  "Alive/out of hospital",
+  "Planned admission",
+  "Emergency room",
+  "Unplanned admission",
+  "Dead"
+)
+
+pooled_sop_summary <- sop_draws |>
+  mutate(
+    state = factor(state, levels = 1:5, labels = state_labels),
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  ) |>
+  group_by(tx, time, state) |>
+  summarise(
+    conf.low = quantile(estimate, 0.025, names = FALSE),
+    conf.high = quantile(estimate, 0.975, names = FALSE),
+    estimate = median(estimate),
+    .groups = "drop"
+  )
+
+arrow::write_parquet(
+  pooled_sop_summary,
+  file.path(result_dir, "state-occupancy-summary.parquet"),
+  compression = "zstd"
+)
+
+model_sop_plot <- suppressMessages(
+  mostr::plot_sops(
+    pooled_sop_summary,
+    facet_var = NULL,
+    time_var = "time",
+    estimate_var = "estimate",
+    show_uncertainty = TRUE,
+    linetype_var = "tx",
+    ribbon_alpha = 0.5
+  ) +
+    scale_color_manual(
+      values = setNames(
+        rep("black", nlevels(pooled_sop_summary$state)),
+        levels(pooled_sop_summary$state)
+      )
+    ) +
+    scale_fill_brewer(palette = "Dark2")
+) +
+  labs(
+    x = "Week",
+    y = "Posterior state occupancy probability",
+    color = "TAOOH state",
+    fill = "TAOOH state",
+    linetype = "Treatment group",
+    title = NULL
+  ) +
+  theme_minimal()
+
+ggsave(
+  file.path(figure_dir, "model-state-occupancy-pooled.png"),
+  model_sop_plot,
+  width = 9,
+  height = 5.5,
+  dpi = 300
+)
+
+comparison_plot_draws <- arrow::read_parquet(draws_path) |>
+  as.data.frame()
+
+home_time_posterior_plot <- ggplot(comparison_plot_draws, aes(x = draw)) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(
+    .width = c(0.66, 0.95),
+    point_interval = ggdist::median_qi
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  labs(
+    x = paste0(
+      "Difference in time alive and out of hospital over 26 weeks ",
+      "(intervention - control), weeks"
+    ),
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank()
+  )
+
+ggsave(
+  file.path(figure_dir, "home-time-difference-posterior.png"),
+  home_time_posterior_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+```{r}
+#| label: fig-taooh-first-order-model-state-occupancy
+#| fig-cap: "First-order model-derived TAOOH state occupancy probabilities"
+#| fig-alt: "Line chart of pooled first-order posterior state occupancy probabilities over 26 weeks. Colors identify states, line types identify treatment groups, and ribbons show 95 percent credible intervals."
+#| fig-width: 9
+#| fig-height: 5.5
+#| echo: false
+
+model_sop_plot
+```
+
+```{r}
+#| label: fig-taooh-first-order-home-time-posterior
+#| fig-cap: "First-order posterior treatment difference in time alive and out of hospital"
+#| fig-alt: "A half-eye density above a posterior dot plot of the intervention-minus-control difference in weeks alive and out of hospital from the first-order model."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+home_time_posterior_plot
+```

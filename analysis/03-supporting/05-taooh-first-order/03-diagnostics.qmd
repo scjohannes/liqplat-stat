@@ -1,0 +1,256 @@
+---
+title: "TAOOH first-order — diagnostics"
+subtitle: "Full proportional-odds diagnostics for 50 imputations"
+format: html
+execute:
+  freeze: false
+---
+
+```{r}
+#| label: check-taooh-first-order-models
+#| include: false
+
+library(tidyverse)
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "markov-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- seq_len(config$imputation$main$m)
+taooh_diagnostic_thresholds <- config$diagnostics
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
+model_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "models"
+)
+diagnostic_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "diagnostics"
+)
+stan_dx_dir <- file.path(diagnostic_dir, "stan-dx")
+figure_dir <- here::here(
+  "artifacts", "supporting", "taooh-first-order", "figures"
+)
+result_path <- here::here(
+  "results", "supporting", "taooh-first-order", "diagnostics.parquet"
+)
+dir.create(diagnostic_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(result_path), recursive = TRUE, showWarnings = FALSE)
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  output_path <- file.path(
+    diagnostic_dir,
+    sprintf("diagnostics-%02d.parquet", index)
+  )
+  if (!force && file.exists(output_path)) next
+
+  diagnostics <- markov_diagnostics(
+    readRDS(model_path),
+    taooh_diagnostic_thresholds
+  )
+  assert_markov_diagnostics(diagnostics)
+  output <- as.data.frame(diagnostics$summary)
+  output$imputation <- index
+  output$divergent_transitions <- diagnostics$divergent_transitions
+  output$treedepth_exceeded <- diagnostics$treedepth_exceeded
+  output$min_bfmi <- diagnostics$min_bfmi
+  arrow::write_parquet(output, output_path)
+}
+
+diagnostic_paths <- file.path(
+  diagnostic_dir,
+  sprintf("diagnostics-%02d.parquet", indices)
+)
+diagnostics <- diagnostic_paths |>
+  lapply(arrow::read_parquet) |>
+  bind_rows()
+arrow::write_parquet(diagnostics, result_path, compression = "zstd")
+```
+
+The full `rmsb` Stan diagnostic report and `stanDxplot()` output are stored for
+every first-order fit. These replace separate `mcmc_trace()` figures.
+
+```{r}
+#| label: save-taooh-first-order-stan-diagnostics
+#| include: false
+
+for (index in indices) {
+  stan_dx_text_path <- file.path(
+    stan_dx_dir,
+    sprintf("stan-dx-%02d.txt", index)
+  )
+  stan_dx_plot_path <- file.path(
+    stan_dx_dir,
+    sprintf("stan-dx-%02d.png", index)
+  )
+  if (
+    !force &&
+      file.exists(stan_dx_text_path) &&
+      file.exists(stan_dx_plot_path)
+  ) next
+
+  model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+  stan_dx_text <- capture.output(rmsb::stanDx(model))
+  writeLines(stan_dx_text, stan_dx_text_path)
+
+  stan_dx_plot <- rmsb::stanDxplot(model)
+  ggplot2::ggsave(
+    stan_dx_plot_path,
+    stan_dx_plot,
+    width = 11,
+    height = max(6, 1.05 * length(unique(stan_dx_plot$data$param))),
+    dpi = 180,
+    limitsize = FALSE
+  )
+}
+```
+
+The graphical checks use the first completed dataset and first-order fit as a
+representative imputation-specific diagnostic. They use the same empirical
+weekly dataset and plotting settings as the second-order diagnostics.
+
+```{r}
+#| label: derive-taooh-first-order-graphical-diagnostics
+#| include: false
+
+diagnostic_index <- indices[[1L]]
+model <- readRDS(file.path(
+  model_dir,
+  sprintf("model-%02d.rds", diagnostic_index)
+))
+cohort <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+)) |>
+  as.data.frame()
+empirical_data <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-taooh.parquet"
+)) |>
+  as.data.frame() |>
+  left_join(cohort |> select(id, tx), by = "id") |>
+  arrange(id, week) |>
+  group_by(id) |>
+  mutate(
+    y = as.integer(y_taooh),
+    yprev = lag(y)
+  ) |>
+  ungroup() |>
+  filter(between(week, 1L, 26L)) |>
+  mutate(
+    y = factor(y, levels = 1:5, ordered = TRUE),
+    yprev = factor(yprev, levels = 1:5),
+    tx = factor(tx, levels = c(0, 1), labels = c("Control", "Intervention"))
+  )
+
+diagnostic_times <- c(1L, 3L, 6L, 9L, 12L, 16L, 20L, 24L, 26L)
+diagnostic_seed <- analysis_seed(
+  config,
+  "diagnostics",
+  diagnostic_index,
+  offset = 2000L
+)
+
+empirical_transition_plot <- mostr::plot_transitions(
+  empirical_data,
+  times = diagnostic_times,
+  time_var = "week",
+  y_var = "y",
+  p_var = "yprev",
+  y_levels = 1:5,
+  show_values = TRUE
+)
+if (length(empirical_transition_plot$layers) >= 2L) {
+  empirical_transition_plot$layers[[2L]]$aes_params$colour <- "white"
+}
+
+model_transition_plot <- mostr::plot_transitions(
+  model,
+  times = diagnostic_times,
+  y_levels = 1:5,
+  absorb = 5L,
+  time_var = "week",
+  p_var = "yprev",
+  id_var = "id",
+  seed = diagnostic_seed,
+  n_draws = 200L,
+  show_values = TRUE
+)
+if (length(model_transition_plot$layers) >= 2L) {
+  model_transition_plot$layers[[2L]]$aes_params$colour <- "white"
+}
+
+empirical_correlation_plot <- mostr::plot_correlation(
+  empirical_data,
+  times = 1:26,
+  y_levels = 1:5,
+  id_var = "id",
+  time_var = "week",
+  y_var = "y",
+  show_values = TRUE
+)
+model_correlation_plot <- mostr::plot_correlation(
+  model,
+  times = 1:26,
+  y_levels = 1:5,
+  absorb = 5L,
+  id_var = "id",
+  time_var = "week",
+  p_var = "yprev",
+  seed = diagnostic_seed,
+  n_draws = 50L,
+  show_values = TRUE
+)
+empirical_variogram_plot <- mostr::plot_variogram(
+  empirical_data,
+  times = 1:26,
+  y_levels = 1:5,
+  id_var = "id",
+  time_var = "week",
+  y_var = "y"
+)
+model_variogram_plot <- mostr::plot_variogram(
+  model,
+  times = 1:26,
+  y_levels = 1:5,
+  absorb = 5L,
+  id_var = "id",
+  time_var = "week",
+  p_var = "yprev",
+  seed = diagnostic_seed,
+  n_draws = 50L
+)
+
+diagnostic_plots <- list(
+  "empirical-transitions.png" = empirical_transition_plot,
+  "model-transitions.png" = model_transition_plot,
+  "empirical-correlation.png" = empirical_correlation_plot,
+  "model-correlation.png" = model_correlation_plot,
+  "empirical-variogram.png" = empirical_variogram_plot,
+  "model-variogram.png" = model_variogram_plot
+)
+for (filename in names(diagnostic_plots)) {
+  ggplot2::ggsave(
+    file.path(figure_dir, filename),
+    diagnostic_plots[[filename]],
+    width = if (grepl("transition", filename)) 12 else 8,
+    height = if (grepl("transition", filename)) 9 else 5.5,
+    dpi = 300,
+    limitsize = FALSE
+  )
+}
+```
+
+```{r}
+#| label: fig-taooh-first-order-correlation-check
+#| fig-cap: "Empirical and first-order model-derived TAOOH correlation structures"
+#| fig-subcap:
+#|   - "Empirical correlations"
+#|   - "First-order model-derived correlations"
+#| layout-ncol: 2
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+empirical_correlation_plot
+model_correlation_plot
+```
