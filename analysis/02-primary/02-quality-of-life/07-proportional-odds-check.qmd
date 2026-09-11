@@ -127,7 +127,7 @@ common_repeated$conf_high <- common_pooled$conf_high[[1L]]
 
 comparison_plot <- ggplot2::ggplot() +
   ggplot2::geom_vline(
-    xintercept = common_repeated$log_odds_ratio[1],
+    xintercept = 0,
     colour = "grey65",
     linewidth = 0.5
   ) +
