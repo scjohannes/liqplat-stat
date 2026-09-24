@@ -49,8 +49,8 @@ output_paths <- c(
   alterations = file.path(result_dir, "analysis-alterations.parquet")
 )
 status_path <- file.path(result_dir, "build-status.parquet")
-if (!setequal(validation$domain[validation$status == "validated"], domains)) {
-  stop("All six private datasets must pass input validation.")
+if (!setequal(validation$domain[validation$status == "validated"], c(domains, "consort_ipd"))) {
+  stop("All seven private datasets must pass input validation.")
 }
 
 if (!force && all(file.exists(c(output_paths, status_path)))) {

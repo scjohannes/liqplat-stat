@@ -8,7 +8,7 @@ execute:
   message: false
 ---
 
-The public analysis starts from six pseudonymized Parquet files in
+The public analysis starts from seven pseudonymized or anonymous Parquet files in
 `data/private/`. This stage checks that those files match the tracked schemas
 and the fixed data-lock manifest. Raw REDCap exports are never read here.
 
@@ -17,6 +17,7 @@ and the fixed data-lock manifest. Raw REDCap exports are never read here.
 
 source(here::here("R", "analysis-config.R"))
 source(here::here("R", "data-validation.R"))
+source(here::here("R", "consort-helpers.R"))
 
 config <- read_analysis_config()
 data_lock <- config_get(config, "analysis", "data_lock")
@@ -27,6 +28,7 @@ dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 validation_path <- file.path(result_dir, "input-validation.parquet")
 
 domains <- c(
+  "consort_ipd",
   "recruitment",
   "cohort_follow_up",
   "qol",
@@ -53,7 +55,7 @@ if (!setequal(observed_files, expected_files)) {
 }
 
 if (!setequal(names(manifest$domains), domains)) {
-  stop("manifest.yml must describe exactly the six public analysis datasets.")
+  stop("manifest.yml must describe exactly the seven public analysis datasets.")
 }
 
 validation_rows <- vector("list", length(domains))
@@ -95,6 +97,10 @@ for (index in seq_along(domains)) {
     if (any(!is.na(data$group_assignment) & !data$group_assignment %in% 0:1)) {
       stop("Recruitment group_assignment must be 0/1 or missing.")
     }
+  }
+  if (identical(domain, "consort_ipd")) {
+    validate_data_schema(data, schema)
+    consort_accounting(data)
   }
   if (identical(domain, "cohort_follow_up")) {
     validate_blood_product_counts(data)

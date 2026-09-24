@@ -5,13 +5,20 @@ validated against the corresponding YAML document in [`schema/`](schema/)
 before an analysis stage reads it. Schemas define the primary key, type,
 requiredness, unit/coding, and whether a field is sensitive or private.
 
-The hand-off contains six files. `cohort_follow_up.parquet` is the single
+The hand-off contains seven files. `cohort_follow_up.parquet` is the single
 wide participant-level dataset, including recruitment, follow-up, process,
 imaging-count, biopsy-day, blood-product, progression, BSC, and MTB fields.
 The separate `recruitment.parquet` contains exactly `informed_consent_date`,
 `randomization_date`, and `group_assignment`, without a patient key. Repeated
 observations remain separate: `qol.parquet`, `taooh.parquet`,
 `ctdna_samples.parquet`, and `alterations.parquet`.
+
+`consort_ipd.parquet` contains anonymous candidate-level screening, eligibility,
+assignment, and invitation outcomes for the flowchart. Its seven-column schema
+and flow consistency are checked during input validation and QC. It has no
+patient key; identical rows are valid and must not be deduplicated or joined
+to the clinical cohort. The manifest must include an available `consort_ipd`
+entry with filename `consort_ipd.parquet`.
 
 Raw extracts, direct identifiers, source-system linkage tables, free-text
 clinical notes, and any re-identification key stay outside this repository in

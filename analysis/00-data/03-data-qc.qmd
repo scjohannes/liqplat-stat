@@ -17,6 +17,7 @@ labels.
 source(here::here("R", "analysis-config.R"))
 source(here::here("R", "paths-artifacts.R"))
 source(here::here("R", "data-validation.R"))
+source(here::here("R", "consort-helpers.R"))
 
 config <- read_analysis_config()
 horizon_days <- as.integer(config_get(config, "analysis", "horizon_days"))
@@ -24,6 +25,7 @@ result_dir <- ensure_directory(
   here::here("analysis", "00-data", "results")
 )
 input_paths <- c(
+  consort_ipd = here::here(config_get(config, "paths", "private_data"), "consort_ipd.parquet"),
   recruitment = file.path(result_dir, "analysis-recruitment.parquet"),
   cohort_follow_up = file.path(result_dir, "analysis-cohort.parquet"),
   qol = file.path(result_dir, "analysis-qol.parquet"),
@@ -44,6 +46,15 @@ for (domain in names(input_paths)) {
     here::here("data", "schema", paste0(domain, ".yml"))
   )
   columns <- schema_columns(schema)
+  if (identical(domain, "consort_ipd")) {
+    validate_data_schema(data, schema)
+    assert_no_phi_columns(data)
+    consort_accounting(data)
+    logic_rows[[length(logic_rows) + 1L]] <- data.frame(
+      domain = domain, check = "consort_flow_consistency",
+      n_violations = 0L, status = "pass", stringsAsFactors = FALSE
+    )
+  }
 
   for (column_name in intersect(names(columns), names(data))) {
     qc_rows[[length(qc_rows) + 1L]] <- data.frame(
