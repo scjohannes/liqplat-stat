@@ -10,6 +10,11 @@ This reduced model checks the second-order `mostr::blrm_markov()` call
 before the 50 full models. It contains no treatment term and does not calculate
 posterior estimands.
 
+The export contains unrestricted follow-up, including the final partial week.
+Validate it against the unrestricted survival endpoint before restricting the
+sentinel to 26 weeks. The primary survival endpoint can end earlier; an observed
+state on the censoring day is not evidence of observation after censoring.
+
 ```{r}
 #| label: fit-sentinel
 #| include: false
@@ -18,6 +23,7 @@ source(here::here("R", "analysis-config.R"))
 source(here::here("R", "paths-artifacts.R"))
 source(here::here("R", "model-helpers.R"))
 source(here::here("R", "markov-helpers.R"))
+source(here::here("R", "taooh-helpers.R"))
 library(tidyverse)
 library(rmsb)
 library(mostr)
@@ -49,19 +55,10 @@ if (force || !file.exists(output_path)) {
   data <- arrow::read_parquet(taooh_path) |>
     arrange(id, week)
 
-  # check against survival dataset
-  surv_data <- arrow::read_parquet(surv_path) |>
-    select(id, event_death, survival_time_days)
-
-  censoring <- data |>
-    left_join(surv_data, by = "id") |>
-    filter(survival_time_days < 182 & event_death == 0) |>
-    filter(day >= survival_time_days) |>
-    pull(y_taooh)
-
-  if(!all(is.na(censoring))) {
-    stop("Patients are not correct censored after LFU when crossreferencing with survival dataset.")
-  }
+  surv_data <- arrow::read_parquet(surv_path)
+  validate_taooh_follow_up(data, surv_data)
+  data <- data |>
+    filter(week <= taooh_horizon_weeks(182))
 
   bad_absorbing <- data |>
     group_by(id) |>
@@ -75,13 +72,15 @@ if (force || !file.exists(output_path)) {
     group_by(id) |>
     mutate(
       y = as.numeric(as.character(y_taooh)),
-      yprev = lag(y_taooh, 1L),
-      ypprev = lag(y_taooh, 2L)
+      yprev = if_else(week - lag(week) == 1L, lag(y_taooh), NA_integer_),
+      ypprev = if_else(week - lag(week, 2L) == 2L, lag(y_taooh, 2L), NA_integer_)
     ) |>
     ungroup() |>
-    filter_out(week < 1) |>
-    filter_out(yprev == 5) |>
-    filter_out(ypprev == 5) |>
+    filter(
+      week >= 1L,
+      !is.na(y), !is.na(yprev), !is.na(ypprev),
+      yprev != 5L, ypprev != 5L
+    ) |>
     mutate(
       yprev = factor(yprev, levels = 1:4, ordered = FALSE),
       ypprev = factor(ypprev, levels = 1:4, ordered = FALSE),

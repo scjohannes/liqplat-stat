@@ -27,6 +27,26 @@ test_that("unrestricted TAOOH retains partial terminal weeks and death at week 5
   expect_false(identical(taooh_path("artifacts", 182), taooh_path("artifacts", 364)))
 })
 
+test_that("TAOOH uses unrestricted endpoints and retains the censoring day", {
+  cohort <- data.frame(
+    id = c("later_death", "censored"),
+    survival_time_days = c(16, 1), event_death = c(0L, 0L),
+    survival_time_days_unrestricted = c(260, 1),
+    status_death_unrestricted = c(1L, 0L)
+  )
+  taooh <- data.frame(
+    id = c("later_death", "later_death", "censored"),
+    week = c(3L, 38L, 1L), day = c(16L, 260L, 1L),
+    y_taooh = c(1L, 5L, 1L)
+  )
+  expect_silent(validate_taooh_follow_up(taooh, cohort))
+  expect_error(validate_taooh_follow_up(
+    dplyr::bind_rows(taooh, data.frame(
+      id = "censored", week = 2L, day = 8L, y_taooh = 1L
+    )), cohort
+  ), "after the patient-specific endpoint")
+})
+
 test_that("death on day zero and exact week boundaries use the terminal week", {
   cohort <- data.frame(id = c("zero", "seven", "eight"),
                        survival_time_days_unrestricted = c(0, 7, 8),
