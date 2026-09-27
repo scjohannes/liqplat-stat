@@ -1,146 +1,116 @@
 ---
 title: "LIQPLAT baseline population table"
-date: 2026-08-20
-format:
-  html:
-    toc: true
+format: html
 execute:
   echo: false
   warning: false
   message: false
 ---
 
-The baseline table is descriptive and uses the ITT assignment defined by
-random selection for invitation. Missing covariates remain visible as
-missing; no imputation or zero conversion is performed here.
+Table 1 describes the randomized population by invitation assignment, irrespective
+of whether an invitation was accepted. Continuous variables are summarized by
+median [Q1, Q3]; categorical variables by n (%), using the full column denominator.
+Missing values remain visible; no multiple imputation is used.
 
 ```{r}
-#| label: setup
+#| label: baseline-table-data
 #| include: false
 
-source(here::here("analysis", "_module-common.R"), local = FALSE)
-liqplat_source_public_helpers()
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+source(here::here("R", "baseline-table-helpers.R"))
 config <- read_analysis_config()
-force <- module_force()
-stage_id <- "population_baseline_table"
-result_dir <- module_result_dir(file.path("analysis", "01-population"))
-checkpoint_path <- module_checkpoint_path(stage_id)
-table_path <- file.path(result_dir, "baseline-characteristics.parquet")
-figure_path <- file.path(result_dir, "baseline-age.svg")
-input_path <- file.path(module_result_dir(file.path("analysis", "00-data")),
-                        "analysis-cohort.parquet")
-if (!file.exists(input_path)) stop("Baseline table requires the built analysis cohort.")
-input_paths <- c(input_path, schema_domain_path(config, "cohort_follow_up"))
-output_paths <- c(table_path, figure_path)
-decision <- checkpoint_decision(
-  checkpoint_path, stage_id, input_paths = input_paths,
-  output_paths = output_paths,
-  code_paths = here::here("analysis", "01-population", "03-baseline-table.qmd"),
-  config = config, force = force
+# Read the current V5 cohort, including the newly exported baseline Q29.
+cohort <- arrow::read_parquet(here::here(
+  config_get(config, "paths", "private_data"), "cohort_follow_up.parquet"
+)) |> as.data.frame()
+
+required <- c("id", "tx", "gender", "age", "ecog_fstcnt", "baseline_q29",
+              "baseline_q30", "diagnosis", "albumin", "c_reactive_protein", "stage_binary")
+
+stopifnot(all(required %in% names(cohort)), !anyDuplicated(cohort$id),
+          all(cohort$tx %in% 0:1),
+          all(is.na(cohort$gender) | cohort$gender %in% c("female", "male")),
+          all(is.na(cohort$ecog_fstcnt) | cohort$ecog_fstcnt %in% 0:4),
+          all(is.na(cohort$stage_binary) | cohort$stage_binary %in% 0:1))
+
+cohort$group <- factor(cohort$tx, levels = c(1, 0),
+  labels = c("Selected for SAT invitation", "Usual care"))
+
+cohort$gender <- factor(cohort$gender, levels = c("female", "male"), labels = c("Female", "Male"))
+
+cohort$ecog_fstcnt <- factor(cohort$ecog_fstcnt, levels = 0:4)
+
+qol <- arrow::read_parquet(here::here(
+  config_get(config, "paths", "private_data"), "qol.parquet"
+)) |> as.data.frame()
+
+cohort <- complete_table_baseline_qol(cohort, qol)
+
+cohort$ql2 <- baseline_ql2(cohort$baseline_q29, cohort$baseline_q30)
+
+cohort$diagnosis <- snomed_to_diagnosis(as.character(cohort$diagnosis))
+
+if (any(grepl("^SNM_", cohort$diagnosis))) stop("Add labels for unmapped diagnosis codes.")
+
+cohort$diagnosis <- factor(cohort$diagnosis)
+cohort$mgps <- factor(derive_mgps(cohort$albumin, cohort$c_reactive_protein), levels = 0:2)
+
+cohort$stage_binary <- factor(cohort$stage_binary, levels = 0:1,
+  labels = c("Locally advanced", "Metastasised"))
+  
+labels <- c(gender = "Gender", age = "Age (years)", ecog_fstcnt = "ECOG at first contact",
+  ql2 = "Global health status / QoL (QL2, 0–100)", diagnosis = "Diagnosis",
+  mgps = "Modified Glasgow Prognostic Score (mGPS)", stage_binary = "Disease stage")
+
+for (variable in names(labels)) attr(cohort[[variable]], "label") <- labels[[variable]]
+
+footnote <- paste(
+  "PROMs are considered up to 14 days after first contact.",
+  "QL2: higher scores indicate better QoL.",
+  "Per EORTC scoring, one available item is sufficient; both missing gives a missing score.",
+  "mGPS uses baseline CRP and albumin; missing either gives a missing score.",
+  "Percentages include missing observations in the denominator."
 )
 
-if (identical(decision, "skip")) {
-  baseline_table <- read_result_table(table_path)
-} else {
-  cohort <- read_result_table(input_path)
-  require_public_columns(cohort, c("id", "tx"), "baseline cohort")
-  tx <- validate_binary(cohort$tx, "tx", allow_missing = FALSE)
-  cohort$group <- factor(tx, levels = c(1, 0),
-                         labels = c("Selected for invitation", "External comparator"))
-  continuous <- intersect(c("age", "albumin", "c_reactive_protein"), names(cohort))
-  categorical <- intersect(c("gender", "ecog_fstcnt", "diagnosis"), names(cohort))
-  rows <- list()
-  for (column_name in continuous) {
-    values <- suppressWarnings(as.numeric(as.character(cohort[[column_name]])))
-    for (group_name in levels(cohort$group)) {
-      group_values <- values[cohort$group == group_name]
-      observed <- group_values[is.finite(group_values)]
-      rows[[length(rows) + 1L]] <- data.frame(
-        variable = column_name,
-        level = "median [Q1, Q3]",
-        group = group_name,
-        n = length(observed),
-        denominator = length(group_values),
-        missing = sum(!is.finite(group_values)),
-        estimate = if (length(observed) == 0L) NA_real_ else stats::median(observed),
-        q1 = if (length(observed) == 0L) NA_real_ else stats::quantile(observed, 0.25),
-        q3 = if (length(observed) == 0L) NA_real_ else stats::quantile(observed, 0.75),
-        stringsAsFactors = FALSE
-      )
-    }
-  }
-  for (column_name in categorical) {
-    values <- as.character(cohort[[column_name]])
-    values[is.na(values) | !nzchar(trimws(values))] <- "Missing"
-    for (group_name in levels(cohort$group)) {
-      group_values <- values[cohort$group == group_name]
-      levels_observed <- sort(unique(group_values), method = "radix")
-      for (level_name in levels_observed) {
-        n <- sum(group_values == level_name)
-        rows[[length(rows) + 1L]] <- data.frame(
-          variable = column_name,
-          level = level_name,
-          group = group_name,
-          n = n,
-          denominator = length(group_values),
-          missing = if (identical(level_name, "Missing")) n else 0L,
-          estimate = if (length(group_values) == 0L) NA_real_ else n / length(group_values),
-          q1 = NA_real_,
-          q3 = NA_real_,
-          stringsAsFactors = FALSE
-        )
-      }
-    }
-  }
-  if (length(rows) == 0L) {
-    baseline_table <- data.frame(
-      variable = character(), level = character(), group = character(),
-      n = integer(), denominator = integer(), missing = integer(),
-      estimate = numeric(), q1 = numeric(), q3 = numeric(),
-      stringsAsFactors = FALSE
-    )
-  } else {
-    baseline_table <- do.call(rbind, rows)
-  }
-  rownames(baseline_table) <- NULL
-  write_module_table(baseline_table, table_path)
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    stop("Package 'ggplot2' is required for the baseline figure.")
-  }
-  if ("age" %in% names(cohort)) {
-    age_data <- data.frame(age = suppressWarnings(as.numeric(as.character(cohort$age))),
-                           group = cohort$group)
-    age_data <- age_data[is.finite(age_data$age), , drop = FALSE]
-    plot <- ggplot2::ggplot(age_data, ggplot2::aes(age, fill = group)) +
-      ggplot2::geom_histogram(alpha = 0.5, bins = 20, position = "identity") +
-      ggplot2::labs(x = "Age at random selection (years)", y = "Patients", fill = NULL) +
-      ggplot2::theme_minimal()
-  } else {
-    plot <- ggplot2::ggplot() + ggplot2::labs(
-      x = "Age at random selection (years)", y = "Patients",
-      subtitle = "Age is not available in the public cohort interface."
-    ) + ggplot2::theme_minimal()
-  }
-  assert_artifact_path(figure_path)
-  ggplot2::ggsave(figure_path, plot = plot, width = 8, height = 4, units = "in")
-  finalize_module_checkpoint(
-    stage_id = stage_id,
-    checkpoint_path = checkpoint_path,
-    input_paths = input_paths,
-    output_paths = output_paths,
-    config = config,
-    metadata = list(data_lock = config_get(config, "analysis", "data_lock"),
-                    status = "built"),
-    code_paths = here::here("analysis", "01-population", "03-baseline-table.qmd")
-  )
-}
+baseline_table <- table1::table1(
+  ~ gender + age + ecog_fstcnt + ql2 + diagnosis + mgps + stage_binary | group,
+  data = cohort, overall = "Overall", render.continuous = c(. = "Median [Q1, Q3]"),
+  render.categorical = "FREQ (PCT%)", topclass = "Rtable1-zebra",
+  footnote = footnote
+)
+
+result_dir <- here::here("analysis", "01-population", "results")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+saveRDS(baseline_table, file.path(result_dir, "baseline-table1.rds"))
+
+# Store aggregate display cells, never participant-level records, for other formats.
+arrow::write_parquet(as.data.frame(baseline_table),
+  file.path(result_dir, "baseline-characteristics.parquet"))
 ```
 
 ```{r}
-#| label: baseline-table
-#| tbl-cap: "Baseline characteristics by invitation assignment"
+#| label: tbl-baseline-table1
+#| tbl-cap: "Baseline characteristics by randomized invitation assignment."
 
-baseline_table |>
-  transform(estimate = round(estimate, 4)) |>
-  knitr::kable()
+baseline_table
+```
+
+QL2 follows the [EORTC QLQ-C30 scoring manual](https://qol.eortc.org/app/uploads/sites/2/2018/02/SCmanual.pdf).
+Dedicated baseline values take priority. For each missing item, the closest
+nonmissing questionnaire response within 14 days before or after first contact
+is used, including eligible post-contact measurements. Ties use the earlier
+questionnaire date, then assessment ID, as in the primary QoL analysis.
+Selection is item-specific, so Q29 and Q30 can originate from different
+questionnaires when item availability differs.
+The broad diagnosis categories use the labels from the original project Table 1,
+without restricting the display to the most common diagnoses or using OncoTree.
+
+```{r}
+#| results: asis
+
+cat(sprintf("QL2 uses both baseline items for %d participants and one item for %d; %d have neither item.\n",
+  sum(!is.na(cohort$baseline_q29) & !is.na(cohort$baseline_q30)),
+  sum(xor(is.na(cohort$baseline_q29), is.na(cohort$baseline_q30))),
+  sum(is.na(cohort$baseline_q29) & is.na(cohort$baseline_q30))))
 ```
