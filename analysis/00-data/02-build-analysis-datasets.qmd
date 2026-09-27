@@ -75,7 +75,8 @@ required_columns <- list(
   cohort_follow_up = c(
     "id", "randomization_date", "tx", "diagnosis", "death_date",
     "follow_up_end_date", "status_death", "survival_time_days_unrestricted",
-    "status_death_unrestricted", "potential_follow_up_days", "invitation_offered", "invitation_accepted"
+    "status_death_unrestricted", "potential_follow_up_days", "invitation_offered", "invitation_accepted",
+    "enrolled_date", "last_known_alive_date", "mtb_date_first", "mtb_n_reports"
   ),
   qol = c("id", "assessment_id", "day", "q30", "baseline_q30"),
   taooh = c("id", "week", "y_taooh"),
@@ -106,6 +107,11 @@ cohort$randomization_date <- parse_analysis_date(
   allow_missing = FALSE
 )
 cohort$death_date <- parse_analysis_date(cohort$death_date, "death_date")
+cohort$enrolled_date <- parse_analysis_date(cohort$enrolled_date, "enrolled_date")
+cohort$last_known_alive_date <- parse_analysis_date(
+  cohort$last_known_alive_date, "last_known_alive_date"
+)
+cohort$mtb_date_first <- parse_analysis_date(cohort$mtb_date_first, "mtb_date_first")
 cohort$follow_up_end_date <- parse_analysis_date(
   cohort$follow_up_end_date,
   "follow_up_end_date",
