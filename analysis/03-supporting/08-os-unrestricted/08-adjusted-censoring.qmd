@@ -1,0 +1,193 @@
+---
+title: "Unrestricted follow-up — adjusted censoring analysis"
+format: html
+execute:
+  freeze: false
+---
+
+This exploratory extension treats censoring as the event and death as a censored observation. It uses the five-degree-of-freedom M-spline baseline hazard and diagnosis random-intercept structure of the supporting OS model, with binary ECOG, stage, and categorical mGPS. Missing binary ECOG and mGPS are replaced by their respective pooled modes, without using treatment-specific modes or multiple imputation. Ties select the lowest category. The uncertainty introduced by these deterministic replacements is not propagated.
+
+The treatment log hazard ratio has a proper Normal(0, 5) prior with automatic scaling disabled. It is deliberately broad: its central 95% interval on the hazard-ratio scale is approximately 0.000055 to 18,000. Other fixed effects use Normal(0, 2.5), the intercept Normal(0, 20), the baseline spline weights Dirichlet(1), and the diagnosis variance uses `decov()`.
+
+```{r}
+#| label: fit-adjusted-censoring
+#| include: false
+library(tidyverse)
+source(here::here("R", "survival-helpers.R"))
+source(here::here("R", "censoring-helpers.R"))
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+artifact_dir <- here::here("artifacts", "supporting", "os-unrestricted-censoring")
+result_dir <- here::here("results", "supporting", "os-unrestricted-censoring")
+figure_dir <- file.path(artifact_dir, "figures")
+model_dir <- file.path(artifact_dir, "models")
+
+for (directory in c(result_dir, figure_dir, model_dir)) dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- arrow::read_parquet(here::here(config_get(config, "paths", "private_data"), "cohort_follow_up.parquet"))
+prepared <- prepare_censoring_data(cohort)
+
+observed <- prepared$data
+fitting_data <- observed |> filter(follow_up_days > 0)
+
+stopifnot(all(levels(observed$diagnosis) %in% as.character(fitting_data$diagnosis)))
+
+model_path <- file.path(model_dir, "model-01.rds")
+input_hash <- digest::digest(list(fitting_data, "adjusted-censoring-v1-normal-tx-5-no-autoscale"))
+model <- if (file.exists(model_path)) readRDS(model_path) else NULL
+
+if (is.null(model) || !identical(attr(model, "input_hash"), input_hash) || identical(Sys.getenv("LIQPLAT_FORCE"), "1")) {
+ 
+ model <- rstanarm::stan_surv(
+    survival::Surv(follow_up_days, censoring_event) ~
+      tx + ecog_binary + stage_binary + mgps + (1 | diagnosis),
+    data = fitting_data, basehaz = "ms", basehaz_ops = list(df = 5),
+    prior = rstanarm::normal(location = rep(0, 5), scale = c(5, rep(2.5, 4)), autoscale = FALSE),
+    prior_intercept = rstanarm::normal(0, 20, autoscale = FALSE),
+    prior_aux = rstanarm::dirichlet(1), prior_covariance = rstanarm::decov(),
+    chains = 4L, cores = 4L, iter = 2000L, warmup = 1000L,
+    adapt_delta = 0.99, seed = 4401L, refresh = 100L)
+  
+  attr(model, "input_hash") <- input_hash
+  saveRDS(model, model_path, compress = "xz")
+}
+
+parameters <- posterior::summarise_draws(posterior::as_draws_array(model)) |> as.data.frame()
+sampler <- rstan::get_sampler_params(model$stanfit, inc_warmup = FALSE)
+
+diagnostics <- tibble(
+  fits = 1L, multiple_imputations = 0L, mice_maxit = NA_integer_,
+  randomized = nrow(observed), fitted = nrow(fitting_data),
+  max_rhat = max(parameters$rhat, na.rm = TRUE),
+  min_ess_bulk = min(parameters$ess_bulk, na.rm = TRUE),
+  min_ess_tail = min(parameters$ess_tail, na.rm = TRUE),
+  divergences = sum(vapply(sampler, function(x) sum(x[, "divergent__"]), numeric(1))),
+  treedepth_hits = sum(vapply(sampler, function(x) sum(x[, "treedepth__"] >= 10), numeric(1))),
+  min_bfmi = min(vapply(sampler, function(x) mean(diff(x[, "energy__"])^2) / var(x[, "energy__"]), numeric(1))),
+  chains = model$stanfit@sim$chains, iterations = model$stanfit@sim$iter,
+  warmup = model$stanfit@sim$warmup)
+
+arrow::write_parquet(diagnostics, file.path(result_dir, "adjusted-diagnostics.parquet"))
+
+stopifnot(diagnostics$max_rhat <= 1.01, diagnostics$min_ess_bulk >= 400,
+  diagnostics$min_ess_tail >= 400, diagnostics$divergences == 0,
+  diagnostics$treedepth_hits == 0, diagnostics$min_bfmi >= .3)
+
+hr <- exp(as.matrix(model, pars = "tx"))[, 1]
+
+adjusted_summary <- tibble(median = median(hr), lower_95 = quantile(hr, .025),
+  upper_95 = quantile(hr, .975), probability_higher_censoring = mean(hr > 1))
+
+arrow::write_parquet(adjusted_summary, file.path(result_dir, "adjusted-hazard-ratio-summary.parquet"))
+arrow::write_parquet(parameters, file.path(result_dir, "adjusted-parameter-summary.parquet"))
+arrow::write_parquet(prepared$replacements, file.path(result_dir, "modal-replacements.parquet"))
+
+cohort_summary <- observed |> summarise(participants = n(), censoring_events = sum(censoring_event),
+  deaths = sum(1L - censoring_event), zero_follow_up = sum(follow_up_days == 0), .by = tx)
+
+arrow::write_parquet(cohort_summary, file.path(result_dir, "adjusted-cohort-summary.parquet"))
+```
+
+```{r}
+#| label: adjusted-censoring-predictions
+#| include: false
+max_follow_up <- max(observed$follow_up_days)
+
+curves <- posterior_standardized_survival_draws(model, observed, horizon = max_follow_up,
+  n_points = 200L, n_draws = 1000L, seed = 4402L)
+
+curve_summary <- curves |> summarise(median = median(survival),
+  lower = quantile(survival, .025), upper = quantile(survival, .975), .by = c(tx, time))
+
+stopifnot(all(curves$survival >= 0 & curves$survival <= 1),
+  all(curves |> group_by(tx, draw) |> summarise(ok = all(diff(survival) <= 1e-10), .groups = "drop") |> pull(ok)))
+
+newdata <- observed |> mutate(tx = 1)
+
+individual <- posterior_survfit_compatible(model, newdata = newdata, times = 182,
+  extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 4403L)[[1]]
+
+standardized <- posterior_survfit_compatible(model, newdata = newdata, times = 182,
+  extrapolate = FALSE, standardise = TRUE, return_matrix = TRUE, draws = 100L, seed = 4403L)[[1]]
+
+contrast_data <- newdata[rep(1L, nlevels(newdata$diagnosis)), ]
+
+contrast_data$diagnosis <- factor(levels(newdata$diagnosis), levels = levels(newdata$diagnosis))
+
+diagnosis_predictions <- posterior_survfit_compatible(model, newdata = contrast_data, times = 182,
+  extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 4403L)[[1]]
+
+checks <- tibble(maximum_averaging_error = max(abs(rowMeans(individual) - as.numeric(standardized))),
+  maximum_diagnosis_contrast = max(apply(diagnosis_predictions, 1, function(x) diff(range(x)))))
+
+stopifnot(checks$maximum_averaging_error < 1e-10, checks$maximum_diagnosis_contrast > 1e-8)
+
+arrow::write_parquet(curve_summary, file.path(result_dir, "adjusted-censoring-curves.parquet"))
+arrow::write_parquet(checks, file.path(result_dir, "adjusted-prediction-checks.parquet"))
+
+observed$tx_plot <- factor(observed$tx, levels = 0:1, labels = c("Usual care", "Selected for invitation"))
+
+curve_summary$tx_plot <- factor(curve_summary$tx, levels = 0:1, labels = levels(observed$tx_plot))
+
+km <- ggsurvfit::survfit2(survival::Surv(follow_up_days, censoring_event) ~ tx_plot,
+  data = observed, conf.type = "log-log")
+
+reverse_plot <- ggsurvfit::ggsurvfit(km, linetype_aes = FALSE, linetype = "dashed") +
+  ggsurvfit::add_censor_mark() +
+  geom_ribbon(data = curve_summary, aes(x = time, ymin = lower, ymax = upper, fill = tx_plot),
+    inherit.aes = FALSE, alpha = .15) +
+  geom_line(data = curve_summary, aes(x = time, y = median, colour = tx_plot), inherit.aes = FALSE) +
+  scale_x_continuous(breaks = seq(0, max_follow_up, by = 100)) +
+  coord_cartesian(xlim = c(0, max_follow_up), ylim = c(0, 1)) +
+  labs(x = "Days since randomization", y = "Probability of remaining uncensored", colour = NULL, fill = NULL) +
+  theme_bw() + ggsurvfit::add_risktable(times = seq(0, max_follow_up, by = 100),
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Censoring"))
+
+ggsave(file.path(figure_dir, "adjusted-reverse-kaplan-meier.png"),
+  ggsurvfit::ggsurvfit_build(reverse_plot), width = 9, height = 7, dpi = 300)
+
+trace_plot <- bayesplot::mcmc_trace(posterior::as_draws_array(model), pars = c("tx", "ecog_binary", "stage_binary", "mgps1", "mgps2"))
+
+ggsave(file.path(figure_dir, "adjusted-censoring-traces.png"), trace_plot, width = 10, height = 7, dpi = 180)
+```
+
+## Missing covariates and fitting population
+
+```{r}
+knitr::kable(prepared$replacements)
+knitr::kable(cohort_summary)
+```
+
+The pooled modes use all randomized patients. The patient censored at day zero is retained in the empirical curves and standardization population, but excluded from the positive-time survival likelihood. The continuous model cannot represent a point mass of censoring at day zero. Predictions average over the same patients under each assignment and retain fitted diagnosis effects.
+
+## Results
+
+```{r}
+#| label: tbl-adjusted-censoring-hr
+#| tbl-cap: "Adjusted censoring hazard ratio: invitation versus usual care"
+knitr::kable(adjusted_summary, digits = 3)
+```
+
+An HR above one indicates more rapid censoring in the invitation group. This is conditional on baseline covariates and diagnosis effects. The standardized curves are marginal over the trial population; neither a change in the HR after adjustment nor overlap of curves proves that patient characteristics explain differential censoring. Differences can also reflect non-collapsibility and modeling assumptions. The curves estimate the reverse-survival distribution, not the probability of being alive and under observation; deaths are censored for this diagnostic. Similar adjusted curves would not establish non-informative censoring.
+
+```{r}
+#| label: fig-adjusted-reverse-km
+#| fig-cap: "Dashed: empirical reverse Kaplan–Meier curves. Solid: standardized adjusted censoring curves with 95% credible bands. Marks represent deaths; table events represent censoring."
+#| fig-alt: "Empirical and covariate-adjusted reverse-survival curves for the two randomized groups, with risk counts and cumulative censoring."
+reverse_plot
+```
+
+## Diagnostics and actual sampling settings
+
+```{r}
+knitr::kable(diagnostics, digits = 3)
+knitr::kable(checks, digits = 10)
+```
+
+```{r}
+#| label: fig-adjusted-censoring-traces
+#| fig-cap: "Posterior chains for the adjusted censoring model's fixed effects"
+trace_plot
+```
