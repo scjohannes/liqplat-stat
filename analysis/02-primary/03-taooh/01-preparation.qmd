@@ -75,7 +75,7 @@ cohort <- cohort |>
 # after entry into the absorbing death state for transition-model fitting.
 empirical_sop_data <- cohort |>
   select(id, tx) |>
-  left_join(taooh_empirical_history(taooh, horizon_days), by = "id") |>
+  left_join(taooh_carry_death_forward(taooh, horizon_days), by = "id") |>
   filter(week >= 1L) |>
   mutate(
     y_taooh = factor(

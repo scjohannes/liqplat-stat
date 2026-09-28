@@ -138,7 +138,7 @@ empirical_data <- arrow::read_parquet(here::here(
   "analysis", "00-data", "results", "analysis-taooh.parquet"
 )) |>
   as.data.frame() |>
-  taooh_empirical_history(horizon_days) |>
+  taooh_carry_death_forward(horizon_days) |>
   left_join(cohort |> select(id, tx), by = "id") |>
   arrange(id, week) |>
   group_by(id) |>

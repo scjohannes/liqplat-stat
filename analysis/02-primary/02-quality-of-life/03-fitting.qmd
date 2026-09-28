@@ -40,7 +40,7 @@ pcontrast_tx <- list(
   sd = 0.5
 )
 
-for (index in seq_len(config$imputation$main$m)[1:50]) {
+for (index in seq_len(config$imputation$main$m)) {
   model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
   diagnostic_path <- file.path(
     diagnostic_dir,

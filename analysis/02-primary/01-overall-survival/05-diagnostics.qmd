@@ -151,11 +151,12 @@ curve_summary$tx <- factor(
   levels = 0:1,
   labels = c("Control", "Intervention")
 )
-risk_times <- seq(0, config$analysis$horizon_days, by = 100)
+risk_times <- seq(0, config$analysis$horizon_days, by = 50)
 
 survival_plot <- ggsurvfit::ggsurvfit(
   km_fit,
   linewidth = 0.55,
+  linetype_aes = FALSE,
   linetype = 2
 ) +
   ggplot2::geom_ribbon(
@@ -329,7 +330,8 @@ grDevices::png(
   height = 1800,
   res = 180
 )
-plot(zph)
+stopifnot("tx" %in% colnames(zph$y))
+plot(zph, var = which(colnames(zph$y) == "tx"))
 grDevices::dev.off()
 arrow::write_parquet(
   zph_table,
