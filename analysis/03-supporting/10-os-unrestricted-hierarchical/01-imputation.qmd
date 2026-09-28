@@ -22,49 +22,91 @@ likelihood. Endpoint times, death status, treatment, and diagnosis are not imput
 library(tidyverse)
 library(mice)
 library(miceadds)
+
+source(here::here("R", "analysis-config.R"))
 source(here::here("R", "survival-helpers.R"))
+config <- read_analysis_config()
+
 artifact_dir <- here::here("artifacts", "supporting", "os-unrestricted-hierarchical")
+
 dir.create(artifact_dir, recursive = TRUE, showWarnings = FALSE)
+
 prepared <- arrow::read_parquet(here::here("analysis", "00-data", "results", "analysis-cohort.parquet")) |>
   select(id, tx, survival_time_days_unrestricted, status_death_unrestricted,
     diagnosis, ecog_fstcnt, stage_binary, age, gender, albumin, bilirubin,
     c_reactive_protein, lactate_dehydrogenase) |>
-  mutate(diagnosis = factor(diagnosis), diagnosis_id = as.integer(diagnosis), gender = factor(gender))
+  mutate(
+    diagnosis = factor(diagnosis), 
+    diagnosis_id = as.integer(diagnosis), 
+    gender = factor(gender))
+
 stopifnot(!anyNA(prepared$diagnosis), !anyDuplicated(prepared$id),
           all(prepared$survival_time_days_unrestricted >= 0))
-prepared$na_est <- mice::nelsonaalen(prepared,
+
+prepared$na_est <- nelsonaalen(prepared,
   timevar = survival_time_days_unrestricted, statusvar = status_death_unrestricted)
+
 imputation_data <- prepared |> select(-diagnosis)
+
 incomplete <- names(which(colSums(is.na(imputation_data)) > 0))
-methods <- mice::make.method(imputation_data)
+
+methods <- make.method(imputation_data)
 methods[] <- ""
 methods[incomplete] <- "2l.pmm"
-predictors <- mice::make.predictorMatrix(imputation_data)
+
+predictors <- make.predictorMatrix(imputation_data)
 predictors[, c("id", "survival_time_days_unrestricted")] <- 0
 predictors[!nzchar(methods), ] <- 0
+
 predictors[incomplete, "diagnosis_id"] <- -2
-input_hash <- digest::digest(list(imputation_data, methods, predictors, m = 5L, maxit = 50L, donors = 5L))
+
+input_hash <- digest::digest(
+  list(
+    imputation_data, 
+    methods, 
+    predictors, 
+    m = config$imputation$supporting$m, 
+    maxit = config$imputation$supporting$maxit, 
+    donors = config$imputation$supporting$donors))
+
 imputation_path <- file.path(artifact_dir, "imputation.rds")
+
 imputation <- if (file.exists(imputation_path)) readRDS(imputation_path) else NULL
+
 if (identical(Sys.getenv("LIQPLAT_FORCE"), "1") || is.null(imputation) ||
     !identical(attr(imputation, "input_hash"), input_hash)) {
-  imputation <- mice::mice(imputation_data, method = methods, predictorMatrix = predictors,
-    m = 5L, maxit = 50L, donors = 5L, seed = 4101L, printFlag = FALSE)
+
+  imputation <- mice(
+    imputation_data, 
+    method = methods, 
+    predictorMatrix = predictors,
+    m = config$imputation$supporting$m, 
+    maxit = config$imputation$supporting$maxit, 
+    donors = config$imputation$supporting$donors, 
+    seed = 4101L, 
+    printFlag = FALSE)
+
   attr(imputation, "input_hash") <- input_hash
   saveRDS(imputation, imputation_path, compress = "xz")
 }
-completed_datasets <- lapply(1:5, function(index) {
-  completed <- mice::complete(imputation, index) |>
+
+completed_datasets <- lapply(config$imputation$supporting$indices, function(index) {
+
+  completed <- complete(imputation, index) |>
     mutate(diagnosis = prepared$diagnosis, ecog_binary = derive_ecog_binary(ecog_fstcnt),
       mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2))
+
   assert_ecog_binary_consistent(completed)
   assert_mgps_consistent(completed)
-  stopifnot(!anyNA(completed), all(completed$ecog_fstcnt %in% 0:4), imputation$m == 5L,
+
+  stopifnot(!anyNA(completed), all(completed$ecog_fstcnt %in% 0:4), imputation$m == config$imputation$supporting$m,
     identical(completed$survival_time_days_unrestricted, prepared$survival_time_days_unrestricted),
     identical(completed$status_death_unrestricted, prepared$status_death_unrestricted),
     all(imputation$predictorMatrix[incomplete, "diagnosis_id"] == -2))
+    
   completed
 })
+
 saveRDS(completed_datasets, file.path(artifact_dir, "completed-datasets.rds"))
 ```
 
