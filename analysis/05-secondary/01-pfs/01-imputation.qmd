@@ -69,14 +69,14 @@ for (adjustment in c("os_adjusted", "diagnosis")) {
   if (is.null(imputation) || !identical(attr(imputation, "input_hash"), input_hash)) {
     imputation <- mice::mice(
       imputation_data, method = methods, predictorMatrix = predictors,
-      m = 5L, maxit = 50L, donors = 5L, printFlag = FALSE,
+      m = config$imputation$supporting$m, maxit = config$imputation$supporting$maxit, donors = config$imputation$supporting$donors, printFlag = FALSE,
       seed = analysis_seed(config, "supporting", offset = if (adjustment == "os_adjusted") 2200L else 2201L)
     )
     attr(imputation, "input_hash") <- input_hash
     saveRDS(imputation, imputation_path, compress = "xz")
   }
 
-  completed_datasets <- lapply(1:5, function(index) {
+  completed_datasets <- lapply(config$imputation$supporting$indices, function(index) {
     completed <- mice::complete(imputation, index) |>
       mutate(diagnosis = prepared$diagnosis, ecog_binary = derive_ecog_binary(ecog_fstcnt),
              mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2))
@@ -84,7 +84,7 @@ for (adjustment in c("os_adjusted", "diagnosis")) {
     assert_ecog_binary_consistent(completed)
     assert_mgps_consistent(completed)
 
-    stopifnot(!anyNA(completed), imputation$m == 5L,
+    stopifnot(!anyNA(completed), imputation$m == config$imputation$supporting$m,
               all(as.numeric(as.character(completed$ecog_fstcnt)) %in% 0:4),
               identical(completed$pfs_time_days, prepared$pfs_time_days),
               identical(completed$event_pfs, prepared$event_pfs))
