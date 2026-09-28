@@ -31,6 +31,7 @@ input_paths <- c(
   qol = file.path(result_dir, "analysis-qol.parquet"),
   taooh = file.path(result_dir, "analysis-taooh.parquet"),
   ctdna_samples = file.path(result_dir, "analysis-ctdna-samples.parquet"),
+  ctdna_analyses = file.path(result_dir, "analysis-ctdna-analyses.parquet"),
   alterations = file.path(result_dir, "analysis-alterations.parquet")
 )
 if (any(!file.exists(input_paths))) {

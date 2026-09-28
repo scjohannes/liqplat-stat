@@ -38,6 +38,7 @@ domains <- c(
   "qol",
   "taooh",
   "ctdna_samples",
+  "ctdna_analyses",
   "alterations"
 )
 output_paths <- c(
@@ -46,11 +47,12 @@ output_paths <- c(
   qol = file.path(result_dir, "analysis-qol.parquet"),
   taooh = file.path(result_dir, "analysis-taooh.parquet"),
   ctdna_samples = file.path(result_dir, "analysis-ctdna-samples.parquet"),
+  ctdna_analyses = file.path(result_dir, "analysis-ctdna-analyses.parquet"),
   alterations = file.path(result_dir, "analysis-alterations.parquet")
 )
 status_path <- file.path(result_dir, "build-status.parquet")
 if (!setequal(validation$domain[validation$status == "validated"], c(domains, "consort_ipd"))) {
-  stop("All seven private datasets must pass input validation.")
+  stop("All eight private datasets must pass input validation.")
 }
 
 if (!force && all(file.exists(c(output_paths, status_path)))) {
@@ -67,6 +69,10 @@ taooh <- arrow::read_parquet(file.path(private_dir, "taooh.parquet")) |>
   as.data.frame()
 ctdna <- arrow::read_parquet(file.path(private_dir, "ctdna_samples.parquet")) |>
   as.data.frame()
+ctdna_analyses <- arrow::read_parquet(
+  file.path(private_dir, "ctdna_analyses.parquet")
+) |>
+  as.data.frame()
 alterations <- arrow::read_parquet(file.path(private_dir, "alterations.parquet")) |>
   as.data.frame()
 
@@ -80,15 +86,24 @@ required_columns <- list(
   ),
   qol = c("id", "assessment_id", "day", "q30", "baseline_q30"),
   taooh = c("id", "week", "y_taooh"),
-  ctdna_samples = c("sample_id", "id", "sample_date", "lod_q1", "lod_q3"),
-  alterations = c("alteration_id", "sample_id", "id")
+  ctdna_samples = c("sample_id", "id", "sample_date", "valid_ctdna_result"),
+  ctdna_analyses = c(
+    "analysis_id", "sample_id", "id", "analysis_date", "lod_q1", "lod_q3",
+    "valid_ctdna_result", "n_mut"
+  ),
+  alterations = c(
+    "alteration_id", "analysis_id", "sample_id", "id",
+    "found_in_solid_biopsy", "found_in_buffy_coat"
+  )
 )
+
 datasets <- list(
   recruitment = recruitment,
   cohort_follow_up = cohort,
   qol = qol,
   taooh = taooh,
   ctdna_samples = ctdna,
+  ctdna_analyses = ctdna_analyses,
   alterations = alterations
 )
 for (domain in names(datasets)) {
@@ -134,32 +149,86 @@ cohort$survival_time_days <- as.numeric(
 )
 
 ctdna$sample_date <- parse_analysis_date(ctdna$sample_date, "sample_date")
-lod_q1 <- suppressWarnings(as.numeric(as.character(ctdna$lod_q1)))
-lod_q3 <- suppressWarnings(as.numeric(as.character(ctdna$lod_q3)))
-ctdna$attempted_sample <- !is.na(ctdna$sample_date)
-ctdna$ctdna_error_derived <- as.integer(
-  ctdna$attempted_sample & is.na(lod_q1) & is.na(lod_q3)
+ctdna_analyses$analysis_date <- parse_analysis_date(
+  ctdna_analyses$analysis_date, "analysis_date"
 )
-ctdna$valid_ctdna_result <- ctdna$attempted_sample &
-  ctdna$ctdna_error_derived == 0L
+sample_dates <- ctdna[c("sample_id", "sample_date")]
+ctdna_analyses <- merge(
+  ctdna_analyses, sample_dates, by = "sample_id", all.x = TRUE, sort = FALSE
+)
+if (anyNA(ctdna_analyses$sample_date)) {
+  stop("Every ctDNA analysis must refer to a sample with a recorded sample date.")
+}
+ctdna_analyses$attempted_sample <- !is.na(ctdna_analyses$sample_date)
+lod_q1 <- suppressWarnings(as.numeric(as.character(ctdna_analyses$lod_q1)))
+lod_q3 <- suppressWarnings(as.numeric(as.character(ctdna_analyses$lod_q3)))
+ctdna_analyses$ctdna_error_derived <- as.integer(
+  ctdna_analyses$attempted_sample & is.na(lod_q1) & is.na(lod_q3)
+)
+ctdna_analyses$valid_ctdna_result_derived <- ctdna_analyses$attempted_sample &
+  ctdna_analyses$ctdna_error_derived == 0L
+if (any(ctdna_analyses$valid_ctdna_result !=
+        ctdna_analyses$valid_ctdna_result_derived)) {
+  stop("Exported and LOD-derived ctDNA analysis validity flags disagree.")
+}
 
-sample_lookup <- ctdna[c(
-  "sample_id",
-  "valid_ctdna_result",
-  "ctdna_detected"
-)]
-names(sample_lookup)[-1L] <- c(
-  "sample_valid_ctdna_result",
-  "sample_ctdna_detected"
+analysis_by_sample <- ctdna_analyses |>
+  dplyr::group_by(sample_id) |>
+  dplyr::summarise(
+    analysis_date = if (all(is.na(analysis_date))) as.Date(NA) else
+      min(analysis_date, na.rm = TRUE),
+    n_mut = sum(n_mut[valid_ctdna_result_derived], na.rm = TRUE),
+    analysis_attempted = any(attempted_sample),
+    analysis_valid = any(valid_ctdna_result_derived),
+    ctdna_error_qc = if (length(unique(ctdna_error[!is.na(ctdna_error)])) == 1L) {
+      as.integer(unique(ctdna_error[!is.na(ctdna_error)]))
+    } else {
+      NA_integer_
+    },
+    .groups = "drop"
+  )
+ctdna <- dplyr::left_join(ctdna, analysis_by_sample, by = "sample_id")
+if (anyNA(ctdna$analysis_valid) || any(ctdna$valid_ctdna_result != ctdna$analysis_valid)) {
+  stop("Exported and analysis-derived sample validity flags disagree.")
+}
+
+ctdna$attempted_sample <- !is.na(ctdna$sample_date)
+ctdna$valid_ctdna_result <- ctdna$analysis_valid
+ctdna$analysis_attempted <- NULL
+ctdna$analysis_valid <- NULL
+ctdna$ctdna_error_derived <- as.integer(
+  ctdna$attempted_sample & !ctdna$valid_ctdna_result
 )
-alterations <- merge(alterations, sample_lookup, by = "sample_id", all.x = TRUE)
-if (anyNA(alterations$sample_valid_ctdna_result)) {
+
+analysis_lookup <- ctdna_analyses[c(
+  "analysis_id", "sample_id", "id", "valid_ctdna_result_derived"
+)]
+alterations <- merge(
+  alterations, analysis_lookup, by = "analysis_id", all.x = TRUE,
+  suffixes = c("", ".analysis"), sort = FALSE
+)
+if (anyNA(alterations$valid_ctdna_result_derived)) {
+  stop("Every alteration must refer to a ctDNA analysis in ctdna_analyses.parquet.")
+}
+if (any(alterations$sample_id != alterations$sample_id.analysis) ||
+    any(alterations$id != alterations$id.analysis)) {
+  stop("Alteration sample/patient links disagree with ctdna_analyses.")
+}
+if (any(alterations$valid_ctdna_result != alterations$valid_ctdna_result_derived)) {
+  stop("Exported alteration and analysis validity flags disagree.")
+}
+alterations$valid_ctdna_result <- alterations$valid_ctdna_result_derived
+alterations$sample_id.analysis <- NULL
+alterations$id.analysis <- NULL
+alterations$valid_ctdna_result_derived <- NULL
+sample_lookup <- ctdna[c("sample_id", "ctdna_detected")]
+names(sample_lookup)[2L] <- "ctdna_detected_from_sample"
+if (any(!alterations$sample_id %in% sample_lookup$sample_id)) {
   stop("Every alteration must refer to a ctDNA sample in ctdna_samples.parquet.")
 }
-alterations$valid_ctdna_result <- alterations$sample_valid_ctdna_result
-alterations$ctdna_detected <- alterations$sample_ctdna_detected
-alterations$sample_valid_ctdna_result <- NULL
-alterations$sample_ctdna_detected <- NULL
+alterations <- merge(alterations, sample_lookup, by = "sample_id", all.x = TRUE)
+alterations$ctdna_detected <- alterations$ctdna_detected_from_sample
+alterations$ctdna_detected_from_sample <- NULL
 
 datasets <- list(
   recruitment = recruitment,
@@ -167,6 +236,7 @@ datasets <- list(
   qol = qol,
   taooh = taooh,
   ctdna_samples = ctdna,
+  ctdna_analyses = ctdna_analyses,
   alterations = alterations
 )
 for (domain in names(datasets)) {

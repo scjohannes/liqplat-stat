@@ -8,7 +8,7 @@ execute:
   message: false
 ---
 
-The public analysis starts from seven pseudonymized or anonymous Parquet files in
+The public analysis starts from eight pseudonymized or anonymous Parquet files in
 `data/private/`. This stage checks that those files match the tracked schemas
 and the fixed data-lock manifest. Raw REDCap exports are never read here.
 
@@ -34,6 +34,7 @@ domains <- c(
   "qol",
   "taooh",
   "ctdna_samples",
+  "ctdna_analyses",
   "alterations"
 )
 
@@ -55,7 +56,7 @@ if (!setequal(observed_files, expected_files)) {
 }
 
 if (!setequal(names(manifest$domains), domains)) {
-  stop("manifest.yml must describe exactly the seven public analysis datasets.")
+  stop("manifest.yml must describe exactly the eight public analysis datasets.")
 }
 
 validation_rows <- vector("list", length(domains))
