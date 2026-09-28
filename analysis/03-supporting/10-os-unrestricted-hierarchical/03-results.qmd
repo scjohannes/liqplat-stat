@@ -9,7 +9,7 @@ execute:
 categorical mGPS. **Adjusted (hierarchical)** replaces the lung indicator with
 diagnosis random intercepts and uses diagnosis-level covariate imputation.
 The comparison therefore evaluates both the imputation and survival-model
-specifications. It does not isolate the effect of the survival random intercept.
+specifications.
 
 Each adjusted summary combines 1,000 posterior draws from each of five
 imputations with equal weight. Curves average patient-specific predictions
@@ -24,25 +24,31 @@ and the observed risk table, but contributes no survival likelihood.
 library(tidyverse)
 source(here::here("R", "analysis-config.R"))
 source(here::here("R", "survival-helpers.R"))
+
 config <- read_analysis_config()
 artifact_dir <- here::here("artifacts", "supporting", "os-unrestricted-hierarchical")
 result_dir <- here::here("results", "supporting", "os-unrestricted-hierarchical")
 figure_dir <- file.path(artifact_dir, "figures")
+
 dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
 datasets <- readRDS(file.path(artifact_dir, "completed-datasets.rds"))
-models <- lapply(1:5, function(index) readRDS(file.path(artifact_dir, sprintf("model-%02d.rds", index))))
-diagnostics <- map_dfr(1:5, function(index) {
+models <- lapply(config$imputation$supporting$indices, function(index) readRDS(file.path(artifact_dir, sprintf("model-%02d.rds", index))))
+
+diagnostics <- map_dfr(config$imputation$supporting$indices, function(index) {
   model <- models[[index]]
   parameters <- posterior::summarise_draws(posterior::as_draws_array(model))
   sampler <- rstan::get_sampler_params(model$stanfit, inc_warmup = FALSE)
   expected <- datasets[[index]] |> filter(survival_time_days_unrestricted > 0)
+  
   stopifnot(identical(model$data$id, expected$id),
     identical(model$data$survival_time_days_unrestricted, expected$survival_time_days_unrestricted),
     identical(model$data$status_death_unrestricted, expected$status_death_unrestricted),
     all(as.character(datasets[[index]]$diagnosis) %in% as.character(model$data$diagnosis)),
     identical(model$cnms$diagnosis, "(Intercept)"),
     length(grep("^Sigma", colnames(as.matrix(model)))) == 1L)
+  
   tibble(imputation = index, participants = nrow(model$data),
     max_rhat = max(parameters$rhat, na.rm = TRUE),
     min_ess_bulk = min(parameters$ess_bulk, na.rm = TRUE),
@@ -51,30 +57,38 @@ diagnostics <- map_dfr(1:5, function(index) {
     treedepth_hits = sum(vapply(sampler, function(x) sum(x[, "treedepth__"] >= 10), numeric(1))),
     min_bfmi = min(vapply(sampler, function(x) mean(diff(x[, "energy__"])^2) / var(x[, "energy__"]), numeric(1))))
 })
+
 stopifnot(all(diagnostics$max_rhat <= config$diagnostics$max_rhat),
   all(diagnostics$min_ess_bulk >= config$diagnostics$min_ess_bulk),
   all(diagnostics$min_ess_tail >= config$diagnostics$min_ess_tail),
   all(diagnostics$divergences == 0), all(diagnostics$treedepth_hits == 0),
   all(diagnostics$min_bfmi >= config$diagnostics$min_bfmi))
+
 observed <- datasets[[1]]
+
 max_follow_up <- max(observed$survival_time_days_unrestricted)
-hr_draws <- map_dfr(1:5, function(index) {
+
+hr_draws <- map_dfr(config$imputation$supporting$indices, function(index) {
   set.seed(4300L + index)
   tibble(imputation = index, draw = 1:1000,
     hazard_ratio = sample(exp(as.matrix(models[[index]], pars = "tx")), 1000L))
 })
+
 hr_summary <- hr_draws |> summarise(adjustment = "Adjusted (hierarchical)",
   median = median(hazard_ratio), lower_95 = quantile(hazard_ratio, 0.025),
   upper_95 = quantile(hazard_ratio, 0.975), probability_hr_below_one = mean(hazard_ratio < 1))
-curves <- map_dfr(1:5, function(index) {
+
+curves <- map_dfr(config$imputation$supporting$indices, function(index) {
   posterior_standardized_survival_draws(models[[index]], datasets[[index]],
     horizon = max_follow_up, n_points = 200L, n_draws = 1000L, seed = 4300L + index) |>
     mutate(imputation = index)
 })
+
 curve_summary <- curves |> summarise(median = median(survival),
   lower_95 = quantile(survival, 0.025), upper_95 = quantile(survival, 0.975), .by = c(tx, time)) |>
   mutate(adjustment = "Adjusted (hierarchical)")
-checks <- map_dfr(1:5, function(index) {
+
+checks <- map_dfr(config$imputation$supporting$indices, function(index) {
   newdata <- datasets[[index]] |> mutate(tx = 1)
   individual <- posterior_survfit_compatible(models[[index]], newdata = newdata, times = 182,
     extrapolate = FALSE, standardise = FALSE, return_matrix = TRUE, draws = 100L, seed = 4301L)[[1]]
@@ -89,23 +103,38 @@ checks <- map_dfr(1:5, function(index) {
   stopifnot(error < 1e-10, diagnosis_contrast > 1e-8)
   tibble(imputation = index, maximum_averaging_error = error, maximum_diagnosis_contrast = diagnosis_contrast)
 })
-stopifnot(nrow(hr_draws) == 5000L, all(count(hr_draws, imputation)$n == 1000L))
+
+stopifnot(nrow(hr_draws) == 1000L * config$imputation$supporting$m, all(count(hr_draws, imputation)$n == 1000L))
+
 fixed_dir <- here::here("results", "supporting", "os-unrestricted-ph")
+
 fixed_hr <- arrow::read_parquet(file.path(fixed_dir, "hazard-ratio-summary.parquet")) |>
   transmute(adjustment = "Adjusted (fixed)", median, lower_95 = ci_95_low,
     upper_95 = ci_95_high, probability_hr_below_one = probability_benefit)
+
 comparison <- bind_rows(fixed_hr, hr_summary)
+
 fixed_curves <- arrow::read_parquet(file.path(fixed_dir, "survival-curve-summary.parquet")) |>
-  transmute(tx, time, median, lower_95 = lower, upper_95 = upper, adjustment = "Adjusted (fixed)")
+  transmute(
+    tx, 
+    time, 
+    median, 
+    lower_95 = lower, 
+    upper_95 = upper, 
+    adjustment = "Adjusted (fixed)")
+
 comparison_curves <- bind_rows(fixed_curves, curve_summary)
+
 cohort_summary <- observed |> summarise(randomized = n(),
   positive_follow_up = sum(survival_time_days_unrestricted > 0),
   deaths = sum(status_death_unrestricted), .by = tx)
+
 diagnosis_balance <- observed |> count(diagnosis, tx, .drop = FALSE) |>
   mutate(percent = 100 * n / sum(n), .by = tx) |>
   pivot_wider(names_from = tx, values_from = c(n, percent), values_fill = 0) |>
   mutate(difference_percentage_points = percent_1 - percent_0) |>
   arrange(desc(abs(difference_percentage_points)))
+
 arrow::write_parquet(hr_draws, file.path(result_dir, "hazard-ratio-draws.parquet"))
 arrow::write_parquet(hr_summary, file.path(result_dir, "hazard-ratio-summary.parquet"))
 arrow::write_parquet(comparison, file.path(result_dir, "comparison.parquet"))
@@ -142,7 +171,9 @@ survival_plot <- ggplot(comparison_curves, aes(time, median, color = factor(tx),
   scale_color_discrete(labels = c("Control", "Intervention")) +
   scale_fill_discrete(labels = c("Control", "Intervention")) +
   labs(x = "Days from randomization", y = "Overall survival", color = NULL, fill = NULL) + theme_minimal()
+
 ggsave(file.path(figure_dir, "standardized-survival.png"), survival_plot, width = 10, height = 5, dpi = 150)
+
 survival_plot
 ```
 
@@ -153,14 +184,20 @@ survival_plot
 #| fig-width: 9
 #| fig-height: 6
 observed <- observed |> mutate(tx_label = factor(tx, levels = 0:1, labels = c("Control", "Intervention")))
+
 km_fit <- ggsurvfit::survfit2(survival::Surv(survival_time_days_unrestricted, status_death_unrestricted) ~ tx_label, data = observed)
+
+
 risk_times <- seq(0, max_follow_up, by = 100)
+
 km_plot <- ggsurvfit::ggsurvfit(km_fit) + ggsurvfit::add_confidence_interval() +
   ggsurvfit::add_censor_mark() + scale_x_continuous(breaks = risk_times) +
   ggsurvfit::add_risktable(times = risk_times, risktable_stats = c("n.risk", "cum.event"),
     stats_label = list(n.risk = "At risk", cum.event = "Events")) +
   labs(x = "Days from randomization", y = "Overall survival")
+
 ggsave(file.path(figure_dir, "kaplan-meier.png"), ggsurvfit::ggsurvfit_build(km_plot), width = 9, height = 6, dpi = 150)
+
 km_plot
 ```
 
