@@ -8,6 +8,8 @@ execute:
   message: false
 ---
 
+This analysis was not prespecified in the SAP; it is purely descriptive.
+
 The primary denominator is patients who accepted the invitation. Registration
 uses `mtb_reg == 1`, discussion uses `n_mtb >= 1`, and a recommendation report
 is counted when `mtb_n_reports >= 1`. The eight-week follow-up group includes
