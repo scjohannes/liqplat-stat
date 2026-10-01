@@ -1,0 +1,150 @@
+---
+title: "Best supportive care — unadjusted and adjusted model fitting"
+format: html
+execute:
+  freeze: false
+---
+
+The two BSC endpoints are fitted together for three adjustment approaches:
+Unadjusted, Adjusted (fixed), and Adjusted (hierarchical). The cause-specific
+endpoint censors death before BSC; the composite endpoint counts the first of
+BSC or death. Existing fitted models are reused when their input hashes match.
+
+Adjusted (fixed) includes binary ECOG, stage, lung cancer, and categorical mGPS.
+Adjusted (hierarchical) replaces lung cancer with `(1 || diagnosis)`, retaining
+ECOG, stage, and mGPS. The diagnosis random intercept has one variance
+parameter and no correlation parameter.
+
+```{r}
+#| label: fit-bsc
+#| include: false
+library(tidyverse)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+artifact_dir <- here::here("artifacts", "secondary", "bsc")
+model_dir <- file.path(artifact_dir, "models")
+imputations <- readRDS(file.path(artifact_dir, "imputations.rds"))
+prepared <- arrow::read_parquet(file.path(artifact_dir, "prepared.parquet"))
+stopifnot(imputations$m == config$imputation$supporting$m, nrow(prepared) > 0L)
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (endpoint_name in c("cause_specific", "composite")) {
+  unadjusted_data <- prepared |>
+    transmute(
+      id, tx, time_to_bsc_days,
+      event = if (endpoint_name == "cause_specific") event_bsc else event_bsc_or_death
+    )
+  if (sum(unadjusted_data$event) == 0L) stop("No events for ", endpoint_name, ".")
+  model_path <- file.path(model_dir, paste0("unadjusted-", endpoint_name, ".rds"))
+  input_hash <- digest::digest(unadjusted_data)
+  model <- if (!force && file.exists(model_path)) readRDS(model_path) else NULL
+  if (is.null(model) || !identical(attr(model, "bsc_input_hash"), input_hash)) {
+    model <- rstanarm::stan_surv(
+      formula = survival::Surv(time_to_bsc_days, event) ~ tx,
+      data = unadjusted_data,
+      basehaz = "ms", basehaz_ops = list(df = 5),
+      prior = rstanarm::normal(0, 0.55),
+      prior_intercept = rstanarm::normal(0, 20),
+      prior_aux = rstanarm::dirichlet(1),
+      chains = 4L, cores = 4L, iter = 2000L, warmup = 1000L,
+      refresh = 0L,
+      seed = analysis_seed(config, "supporting", offset = if (
+        endpoint_name == "cause_specific"
+      ) 1600L else 1601L)
+    )
+    attr(model, "bsc_input_hash") <- input_hash
+    saveRDS(model, model_path, compress = "xz")
+  }
+
+  for (index in config$imputation$supporting$indices) {
+    completed <- mice::complete(imputations, index)
+    assert_ecog_binary_consistent(completed)
+    assert_mgps_consistent(completed)
+    fitting_data <- completed |>
+      transmute(
+        id, tx, time_to_bsc_days,
+        event = if (endpoint_name == "cause_specific") event_bsc else event_bsc_or_death,
+        ecog_binary, stage_binary, lung, mgps = factor(mgps, levels = 0:2)
+      )
+    stopifnot(!anyNA(fitting_data), all(fitting_data$time_to_bsc_days > 0))
+    model_path <- file.path(
+      model_dir, sprintf("adjusted-%s-%02d.rds", endpoint_name, index)
+    )
+    input_hash <- digest::digest(fitting_data)
+    model <- if (!force && file.exists(model_path)) readRDS(model_path) else NULL
+    if (!is.null(model) && identical(attr(model, "bsc_input_hash"), input_hash)) next
+
+    model <- rstanarm::stan_surv(
+      formula = survival::Surv(time_to_bsc_days, event) ~
+        tx + ecog_binary + stage_binary + lung + mgps,
+      data = fitting_data,
+      basehaz = "ms", basehaz_ops = list(df = 5),
+      prior = rstanarm::normal(location = rep(0, 6), scale = c(0.55, rep(2.5, 5))),
+      prior_intercept = rstanarm::normal(0, 20),
+      prior_aux = rstanarm::dirichlet(1),
+      chains = 4L, cores = 4L, iter = 2000L, warmup = 1000L,
+      refresh = 0L,
+      seed = analysis_seed(config, "supporting", index, offset = if (
+        endpoint_name == "cause_specific"
+      ) 1800L else 1900L)
+    )
+    attr(model, "bsc_input_hash") <- input_hash
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```
+
+```{r}
+#| label: fit-bsc-hierarchical
+#| include: false
+hierarchical_artifact_dir <- here::here(
+  "artifacts", "secondary", "bsc-diagnosis"
+)
+hierarchical_model_dir <- hierarchical_artifact_dir
+completed_datasets <- readRDS(file.path(
+  hierarchical_artifact_dir, "completed-datasets.rds"
+))
+hierarchical_imputation <- readRDS(file.path(
+  hierarchical_artifact_dir, "imputation.rds"
+))
+hierarchical_input_hash <- attr(hierarchical_imputation, "input_hash")
+stopifnot(length(completed_datasets) == config$imputation$supporting$m, hierarchical_imputation$m == config$imputation$supporting$m)
+
+for (index in config$imputation$supporting$indices) {
+  completed <- completed_datasets[[index]]
+  assert_ecog_binary_consistent(completed)
+  assert_mgps_consistent(completed)
+  for (endpoint_name in c("cause_specific", "composite")) {
+    fitting_data <- completed |>
+      mutate(event = if (endpoint_name == "cause_specific") event_bsc else event_bsc_or_death)
+    stopifnot(!anyNA(fitting_data), all(fitting_data$time_to_bsc_days > 0))
+    model_path <- file.path(
+      hierarchical_model_dir, sprintf("%s-%02d.rds", endpoint_name, index)
+    )
+    model_hash <- digest::digest(list(
+      hierarchical_input_hash, fitting_data, "diagnosis-intercept-v1"
+    ))
+    model <- if (!force && file.exists(model_path)) readRDS(model_path) else NULL
+    if (!is.null(model) && identical(attr(model, "input_hash"), model_hash)) next
+
+    model <- rstanarm::stan_surv(
+      formula = survival::Surv(time_to_bsc_days, event) ~
+        tx + ecog_binary + stage_binary + mgps + (1 || diagnosis),
+      data = fitting_data, basehaz = "ms", basehaz_ops = list(df = 5),
+      prior = rstanarm::normal(location = rep(0, 5), scale = c(0.55, rep(2.5, 4))),
+      prior_intercept = rstanarm::normal(0, 20),
+      prior_aux = rstanarm::dirichlet(1),
+      prior_covariance = rstanarm::decov(),
+      chains = 4L, cores = 4L, iter = 2000L, warmup = 1000L,
+      adapt_delta = 0.99, refresh = 0L,
+      seed = index + if (endpoint_name == "cause_specific") 2800L else 2900L
+    )
+    attr(model, "input_hash") <- model_hash
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```
