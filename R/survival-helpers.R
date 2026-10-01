@@ -1,5 +1,54 @@
 # Overall-survival model and RMST helpers.
 
+prepare_os_censoring_scenarios <- function(cohort) {
+  required <- c("id", "tx", "survival_time_days_unrestricted",
+                "status_death_unrestricted", "potential_follow_up_days")
+  stopifnot(all(required %in% names(cohort)),
+            !anyNA(cohort[required]), !anyDuplicated(cohort$id),
+            all(cohort$tx %in% 0:1),
+            all(cohort$status_death_unrestricted %in% 0:1),
+            all(is.finite(cohort$survival_time_days_unrestricted)),
+            all(is.finite(cohort$potential_follow_up_days)),
+            all(cohort$survival_time_days_unrestricted >= 0),
+            all(cohort$potential_follow_up_days >= cohort$survival_time_days_unrestricted))
+
+  cohort <- cohort |>
+    dplyr::mutate(
+      assumed_alive_14_days = status_death_unrestricted == 0L &
+        potential_follow_up_days - survival_time_days_unrestricted <= 14
+    )
+
+  best_case <- cohort |>
+    dplyr::transmute(
+      id, tx, assumed_alive_14_days, observed_death = status_death_unrestricted,
+      scenario = "best-case",
+      survival_time_days = dplyr::if_else(
+        observed_death == 1L,
+        survival_time_days_unrestricted, potential_follow_up_days
+      ),
+      event_death = observed_death
+    )
+  worst_case <- cohort |>
+    dplyr::transmute(
+      id, tx, assumed_alive_14_days, observed_death = status_death_unrestricted,
+      scenario = "worst-case",
+      survival_time_days = dplyr::if_else(
+        assumed_alive_14_days, potential_follow_up_days, survival_time_days_unrestricted
+      ),
+      event_death = as.integer(
+        observed_death == 1L | !assumed_alive_14_days
+      )
+    )
+  dplyr::bind_rows(best_case, worst_case) |>
+    dplyr::mutate(
+      # A day-zero death needs positive time in the continuous PH likelihood.
+      # Half a day keeps it in the first week; retain the original time for KM.
+      fitting_time_days = dplyr::if_else(
+        survival_time_days == 0 & event_death == 1L, 0.5, survival_time_days
+      )
+    )
+}
+
 derive_mgps <- function(albumin, c_reactive_protein) {
   albumin <- if (is.factor(albumin)) as.numeric(as.character(albumin)) else as.numeric(albumin)
   c_reactive_protein <- if (is.factor(c_reactive_protein)) as.numeric(as.character(c_reactive_protein)) else as.numeric(c_reactive_protein)
@@ -190,17 +239,31 @@ survival_risk_draws <- function(curves, horizon = 182, treatment_col = "tx",
   required <- c(treatment_col, draw_col, "time", survival_col)
   missing <- setdiff(required, names(curves))
   if (length(missing) > 0L) stop("Survival curves are missing: ", paste(missing, collapse = ", "))
-  pieces <- split(curves, interaction(curves[[draw_col]], curves[[treatment_col]], drop = TRUE))
+  keys <- c(intersect("imputation", names(curves)), draw_col, treatment_col)
+  if (!nrow(curves) || anyNA(curves[c(keys, "time", survival_col)]) ||
+      any(!is.finite(curves$time)) ||
+      any(!is.finite(curves[[survival_col]])) ||
+      any(curves[[survival_col]] < 0 | curves[[survival_col]] > 1)) {
+    stop("Survival curves must contain finite times and probabilities in [0, 1].")
+  }
+  pieces <- split(curves, interaction(curves[keys], drop = TRUE))
   values <- lapply(pieces, function(piece) {
     piece <- piece[order(piece$time), , drop = FALSE]
+    if (anyDuplicated(piece$time)) stop("Duplicate times within a survival draw.")
+    if (length(horizon) != 1L || !is.finite(horizon) ||
+        min(piece$time) > horizon || max(piece$time) < horizon) {
+      stop("Survival curves do not cover the requested horizon.")
+    }
     survival <- stats::approx(piece$time, piece[[survival_col]], xout = horizon,
-                              rule = 2, ties = "ordered")$y
-    data.frame(
+                              rule = 1, ties = "ordered")$y
+    out <- data.frame(
       draw = piece[[draw_col]][1L],
       tx = piece[[treatment_col]][1L],
       survival = as.numeric(survival),
       stringsAsFactors = FALSE
     )
+    if ("imputation" %in% names(piece)) out$imputation <- piece$imputation[[1L]]
+    out
   })
   out <- do.call(rbind, values)
   rownames(out) <- NULL
