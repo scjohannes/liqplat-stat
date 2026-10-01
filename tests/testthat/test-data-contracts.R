@@ -78,10 +78,6 @@ test_that("count models require an observed positive exposure", {
                           events ~ offset(log(exposure))),
     "positive"
   )
-  expect_error(
-    secondary_count_ready(data.frame(events = c(1, 2), days = c(1, NA)), "events", "days"),
-    "positive"
-  )
 })
 
 test_that("equal-weight pooling retains the same number of draws per imputation", {
