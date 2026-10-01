@@ -1,0 +1,445 @@
+---
+title: "Best supportive care — unadjusted and adjusted results"
+format: html
+execute:
+  freeze: false
+---
+
+The cause-specific hazard ratio compares the instantaneous rate of BSC among
+patients who are still alive and have not switched to BSC. The composite hazard
+ratio concerns the first occurrence of BSC or death. Neither is a
+subdistribution hazard ratio, and censoring deaths in the cause-specific
+analysis does not estimate the cumulative probability of switching to BSC.
+
+The reported hazard ratios are exponentiated treatment coefficients. Unadjusted
+models contain only randomized group. Adjusted (fixed) models condition on
+ECOG, stage, lung cancer, and mGPS; Adjusted (hierarchical) models replace lung
+cancer with a fitted diagnosis random intercept and condition on that fitted
+effect. The adjusted HRs are conditional estimands, and the three adjustment
+structures therefore target different HRs. Pooling draws across imputations
+does not marginalize an HR over patients. Standardized curves and day-182
+survival differences are marginal over the observed analysis cohort, retaining
+fitted diagnosis effects for the hierarchical models.
+
+```{r}
+#| label: summarize-bsc
+#| include: false
+library(tidyverse)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "survival-helpers.R"))
+
+config <- read_analysis_config()
+artifact_dir <- here::here("artifacts", "secondary", "bsc")
+hierarchical_artifact_dir <- here::here(
+  "artifacts", "secondary", "bsc-diagnosis"
+)
+model_dir <- file.path(artifact_dir, "models")
+result_dir <- here::here("results", "secondary", "bsc")
+figure_dir <- file.path(artifact_dir, "figures")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+prepared <- arrow::read_parquet(file.path(artifact_dir, "prepared.parquet"))
+max_follow_up <- max(prepared$time_to_bsc_days)
+post_draws <- as.integer(config$imputation$supporting$post_estimation_draws)
+adjustment_labels <- c(
+  unadjusted = "Unadjusted",
+  fixed = "Adjusted (fixed)",
+  hierarchical = "Adjusted (hierarchical)"
+)
+endpoint_labels <- c(
+  cause_specific = "Cause-specific BSC",
+  composite = "BSC or death"
+)
+
+fits <- list()
+for (endpoint_name in names(endpoint_labels)) {
+  for (adjustment in names(adjustment_labels)) {
+    indices <- if (adjustment == "unadjusted") 0L else config$imputation$supporting$indices
+    for (index in indices) {
+      model_path <- if (adjustment == "hierarchical") {
+        file.path(
+          hierarchical_artifact_dir,
+          sprintf("%s-%02d.rds", endpoint_name, index)
+        )
+      } else if (adjustment == "unadjusted") {
+        file.path(model_dir, paste0("unadjusted-", endpoint_name, ".rds"))
+      } else {
+        file.path(
+          model_dir, sprintf("adjusted-%s-%02d.rds", endpoint_name, index)
+        )
+      }
+      model <- readRDS(model_path)
+      fits[[paste(endpoint_name, adjustment, index, sep = "-")]] <- list(
+        model = model,
+        data = model$data,
+        endpoint = endpoint_name,
+        adjustment = adjustment,
+        imputation = index
+      )
+    }
+  }
+}
+
+diagnostics <- purrr::map_dfr(fits, function(fit) {
+  parameters <- posterior::summarise_draws(posterior::as_draws_array(fit$model))
+  sampler <- rstan::get_sampler_params(fit$model$stanfit, inc_warmup = FALSE)
+  bfmi <- vapply(sampler, function(x) {
+    mean(diff(x[, "energy__"])^2) / var(x[, "energy__"])
+  }, numeric(1))
+  tibble(
+    endpoint = fit$endpoint,
+    adjustment = unname(adjustment_labels[fit$adjustment]),
+    imputation = fit$imputation,
+    max_rhat = max(parameters$rhat, na.rm = TRUE),
+    min_ess_bulk = min(parameters$ess_bulk, na.rm = TRUE),
+    min_ess_tail = min(parameters$ess_tail, na.rm = TRUE),
+    divergences = sum(vapply(
+      sampler, function(x) sum(x[, "divergent__"]), numeric(1)
+    )),
+    treedepth_hits = sum(vapply(
+      sampler, function(x) sum(x[, "treedepth__"] >= 10), numeric(1)
+    )),
+    min_bfmi = min(bfmi)
+  )
+}) |>
+  mutate(
+    diagnostics_passed = max_rhat <= config$diagnostics$max_rhat &
+      min_ess_bulk >= config$diagnostics$min_ess_bulk &
+      min_ess_tail >= config$diagnostics$min_ess_tail &
+      divergences <= config$diagnostics$max_divergent_transitions &
+      treedepth_hits <= config$diagnostics$max_treedepth_exceeded &
+      min_bfmi >= config$diagnostics$min_bfmi
+  )
+stopifnot(
+  nrow(diagnostics) == 22L,
+  all(diagnostics$diagnostics_passed)
+)
+
+hr_draws <- purrr::map_dfr(fits, function(fit) {
+  log_hr <- as.numeric(as.matrix(fit$model, pars = "tx"))
+  if (fit$imputation > 0L) {
+    seed <- if (fit$adjustment == "fixed") {
+      analysis_seed(config, "supporting", fit$imputation, offset = 2000L)
+    } else {
+      3000L + fit$imputation
+    }
+    set.seed(seed)
+    log_hr <- sample(log_hr, post_draws)
+  }
+  if (fit$adjustment == "hierarchical") {
+    stopifnot(
+      identical(fit$model$cnms$diagnosis, "(Intercept)"),
+      length(grep("^Sigma", colnames(as.matrix(fit$model)))) == 1L
+    )
+  }
+  tibble(
+    endpoint = fit$endpoint,
+    adjustment = unname(adjustment_labels[fit$adjustment]),
+    imputation = fit$imputation,
+    draw = seq_along(log_hr),
+    log_hazard_ratio = log_hr,
+    hazard_ratio = exp(log_hr)
+  )
+})
+hr_summary <- hr_draws |>
+  summarise(
+    median = median(hazard_ratio),
+    lower_95 = quantile(hazard_ratio, 0.025),
+    upper_95 = quantile(hazard_ratio, 0.975),
+    probability_hr_below_one = mean(hazard_ratio < 1),
+    imputations = sum(unique(imputation) > 0),
+    posterior_draws = n(),
+    .by = c(endpoint, adjustment)
+  ) |>
+  left_join(
+    diagnostics |>
+      summarise(
+        diagnostics_passed = all(diagnostics_passed),
+        .by = c(endpoint, adjustment)
+      ),
+    by = c("endpoint", "adjustment")
+  )
+stopifnot(
+  nrow(hr_summary) == 6L,
+  all(count(hr_draws, endpoint, adjustment, imputation)$n ==
+        ifelse(count(hr_draws, endpoint, adjustment, imputation)$imputation == 0L,
+               4000L, post_draws))
+)
+
+curves <- purrr::map_dfr(fits, function(fit) {
+  posterior_standardized_survival_draws(
+    fit$model, fit$data, horizon = max_follow_up, n_points = 200L,
+    n_draws = post_draws, seed = 3000L + fit$imputation
+  ) |>
+    mutate(
+      endpoint = fit$endpoint,
+      adjustment = unname(adjustment_labels[fit$adjustment]),
+      imputation = fit$imputation
+    )
+})
+stopifnot(
+  min(curves$time) == 0,
+  max(curves$time) == max_follow_up,
+  all(is.finite(curves$survival)),
+  all(dplyr::between(curves$survival, 0, 1))
+)
+
+checks <- purrr::map_dfr(fits, function(fit) {
+  newdata <- fit$data |> mutate(tx = 1)
+  individual <- posterior_survfit_compatible(
+    fit$model, newdata = newdata, times = 182, extrapolate = FALSE,
+    standardise = FALSE, return_matrix = TRUE, draws = 100L,
+    seed = 3001L + fit$imputation
+  )[[1]]
+  standardized <- posterior_survfit_compatible(
+    fit$model, newdata = newdata, times = 182, extrapolate = FALSE,
+    standardise = TRUE, return_matrix = TRUE, draws = 100L,
+    seed = 3001L + fit$imputation
+  )[[1]]
+  error <- max(abs(rowMeans(individual) - as.numeric(standardized)))
+  diagnosis_range <- NA_real_
+  if (fit$adjustment == "hierarchical") {
+    contrast_data <- newdata[rep(1L, nlevels(newdata$diagnosis)), ]
+    contrast_data$diagnosis <- factor(
+      levels(newdata$diagnosis), levels = levels(newdata$diagnosis)
+    )
+    predictions <- posterior_survfit_compatible(
+      fit$model, newdata = contrast_data, times = 182, extrapolate = FALSE,
+      standardise = FALSE, return_matrix = TRUE, draws = 100L,
+      seed = 3001L + fit$imputation
+    )[[1]]
+    diagnosis_range <- max(apply(predictions, 1, function(x) diff(range(x))))
+    stopifnot(diagnosis_range > 1e-8)
+  }
+  stopifnot(error < 1e-10)
+  tibble(
+    endpoint = fit$endpoint,
+    adjustment = unname(adjustment_labels[fit$adjustment]),
+    imputation = fit$imputation,
+    maximum_averaging_error = error,
+    maximum_diagnosis_contrast = diagnosis_range
+  )
+})
+
+landmark_draws <- purrr::map_dfr(fits, function(fit) {
+  predictions <- lapply(0:1, function(treatment) {
+    newdata <- fit$data |> mutate(tx = treatment)
+    as.numeric(posterior_survfit_compatible(
+      fit$model, newdata = newdata, times = 182, extrapolate = FALSE,
+      standardise = TRUE, return_matrix = TRUE, draws = post_draws,
+      seed = 3000L + fit$imputation
+    )[[1]])
+  })
+  contrast <- predictions[[2]] - predictions[[1]]
+  stopifnot(length(contrast) == post_draws, sd(contrast) > 0)
+  tibble(
+    endpoint = fit$endpoint,
+    adjustment = unname(adjustment_labels[fit$adjustment]),
+    imputation = fit$imputation,
+    draw = seq_len(post_draws),
+    control = predictions[[1]],
+    intervention = predictions[[2]],
+    contrast = contrast
+  )
+})
+stopifnot(
+  nrow(landmark_draws) == 22L * post_draws,
+  all(count(landmark_draws, endpoint, adjustment, imputation)$n == post_draws)
+)
+landmarks <- landmark_draws |>
+  summarise(
+    control = median(control),
+    intervention = median(intervention),
+    difference = median(contrast),
+    lower_95 = quantile(contrast, 0.025),
+    upper_95 = quantile(contrast, 0.975),
+    probability_difference_positive = mean(contrast > 0),
+    .by = c(endpoint, adjustment)
+  )
+
+curve_summary <- curves |>
+  summarise(
+    median = median(survival),
+    lower_95 = quantile(survival, 0.025),
+    upper_95 = quantile(survival, 0.975),
+    .by = c(endpoint, adjustment, tx, time)
+  )
+arrow::write_parquet(hr_draws, file.path(result_dir, "hazard-ratio-draws.parquet"))
+arrow::write_parquet(hr_summary, file.path(result_dir, "summary.parquet"))
+arrow::write_parquet(landmark_draws, file.path(result_dir, "day-182-draws.parquet"))
+arrow::write_parquet(landmarks, file.path(result_dir, "day-182-summary.parquet"))
+arrow::write_parquet(checks, file.path(result_dir, "prediction-checks.parquet"))
+arrow::write_parquet(diagnostics, file.path(result_dir, "diagnostics.parquet"))
+arrow::write_parquet(
+  curves, file.path(artifact_dir, "standardized-survival-draws.parquet")
+)
+```
+
+```{r}
+#| label: tbl-bsc-hazard-ratios
+#| tbl-cap: "Intervention-versus-control hazard ratios for BSC and BSC-or-death"
+#| echo: false
+hr_summary |>
+  mutate(
+    Endpoint = unname(endpoint_labels[endpoint]),
+    Adjustment = adjustment
+  ) |>
+  select(Endpoint, Adjustment, median, lower_95, upper_95,
+         probability_hr_below_one) |>
+  knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: fig-bsc-hazard-ratios
+#| fig-cap: "Unadjusted, Adjusted (fixed), and Adjusted (hierarchical) BSC hazard ratios with 95% credible intervals"
+#| fig-alt: "Treatment hazard ratios for cause-specific BSC and BSC or death, comparing unadjusted, fixed-covariate, and diagnosis-random-intercept models."
+#| fig-width: 9
+#| fig-height: 5
+#| echo: false
+hr_plot <- hr_summary |>
+  mutate(
+    endpoint = factor(unname(endpoint_labels[endpoint]),
+                      levels = unname(endpoint_labels)),
+    adjustment = factor(adjustment, levels = unname(adjustment_labels))
+  ) |>
+  ggplot(aes(x = median, y = adjustment, xmin = lower_95, xmax = upper_95)) +
+  geom_pointrange(orientation = "y") +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+  facet_wrap(~ endpoint) +
+  scale_x_log10() +
+  labs(x = "Hazard ratio, intervention versus control", y = NULL) +
+  theme_bw()
+ggsave(file.path(figure_dir, "hazard-ratios.png"), hr_plot,
+       width = 9, height = 5, dpi = 150)
+hr_plot
+```
+
+The standardized cause-specific curve is **net survival** for the BSC hazard;
+it is not the probability of remaining alive and BSC-free when death competes,
+and it is not a cumulative-incidence curve. The standardized composite curve
+estimates the probability of remaining alive and BSC-free. The same distinction
+applies to the day-182 survival probabilities and their intervention-minus-
+control contrasts below.
+
+```{r}
+#| label: tbl-bsc-day-182
+#| tbl-cap: "Day-182 standardized survival and intervention-minus-control difference"
+#| echo: false
+landmarks |>
+  mutate(
+    Outcome = unname(endpoint_labels[endpoint]),
+    Adjustment = adjustment
+  ) |>
+  select(Outcome, Adjustment, control, intervention, difference, lower_95,
+         upper_95, probability_difference_positive) |>
+  knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: fig-bsc-standardized-survival
+#| fig-cap: "Standardized BSC survival by endpoint, adjustment, and randomized group"
+#| fig-alt: "Standardized cause-specific BSC net survival and BSC-or-death survival curves for control and intervention under unadjusted, fixed-covariate, and diagnosis-random-intercept adjustment."
+#| fig-width: 12
+#| fig-height: 7
+#| echo: false
+plot_data <- curve_summary |>
+  mutate(
+    endpoint = factor(unname(endpoint_labels[endpoint]),
+                      levels = unname(endpoint_labels)),
+    adjustment = factor(adjustment, levels = unname(adjustment_labels)),
+    tx = factor(tx, levels = 0:1, labels = c("Control", "Intervention"))
+  )
+survival_plot <- ggplot(
+  plot_data, aes(time, median, colour = tx, fill = tx)
+) +
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), alpha = 0.15, colour = NA) +
+  geom_line() +
+  facet_grid(endpoint ~ adjustment) +
+  scale_x_continuous(
+    breaks = seq(0, max_follow_up, by = 100)
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Days from randomization", y = "Standardized survival",
+       colour = NULL, fill = NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave(file.path(figure_dir, "standardized-survival.png"), survival_plot,
+       width = 12, height = 7, dpi = 150)
+survival_plot
+```
+
+Observed curves are shown separately from the model-derived standardized
+curves. The composite curve estimates the probability of remaining alive and
+BSC-free. The cause-specific curve is the Nelson–Aalen cumulative hazard for
+BSC with death censored; it is not a cumulative-incidence curve.
+
+```{r}
+#| label: fig-bsc-composite-km
+#| fig-cap: "Unadjusted Kaplan-Meier probability of remaining alive and BSC-free"
+#| fig-alt: "Kaplan-Meier curves for the randomized groups from randomization until BSC or death, with censor marks and numbers at risk."
+#| fig-width: 8
+#| fig-height: 6
+#| echo: false
+observed <- prepared |>
+  mutate(tx_label = factor(tx, levels = 0:1, labels = c("Control", "Intervention")))
+composite_fit <- ggsurvfit::survfit2(
+  survival::Surv(time_to_bsc_days, event_bsc_or_death) ~ tx_label,
+  data = observed
+)
+composite_plot <- ggsurvfit::ggsurvfit(composite_fit) +
+  ggsurvfit::add_confidence_interval() +
+  ggsurvfit::add_censor_mark() +
+  scale_x_continuous(breaks = seq(0, max_follow_up, by = 100)) +
+  ggsurvfit::add_risktable(
+    times = seq(0, max_follow_up, by = 100),
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  ) +
+  labs(x = "Days since randomization", y = "Alive and BSC-free probability")
+ggsave(
+  file.path(figure_dir, "composite-kaplan-meier.png"),
+  ggsurvfit::ggsurvfit_build(composite_plot), width = 8, height = 6, dpi = 150
+)
+composite_plot
+```
+
+```{r}
+#| label: fig-bsc-cumulative-hazard
+#| fig-cap: "Unadjusted cumulative cause-specific hazard of BSC, censoring death before BSC"
+#| fig-alt: "Nelson–Aalen cumulative BSC hazard curves by randomized group; death before BSC is treated as censoring."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+cause_fit <- survival::survfit(
+  survival::Surv(time_to_bsc_days, event_bsc) ~ tx_label, data = observed
+)
+hazard_data <- tibble(
+  time = cause_fit$time,
+  cumulative_hazard = cause_fit$cumhaz,
+  group = sub(
+    "tx_label=", "", rep(names(cause_fit$strata), cause_fit$strata), fixed = TRUE
+  )
+) |>
+  bind_rows(tibble(
+    time = 0, cumulative_hazard = 0, group = levels(observed$tx_label)
+  )) |>
+  arrange(group, time)
+hazard_plot <- ggplot(hazard_data, aes(time, cumulative_hazard, colour = group)) +
+  geom_step() +
+  labs(x = "Days since randomization", y = "Cumulative cause-specific BSC hazard",
+       colour = NULL) +
+  theme_bw()
+ggsave(file.path(figure_dir, "cause-specific-hazard.png"), hazard_plot,
+       width = 8, height = 5, dpi = 150)
+hazard_plot
+```
+
+```{r}
+#| label: tbl-bsc-diagnostics
+#| tbl-cap: "Posterior diagnostics and prediction checks for all BSC models"
+#| echo: false
+knitr::kable(diagnostics, digits = 3)
+knitr::kable(checks, digits = 10)
+```
