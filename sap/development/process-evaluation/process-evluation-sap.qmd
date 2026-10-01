@@ -116,7 +116,7 @@ fit_eligible <- brm(
 pred_eligible <- avg_predictions(fit_eligible)
 
 pred_eligible |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) +
   stat_halfeye() +
   labs(
@@ -153,7 +153,7 @@ fit_offered <- brm(
 )
 
 avg_predictions(fit_offered) |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) +
   stat_halfeye() +
   labs(
@@ -190,7 +190,7 @@ fit_accepted <- brm(
 )
 
 avg_predictions(fit_accepted) |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) +
   stat_halfeye() +
   labs(
@@ -303,18 +303,18 @@ fit_chip <- brm(
 
 # Plotting the posteriors
 p1 <- avg_predictions(fit_ctdna_error, re_formula = NULL) |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = 1 - draw)) + stat_halfeye() + labs(title = "Proportion without Error", x = "Probability")
 
 p2 <- avg_predictions(fit_ctdna_detected) |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) + stat_halfeye() + labs(title = "Proportion with ctDNA Detected at Baseline", x = "Probability")
 
 # This is what we observed in our dataset on average (averaged across patients)
 p3 <- avg_predictions(
   fit_chip,
   re_formula = NULL) |> # NA ignores random effects, NULL marginalizes over them
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) + stat_halfeye() + labs(title = "Estimated (marginal) Probability of a found Variant to be CHIP", x = "Probability")
 
 # we marginalize over the covariates to look just at the effect of age, alls things equal
@@ -350,7 +350,7 @@ variant_specific <- avg_predictions(
 )
 
 p5 <- variant_specific |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw, y = gene_id)) +
   ggdist::stat_halfeye() +
   labs(
@@ -531,7 +531,7 @@ comp_targeted <- avg_comparisons(
 
 # Plot the posterior of the risk difference
 comp_targeted |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) +
   stat_halfeye() +
   geom_vline(xintercept = 0, linetype = "dashed") +
@@ -567,7 +567,7 @@ fit_blood <- brm(
 comp_blood_rates <- avg_comparisons(fit_blood, variable = "grp", type = "response")
 
 comp_blood_rates |>
-  posterior_draws() |>
+  marginaleffects::get_draws() |>
   ggplot(aes(x = draw)) +
   stat_halfeye() +
   labs(
