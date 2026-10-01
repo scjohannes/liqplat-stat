@@ -1,80 +1,185 @@
 ---
-title: "Fixed 26-week death — computationally reduced supporting/sensitivity analysis (5 imputations)"
+title: "Fixed 26-week death — supporting analysis (5 imputations)"
 format: html
 execute:
   freeze: false
 ---
 
-This computationally reduced supporting/sensitivity analysis (5 imputations)
-fits an unadjusted binary death model at day 182 using fixed imputations 1–5.
-Two hundred posterior draws per imputation are retained for the difference in
-death risk.
+This computationally reduced supporting analysis creates five independent
+completions of 182-day vital status and fits the unadjusted binary death model
+in each completed dataset. For participants censored before day 182, status is
+drawn conditionally from the dedicated vital-status survival model fitted for
+the QoL analysis.
 
 ```{r}
-#| label: setup
+#| label: impute-and-fit-fixed-death
 #| include: false
+
 source(here::here("R", "analysis-config.R"))
-source(here::here("R", "paths-artifacts.R"))
-source(here::here("R", "checkpoints.R"))
-source(here::here("analysis", "module-runtime.R"))
-runtime <- module_runtime()
-config <- runtime$config
-indices <- module_exact_indices(config, supporting = TRUE)
-if (!identical(indices, 1:5)) stop("Supporting fixed-death analysis requires exactly imputations 1:5.")
-data_dir <- project_path("artifacts", "primary", "overall-survival", "imputations")
-output_dir <- ensure_directory(project_path("artifacts", "supporting", "os-fixed-26-week-death"))
-code_paths <- module_code_paths(
-  here::here("R", "analysis-config.R"),
-  here::here("R", "checkpoints.R"),
-  here::here("analysis", "module-runtime.R"), knitr::current_input()
-)
-```
+source(here::here("R", "model-helpers.R"))
 
-```{r}
-#| label: fit-fixed-death
-#| include: false
-for (index in indices) {
-  data_path <- file.path(data_dir, sprintf("imputation-%02d.parquet", index))
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+indices <- config$imputation$supporting$indices
+qol_artifact_dir <- here::here(
+  "artifacts", "primary", "quality-of-life"
+)
+prepared_path <- file.path(qol_artifact_dir, "prepared.parquet")
+vital_status_model_path <- file.path(
+  qol_artifact_dir,
+  "vital-status-model.rds"
+)
+output_dir <- here::here(
+  "artifacts", "supporting", "os-fixed-26-week-death"
+)
+result_dir <- here::here(
+  "results", "supporting", "os-fixed-26-week-death"
+)
+imputation_path <- file.path(output_dir, "imputations.rds")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+create_imputations <- force || !file.exists(imputation_path)
+if (create_imputations) {
+  prepared <- arrow::read_parquet(prepared_path) |>
+    as.data.frame()
+  diagnosis_levels <- unique(prepared$diagnosis_group[
+    order(prepared$diagnosis_code)
+  ])
+  prepared$diagnosis_group <- factor(
+    prepared$diagnosis_group,
+    levels = diagnosis_levels
+  )
+  prepared$gender <- factor(prepared$gender)
+  prepared$age_scaled <- scale(prepared$age)
+  vital_status_model <- readRDS(vital_status_model_path)
+
+  unresolved <- prepared$event_death == 0L &
+    prepared$survival_time_days < config$analysis$horizon_days
+  completed_datasets <- vector("list", length(indices))
+
+  for (position in seq_along(indices)) {
+    index <- indices[[position]]
+    death_182 <- prepared$event_death
+    conditional_survival <- rep(NA_real_, nrow(prepared))
+
+    if (any(unresolved)) {
+      predicted_survival <- rstanarm::posterior_survfit(
+        vital_status_model,
+        newdata = prepared[unresolved, ],
+        type = "surv",
+        times = config$analysis$horizon_days,
+        condition = TRUE,
+        last_time = "survival_time_days",
+        standardise = FALSE,
+        extrapolate = FALSE,
+        draws = 1L,
+        seed = analysis_seed(config, "supporting", index, offset = 2600L),
+        return_matrix = TRUE
+      )
+      conditional_survival[unresolved] <- as.numeric(
+        predicted_survival[[1L]][1L, ]
+      )
+      set.seed(analysis_seed(config, "supporting", index, offset = 2700L))
+      death_182[unresolved] <- stats::rbinom(
+        n = sum(unresolved),
+        size = 1L,
+        prob = 1 - conditional_survival[unresolved]
+      )
+    }
+
+    completed_datasets[[position]] <- data.frame(
+      id = prepared$id,
+      tx = prepared$tx,
+      death_182 = death_182,
+      conditional_survival = conditional_survival,
+      imputation = index,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  saveRDS(completed_datasets, imputation_path, compress = "xz")
+} else {
+  completed_datasets <- readRDS(imputation_path)
+}
+
+for (position in seq_along(indices)) {
+  index <- indices[[position]]
   model_path <- file.path(output_dir, sprintf("model-%02d.rds", index))
   draws_path <- file.path(output_dir, sprintf("draws-%02d.parquet", index))
-  if (!file.exists(data_path)) stop("Missing fixed OS imputation ", index, ".")
-  module_branch(
-    runtime = runtime,
-    stage_id = sprintf("supporting-os-fixed-death-%02d", index),
-    input_paths = data_path,
-    output_paths = c(model_path, draws_path),
-    code_paths = code_paths,
-    metadata = list(label = "computationally reduced supporting/sensitivity analysis (5 imputations)",
-                   imputation = index, imputations = 1:5, posterior_draws = 200L,
-                   horizon_days = 182L),
-    worker = function() {
-      data <- module_read_parquet(data_path)
-      model <- rstanarm::stan_glm(
-        event_death ~ tx,
-        data = data,
-        family = stats::binomial(),
-        chains = 4,
-        iter = 1000,
-        warmup = 500,
-        cores = 4,
-        seed = analysis_seed(config, "supporting", index)
-      )
-      posterior <- as.matrix(model)
-      if (nrow(posterior) < 200L) stop("Fixed-death posterior has fewer than 200 draws.")
-      posterior <- posterior[seq_len(200L), , drop = FALSE]
-      intercept <- posterior[, "(Intercept)"]
-      treatment <- posterior[, "tx"]
-      draws <- data.frame(
-        draw = seq_len(200L),
-        death_risk_control = stats::plogis(intercept),
-        death_risk_sat = stats::plogis(intercept + treatment),
-        death_risk_difference = stats::plogis(intercept + treatment) - stats::plogis(intercept),
-        imputation = index,
-        stringsAsFactors = FALSE
-      )
-      module_save_rds(model, model_path)
-      module_save_parquet(draws, draws_path)
-    }
+  draws_complete <- file.exists(draws_path) &&
+    nrow(arrow::read_parquet(draws_path)) ==
+      config$imputation$supporting$post_estimation_draws
+  if (
+    !create_imputations && !force &&
+      file.exists(model_path) && draws_complete
+  ) {
+    next
+  }
+
+  data <- completed_datasets[[position]]
+  if (!create_imputations && !force && file.exists(model_path)) {
+    model <- readRDS(model_path)
+  } else {
+    model <- rstanarm::stan_glm(
+      death_182 ~ tx,
+      data = data,
+      family = binomial(),
+      chains = 4L,
+      iter = 1000L,
+      warmup = 500L,
+      cores = 4L,
+      seed = analysis_seed(config, "supporting", index, offset = 2800L)
+    )
+    saveRDS(model, model_path, compress = "xz")
+  }
+
+  posterior <- as.matrix(model)
+  set.seed(analysis_seed(config, "supporting", index, offset = 2900L))
+  posterior <- posterior[
+    sample.int(
+      nrow(posterior),
+      config$imputation$supporting$post_estimation_draws
+    ),
+    ,
+    drop = FALSE
+  ]
+  intercept <- posterior[, "(Intercept)"]
+  treatment <- posterior[, "tx"]
+  draws <- data.frame(
+    draw = seq_len(config$imputation$supporting$post_estimation_draws),
+    death_risk_control = stats::plogis(intercept),
+    death_risk_intervention = stats::plogis(intercept + treatment),
+    death_risk_difference = stats::plogis(intercept + treatment) -
+      stats::plogis(intercept),
+    imputation = index,
+    stringsAsFactors = FALSE
   )
+
+  arrow::write_parquet(draws, draws_path, compression = "zstd")
 }
+
+draws <- do.call(rbind, lapply(indices, function(index) {
+  arrow::read_parquet(file.path(
+    output_dir,
+    sprintf("draws-%02d.parquet", index)
+  )) |>
+    as.data.frame()
+}))
+summary <- summarize_posterior_draws(draws$death_risk_difference)
+summary$imputations <- length(indices)
+summary$posterior_draws_per_imputation <-
+  config$imputation$supporting$post_estimation_draws
+summary$computationally_reduced <- TRUE
+
+arrow::write_parquet(
+  draws,
+  file.path(result_dir, "draws.parquet"),
+  compression = "zstd"
+)
+arrow::write_parquet(
+  as.data.frame(summary),
+  file.path(result_dir, "summary.parquet"),
+  compression = "zstd"
+)
 ```
