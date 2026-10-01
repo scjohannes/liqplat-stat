@@ -87,6 +87,30 @@ is_recorded_actionability_evidence <- function(x) {
 is_sensitivity <- function(x) is_recorded_actionability_evidence(x)
 is_resistance <- function(x) is_recorded_actionability_evidence(x)
 
+classify_chip_status <- function(data, type_col = "alteration_type",
+                                 tissue_col = "found_in_solid_biopsy",
+                                 buffy_col = "found_in_buffy_coat") {
+  required <- c(type_col, tissue_col, buffy_col)
+  missing <- setdiff(required, names(data))
+  if (length(missing) > 0L) {
+    stop("CHIP classification columns are missing: ", paste(missing, collapse = ", "))
+  }
+  type <- tolower(trimws(as.character(data[[type_col]])))
+  type[type %in% c("snv", "snp", "indel", "small_variant")] <- "mutation"
+  tissue <- validate_binary(data[[tissue_col]], tissue_col)
+  buffy <- validate_binary(data[[buffy_col]], buffy_col)
+  status <- rep("unresolved", nrow(data))
+  status[which(!is.na(type) & type != "mutation")] <- "not_applicable"
+  mutation <- !is.na(type) & type == "mutation"
+  status[which(mutation & tissue == 1 & buffy == 1)] <- "possible_germline"
+  status[which(mutation & tissue == 0 & buffy == 1)] <- "definite_chip"
+  status[which(mutation & !is.na(buffy) & buffy == 0)] <- "definite_non_chip"
+  status[which(mutation & tissue == 1 & is.na(buffy))] <-
+    "tissue_positive_buffy_missing"
+  status[which(mutation & tissue == 0 & is.na(buffy))] <- "ctdna_only_unknown"
+  status
+}
+
 valid_patient_denominator <- function(data, id_col = "id", valid_col = NULL) {
   if (!id_col %in% names(data)) stop("Patient identifier is missing: ", id_col)
   valid <- if (is.null(valid_col)) rep(TRUE, nrow(data)) else {
@@ -286,41 +310,6 @@ summarize_technical_error <- function(data, error_col = "ctdna_error_derived",
     error_rate = if (length(values) == 0L) NA_real_ else mean(values == 1),
     stringsAsFactors = FALSE
   )
-}
-
-# Earliest valid pre-treatment sample. The old randomization-day window is
-# intentionally not accepted: it can select post-treatment material.
-select_baseline_samples <- function(data, id_col = "id", sample_date_col = "sample_date",
-                                    treatment_date_col = "treatment_start_date",
-                                    valid_col = "valid_ctdna_result",
-                                    origin_date_col = NULL, window_days = NULL) {
-  if (!is.null(origin_date_col) || !is.null(window_days)) {
-    warning("`origin_date_col` and `window_days` are ignored; baseline is defined before treatment.",
-            call. = FALSE)
-  }
-  required <- c(id_col, sample_date_col, treatment_date_col, valid_col)
-  missing <- setdiff(required, names(data))
-  if (length(missing) > 0L) {
-    stop("Baseline-sample columns are missing: ", paste(missing, collapse = ", "))
-  }
-  sample_date <- parse_analysis_date(data[[sample_date_col]], sample_date_col)
-  treatment_date <- parse_analysis_date(data[[treatment_date_col]], treatment_date_col)
-  valid <- !is.na(data[[id_col]]) & !is.na(sample_date) & !is.na(treatment_date) &
-    sample_date < treatment_date &
-    !is.na(data[[valid_col]]) & as.logical(data[[valid_col]])
-  out <- data[valid, , drop = FALSE]
-  if (nrow(out) == 0L) return(out)
-  out$.sample_date_order <- sample_date[valid]
-  tie_columns <- intersect(c("sample_id", "alteration_id"), names(out))
-  tie_values <- if (length(tie_columns) == 0L) rep("", nrow(out)) else
-    do.call(paste, c(out[tie_columns], sep = "\r"))
-  order_idx <- order(out[[id_col]], out$.sample_date_order, tie_values,
-                     na.last = TRUE, method = "radix")
-  out <- out[order_idx, , drop = FALSE]
-  out <- out[!duplicated(out[[id_col]]), , drop = FALSE]
-  out$.sample_date_order <- NULL
-  rownames(out) <- NULL
-  out
 }
 
 summarize_baseline_detection <- function(cohort, baseline_samples,
