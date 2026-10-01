@@ -28,7 +28,8 @@ test_that("primary QMDs call reviewed model APIs directly", {
   text <- paste(vapply(qmd_paths, function(path) {
     paste(readLines(path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
   }, character(1)), collapse = "\n")
-  expect_match(text, "markov\\.misc::blrm_markov")
+  expect_match(text, "mostr::blrm_markov")
+  expect_false(grepl("markov.misc::", text, fixed = TRUE))
   expect_match(text, "rstanarm::stan_surv")
   expect_false(grepl("fit_markov_model\\(", text))
   expect_false(grepl("fit_survival_model\\(", text))
