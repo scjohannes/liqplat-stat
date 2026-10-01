@@ -18,3 +18,9 @@ Copy-Item _site/sap/SAP.pdf sap/SAP-v1.1.pdf -Force
 The render writes `_site/sap/SAP.pdf`; after verifying the output, place the
 current document at `sap/SAP-v1.1.pdf`. Historical analysis code is retained under
 `sap/development/` but remains non-evaluated when rendering `sap/SAP.qmd`.
+
+`operating-characteristics.csv` contains the compact, non-confidential values
+published in SAP v1.0 for the OS, QoL, and TAOOH operating-characteristic
+tables. The values were transcribed from the unchanged archived PDF at
+`sap/archive/SAP-v1.0.pdf`; the historical simulation sources remain under
+`sap/development/`.
