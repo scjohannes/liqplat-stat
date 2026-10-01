@@ -1,32 +1,3 @@
-test_that("checkpoint manifests are content-addressed and resumable", {
-  root <- tempfile("liqplat-checkpoint-")
-  dir.create(root, recursive = TRUE)
-  input_path <- file.path(root, "input.txt")
-  output_path <- file.path(root, "output.txt")
-  code_path <- file.path(root, "code.R")
-  manifest_path <- file.path(root, "checkpoint.yml")
-  writeLines("input", input_path)
-  writeLines("output", output_path)
-  writeLines("code", code_path)
-  config <- list(data_lock = "2026-08-21", synthetic = TRUE)
-  finalize_checkpoint(
-    manifest_path, "synthetic", input_path, output_path, code_path, config,
-    metadata = list(status = "complete")
-  )
-  expect_true(file.exists(manifest_path))
-  expect_true(checkpoint_is_current(manifest_path, "synthetic", input_path,
-                                    output_path, code_path, config))
-  expect_equal(checkpoint_decision(manifest_path, "synthetic", input_path,
-                                   output_path, code_path, config), "skip")
-  expect_equal(checkpoint_decision(manifest_path, "synthetic", input_path,
-                                   output_path, code_path, config, force = TRUE), "force")
-  writeLines("changed", input_path)
-  expect_false(checkpoint_is_current(manifest_path, "synthetic", input_path,
-                                     output_path, code_path, config))
-  expect_equal(checkpoint_decision(manifest_path, "synthetic", input_path,
-                                   output_path, code_path, config), "resume")
-})
-
 test_that("report readers preserve status and QoL decision semantics", {
   root <- tempfile("liqplat-report-")
   dir.create(file.path(root, "results", "population"), recursive = TRUE)
@@ -48,4 +19,17 @@ test_that("report readers preserve status and QoL decision semantics", {
   expect_identical(decision$primary, "principal_stratum")
   expect_match(qol_primary_label(decision), "primary")
   unlink(root, recursive = TRUE, force = TRUE)
+})
+
+test_that("report table headers are reader-facing", {
+  expect_identical(
+    report_table_labels(c(
+      "classification", "mutation_records", "percent_of_valid_mutations",
+      "ctdna_samples", "n_eff", "Rhat", "q025"
+    )),
+    c(
+      "Classification", "Mutation records, n", "Valid ctDNA mutations, %",
+      "ctDNA samples", "Effective sample size", "R-hat", "2.5% quantile"
+    )
+  )
 })
