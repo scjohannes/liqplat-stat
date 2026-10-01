@@ -8,14 +8,9 @@
 .Renviron
 .vscode/settings.json
 
-# Private, raw, and derived data. Public schemas and compact public artifacts
-# remain trackable; do not add a blanket *.parquet or *.rds rule.
-/data/private/*
-!/data/private/.gitkeep
-/data/raw/
-/data/derived/
-/data/analysis/
-/data/cache/
+# Data, schemas, and data documentation are local-only; never commit anything
+# under data/.
+/data/
 *.duckdb
 
 # Pipeline artifacts and model outputs
