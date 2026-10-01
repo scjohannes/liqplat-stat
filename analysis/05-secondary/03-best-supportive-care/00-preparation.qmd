@@ -1,0 +1,97 @@
+---
+title: "Best supportive care — endpoint preparation"
+format: html
+execute:
+  freeze: false
+---
+
+Time starts at randomization. The main supplementary BSC
+analysis estimates the **cause-specific hazard of switching to BSC**: death
+before BSC ends follow-up and is coded as censoring. The composite analysis
+counts the first of BSC or death as an event. BSC and death on the same day
+count as BSC in the cause-specific analysis and as one composite event.
+
+Both unadjusted Bayesian proportional-hazards models contain only randomized
+group (`tx`). They use the OS five-df M-spline baseline and treatment prior.
+Missing adjustment covariates do not remove participants from these models.
+
+The data cutoff is **2026-09-05**, without a 182-day cap. Exported dates are
+shifted for privacy. The private export's `potential_follow_up_days` encodes
+the cutoff (or earlier death) on this shifted scale; unrestricted observed
+follow-up supplies earlier censoring. The primary `follow_up_end_date` is
+already capped at 182 days and is not used here. A recorded BSC date can
+extend an earlier last-known-alive record, but never past the exported cutoff
+or death. Later BSC dates do not count as observed events.
+
+BSC times are the difference between `bsc_date` and `randomization_date`.
+Unrestricted survival time and status supply death or censoring times.
+Treatment-start dates are not needed. Participants with BSC before
+randomization or no positive follow-up remain in the endpoint audit but cannot
+enter these time-to-event models. Event dates and follow-up times are not imputed.
+
+Run this document, then [imputation](01-imputation.qmd),
+[model fitting](02-fitting.qmd), and [results](03-results.qmd).
+
+```{r}
+#| label: prepare-bsc
+#| include: false
+library(tidyverse)
+
+source(here::here("R", "analysis-config.R"))
+source(here::here("R", "data-helpers.R"))
+source(here::here("R", "bsc-helpers.R"))
+
+config <- read_analysis_config()
+artifact_dir <- here::here("artifacts", "secondary", "bsc")
+result_dir <- here::here("results", "secondary", "bsc")
+
+dir.create(artifact_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- arrow::read_parquet(here::here(
+  "analysis", "00-data", "results", "analysis-cohort.parquet"
+))
+endpoint <- derive_bsc_endpoints(cohort, config$analysis$data_lock)
+
+arrow::write_parquet(endpoint, file.path(result_dir, "endpoint.parquet"))
+
+prepared <- endpoint |>
+  filter(bsc_in_analysis) |>
+  select(
+    id, tx, time_to_bsc_days, event_bsc, event_death_before_bsc,
+    event_bsc_or_death, ecog_fstcnt, stage_binary, lung, age, gender,
+    albumin, bilirubin, c_reactive_protein, lactate_dehydrogenase
+  )
+
+if (nrow(prepared) == 0L) stop("No participants have analyzable BSC follow-up.")
+
+arrow::write_parquet(prepared, file.path(artifact_dir, "prepared.parquet"))
+
+endpoint_audit <- endpoint |>
+  count(tx, bsc_exclusion_reason, name = "participants")
+event_counts <- prepared |>
+  summarise(
+    participants = n(), bsc_events = sum(event_bsc),
+    death_before_bsc = sum(event_death_before_bsc),
+    composite_events = sum(event_bsc_or_death),
+    censored_without_either = sum(event_bsc_or_death == 0),
+    .by = tx
+  )
+arrow::write_parquet(endpoint_audit, file.path(result_dir, "endpoint-audit.parquet"))
+arrow::write_parquet(event_counts, file.path(result_dir, "event-counts.parquet"))
+```
+
+```{r}
+#| label: tbl-bsc-endpoint-audit
+#| tbl-cap: "BSC analysis population and exclusions"
+#| echo: false
+knitr::kable(endpoint_audit)
+```
+
+```{r}
+#| label: tbl-bsc-event-counts
+#| tbl-cap: "Observed BSC and competing death events by randomized group"
+#| echo: false
+knitr::kable(event_counts)
+```
+
