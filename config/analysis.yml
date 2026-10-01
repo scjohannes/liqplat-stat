@@ -1,8 +1,8 @@
 # Public, version-controlled analysis constants.
 #
-# The clean production markov.misc release is deliberately not filled in yet.
-# Production preflight must fail until both the exact clean version and commit
-# are recorded after the package has been reviewed and installed.
+# The reviewed mostr commit is deliberately not filled in yet. Production
+# preflight must fail until the exact commit is recorded after the package has
+# been reviewed and installed from it.
 analysis:
   name: LIQPLAT
   config_version: 1
@@ -10,6 +10,11 @@ analysis:
   horizon_days: 182
 
 imputation:
+  # Temporary: use five imputations with 50 MICE iterations in every analysis,
+  # and 1000 posterior draws per imputation for estimands (both
+  # imputation.supporting and markov post_estimation_draws). Set development
+  # to false for the final run; settings below are preserved.
+  development: true
   main:
     m: 50
     maxit: 50
@@ -59,12 +64,13 @@ diagnostics:
   retry_on_failure: true
 
 provenance:
-  markov_misc:
-    package: markov.misc
-    # INVALID PLACEHOLDER: replace only with the reviewed clean release.
-    version: "0.0.0-CLEAN-SHA-REQUIRED"
-    git_sha: "REPLACE_WITH_REVIEWED_CLEAN_40_HEX_SHA"
-    source: "future clean markov.misc checkout"
+  mostr:
+    package: mostr
+    version: "0.1.0"
+    # INVALID PLACEHOLDER: replace with the reviewed commit the installed
+    # package was built from.
+    git_sha: "REPLACE_WITH_REVIEWED_MOSTR_40_HEX_SHA"
+    source: "https://github.com/scjohannes/mostr"
 
 paths:
   private_data: data/private
