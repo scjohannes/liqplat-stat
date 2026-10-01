@@ -6,9 +6,10 @@ execute:
 ---
 
 PFS counts progression or death as one composite endpoint. Adjusted hazard-ratio
-summaries combine 500 posterior draws from each of five imputations with equal
-weight; the unadjusted summary uses all retained draws. Standardized curves
-and day-182 contrasts use 500 draws per fitted model, averaging over patients
+summaries combine `post_estimation_draws` posterior draws from each of five
+imputations with equal weight; the unadjusted summary uses all retained draws.
+Standardized curves and day-182 contrasts use `post_estimation_draws` draws per
+fitted model, averaging over patients
 within each draw. Adjusted (hierarchical) predictions retain the fitted diagnosis
 effects and use their corresponding completed covariates. All intervals are
 95% posterior credible intervals.
@@ -31,6 +32,7 @@ source(here::here("R", "analysis-config.R"))
 source(here::here("R", "survival-helpers.R"))
 
 config <- read_analysis_config()
+n_draws <- as.integer(config$imputation$supporting$post_estimation_draws)
 artifact_dir <- here::here("artifacts", "secondary", "pfs")
 result_dir <- here::here("results", "secondary", "pfs")
 figure_dir <- file.path(artifact_dir, "figures")
@@ -82,7 +84,7 @@ hr_draws <- map_dfr(fits, function(fit) {
 
   if (fit$imputation > 0L) {
     set.seed(2600L + fit$imputation)
-    hr <- sample(hr, 500L)
+    hr <- sample(hr, n_draws)
   }
   if (fit$adjustment == "diagnosis") {
     stopifnot(identical(fit$model$cnms$diagnosis, "(Intercept)"),
@@ -99,7 +101,7 @@ hr_summary <- hr_draws |>
 
 curves <- map_dfr(fits, function(fit) {
   posterior_standardized_survival_draws(fit$model, fit$data, horizon = max_follow_up,
-    n_points = 200L, n_draws = 500L, seed = 2600L + fit$imputation) |>
+    n_points = 200L, n_draws = n_draws, seed = 2600L + fit$imputation) |>
     mutate(adjustment = fit$adjustment, imputation = fit$imputation)
 })
 
@@ -140,16 +142,17 @@ landmark_draws <- map_dfr(fits, function(fit) {
     newdata <- fit$data |> mutate(tx = treatment)
     as.numeric(posterior_survfit_compatible(fit$model, newdata = newdata, times = 182,
       extrapolate = FALSE, standardise = TRUE, return_matrix = TRUE,
-      draws = 500L, seed = 2600L + fit$imputation)[[1]])
+      draws = n_draws, seed = 2600L + fit$imputation)[[1]])
   })
   contrast <- predictions[[2]] - predictions[[1]]
-  stopifnot(length(contrast) == 500L, sd(contrast) > 0)
-  tibble(adjustment = fit$adjustment, imputation = fit$imputation, draw = 1:500,
+  stopifnot(length(contrast) == n_draws, sd(contrast) > 0)
+  tibble(adjustment = fit$adjustment, imputation = fit$imputation, draw = seq_len(n_draws),
          control = predictions[[1]], intervention = predictions[[2]], contrast = contrast)
 })
 
-stopifnot(all((hr_draws |> filter(imputation > 0) |> count(adjustment, imputation))$n == 500L),
-          all(count(landmark_draws, adjustment, imputation)$n == 500L), nrow(landmark_draws) == 5500L)
+stopifnot(all((hr_draws |> filter(imputation > 0) |> count(adjustment, imputation))$n == n_draws),
+          all(count(landmark_draws, adjustment, imputation)$n == n_draws),
+          nrow(landmark_draws) == length(fits) * n_draws)
 
 landmarks <- landmark_draws |>
   summarise(control = median(control), intervention = median(intervention),
