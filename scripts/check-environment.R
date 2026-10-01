@@ -17,7 +17,7 @@ environment_usage <- function() {
   cat(paste(
     "Usage: Rscript scripts/check-environment.R [--strict] [--help]",
     "",
-    "  --strict  Require the reviewed clean markov.misc provenance.",
+    "  --strict  Require the reviewed mostr provenance.",
     "  --help    Show this help.",
     sep = "\n"
   ), "\n")
@@ -31,11 +31,14 @@ check_environment <- function(strict = FALSE) {
   if (!file.exists(config_path)) stop("Missing analysis configuration: ", config_path)
   config <- read_analysis_config(config_path, production = FALSE)
   required <- c("yaml", "here", "digest")
-  optional_analysis <- c("arrow", "mice", "miceadds", "rmsb", "rstanarm", "posterior")
+  optional_analysis <- c(
+    "arrow", "mice", "miceadds", "rmsb", "rstanarm", "posterior",
+    "ggsurvfit", "brms", "marginaleffects"
+  )
   package_status <- stats::setNames(
-    vapply(c(required, optional_analysis, "markov.misc"), requireNamespace,
+    vapply(c(required, optional_analysis, "mostr"), requireNamespace,
            logical(1), quietly = TRUE),
-    c(required, optional_analysis, "markov.misc")
+    c(required, optional_analysis, "mostr")
   )
   quarto <- Sys.which("quarto")
   cat("R:", R.version.string, "\n")
