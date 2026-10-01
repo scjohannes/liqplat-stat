@@ -453,6 +453,8 @@ Using the fitted model we generate posterior draws of the marginalized survival 
 
 Besides the RMST, we will also derive risk differences and risk ratios at 6 months from the same model. These will be calculated for each posterior draw by comparing the marginal survival probabilities at $t=182$.
 
+When reporting a treatment hazard ratio from an adjusted survival model, $\exp(\beta_{tx})$ is conditional on the included baseline covariates and, for a hierarchical model, its diagnosis random intercept. Changing the adjustment structure changes this HR estimand. Hazard ratios are non-collapsible: differences between unadjusted and adjusted HRs need not reflect confounding alone. Pooling posterior draws across imputations does not marginalize the HR over patients. In contrast, averaging patient-specific survival predictions within each draw yields marginal survival curves and marginal RMST or survival-probability contrasts. An HR derived from these marginal curves would generally vary with time. The primary OS estimand remains the marginal 182-day RMST difference.
+
 #### Operating Characteristics
 
 We evaluated the operating characteristics OS endpoint through a simulation study based on historical patient data.
@@ -1143,6 +1145,12 @@ $$
 expressed in days. We will summarize $T_{ij}$ among samples with both valid dates and report the number excluded for missing or invalid dates.
 
 ## Comparative Clinical Outcomes
+
+### Progression-free Survival
+
+Progression-free survival is time from randomization to the first recorded progression or death, treated as one composite endpoint. The analyses use follow-up through the data lock without a 182-day cap. We report unadjusted, fixed-covariate-adjusted, and diagnosis-random-intercept-adjusted proportional-hazards models. Their coefficient-based HRs have different conditioning sets and therefore different estimands, as described in the OS estimand section.
+
+Model-derived marginal PFS curves average patient-specific predictions over the analysis cohort within each posterior draw, retaining fitted diagnosis effects where applicable. Curves extend to maximum observed PFS follow-up; the marginal survival-probability contrast at day 182 remains a separate fixed-time summary.
 
 ### Time to Treatment Switch or Stop
 
