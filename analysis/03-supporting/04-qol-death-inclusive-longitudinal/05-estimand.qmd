@@ -8,8 +8,8 @@ execute:
   freeze: false
 ---
 
-Both treatment paths are predicted for every participant in each of eight
-completed datasets. Posterior state occupancy probability (SOP) draws are
+Both treatment paths are predicted for every participant in each
+completed dataset. Posterior state occupancy probability (SOP) draws are
 pooled with equal weight across imputations. The same draws are reported for
 the original seven QoL states plus death and for the SAP grouping: Good
 (states 1--3), Average (state 4), Bad (states 5--7), and Death (state 8).
@@ -17,8 +17,8 @@ the original seven QoL states plus death and for the SAP grouping: Good
 The estimand is calculated directly from the matched SOP draws. Within each
 posterior draw and treatment path, probabilities for states 1--3 are summed
 over all 26 weeks. The intervention-minus-control difference is then formed
-within that same draw. Positive values favour intervention. Because this is an
-eight-imputation test cycle rather than the final 50-imputation run, outputs are
+within that same draw. Positive values favour intervention. When development
+mode uses fewer imputations than the final 50-imputation run, outputs are
 explicitly flagged as computationally reduced.
 
 ```{r}
@@ -31,7 +31,7 @@ library(tidyverse)
 config <- read_analysis_config()
 # force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
 force <- TRUE
-n_imputations <- 8L
+n_imputations <- as.integer(config$imputation$main$m)
 indices <- seq_len(n_imputations)
 output_dir <- here::here(
   "artifacts", "supporting", "qol-death-inclusive-longitudinal"
@@ -237,7 +237,7 @@ estimand_summary <- comparison_draws |>
     horizon_weeks = 26L,
     imputations = n_distinct(imputation),
     posterior_draws_per_imputation = config$markov$post_estimation_draws,
-    computationally_reduced = TRUE
+    computationally_reduced = isTRUE(config$imputation$development)
   )
 
 outputs <- list(
