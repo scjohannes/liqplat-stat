@@ -1,4 +1,5 @@
 # Readers for compact public analysis artifacts and report resources.
+here::i_am("R/report-reader.R")
 #
 # Reports are read-only consumers.  Missing artifacts are represented by an
 # explicit status and are never converted to zero or to a successful result.
@@ -30,6 +31,97 @@ report_path <- function(..., root = NULL) {
     stop("Report path components must be non-missing scalar strings.")
   }
   file.path(report_project_root(root), do.call(file.path, pieces))
+}
+
+report_table_labels <- function(labels) {
+  replacements <- c(
+    tx = "Randomized group",
+    n = "Patients, n",
+    n_participants = "Participants, n",
+    n_censoring_events = "Censoring events, n",
+    mutation_records = "Mutation records, n",
+    percent_of_valid_mutations = "Valid ctDNA mutations, %",
+    unique_variants = "Unique variants, n",
+    assumption = "ctDNA-only assumption",
+    chip_mutations = "CHIP mutation records, n (%)",
+    assumption_eligible_mutation_records = "Eligible mutation records, n",
+    patients_with_chip_mutation = "Patients with a CHIP mutation, n (%)",
+    valid_ctdna_patients = "Patients with valid ctDNA, n",
+    q025 = "2.5% quantile",
+    q50 = "Median",
+    q975 = "97.5% quantile",
+    `q 2.5` = "2.5% quantile",
+    q97.5 = "97.5% quantile",
+    probability_benefit = "P(benefit)",
+    probability_superiority = "P(superiority)",
+    probability_hr_below_one = "P(HR < 1)",
+    p_value = "p-value",
+    posterior_draws_per_imputation = "Posterior draws per imputation",
+    draws_per_imputation = "Draws per imputation",
+    computationally_reduced = "Reduced posterior draws",
+    horizon_days = "Horizon (days)",
+    horizon_weeks = "Horizon (weeks)",
+    deaths_by_day_182 = "Deaths by day 182",
+    baseline_qol_observed = "Baseline QoL observed",
+    baseline_qol_missing = "Baseline QoL missing",
+    landmark_qol_observed = "Landmark QoL observed",
+    landmark_qol_missing = "Landmark QoL missing",
+    composite_observed = "Composite observed",
+    composite_missing = "Composite missing",
+    progression_first = "Progression before death, n",
+    death_before_progression = "Death before progression, n",
+    pfs_events = "PFS events, n",
+    pfs_exclusion_reason = "PFS exclusion reason",
+    censored = "Censored, n",
+    chisq = "Chi-square statistic",
+    df = "Degrees of freedom",
+    ci_66_low = "66% CrI lower",
+    ci_66_high = "66% CrI upper",
+    ci_95_low = "95% CrI lower",
+    ci_95_high = "95% CrI upper",
+    lower_95 = "95% CI lower",
+    upper_95 = "95% CI upper",
+    conf_low = "95% CI lower",
+    conf_high = "95% CI upper",
+    odds_ratio_low = "Odds ratio lower bound",
+    odds_ratio_high = "Odds ratio upper bound",
+    odds_ratio = "Odds ratio",
+    log_odds_ratio = "Log odds ratio",
+    hazard_ratio = "Hazard ratio",
+    posterior_mean = "Posterior mean",
+    posterior_median = "Posterior median",
+    probability_benefit = "P(benefit)",
+    probability_superiority = "P(superiority)",
+    n_eff = "Effective sample size",
+    Rhat = "R-hat",
+    maxit = "MICE iterations",
+    p = "p-value"
+  )
+  labels <- as.character(labels)
+  vapply(labels, function(label) {
+    if (label %in% names(replacements)) return(unname(replacements[[label]]))
+    if (!grepl("_", label, fixed = TRUE) && !grepl("^[a-z]", label)) {
+      return(label)
+    }
+    label <- gsub("_+", " ", label)
+    label <- tolower(label)
+    label <- paste0(toupper(substr(label, 1L, 1L)), substr(label, 2L, nchar(label)))
+    for (term in c("ctdna", "qol", "taooh", "pfs", "mtb", "os", "id", "elpd")) {
+      label <- gsub(paste0("\\b", term, "\\b"),
+                    switch(term, ctdna = "ctDNA", qol = "QoL", taooh = "TAOOH",
+                           pfs = "PFS", mtb = "MTB", os = "OS", id = "ID",
+                           elpd = "ELPD"),
+                    label, ignore.case = TRUE)
+    }
+    label
+  }, character(1), USE.NAMES = FALSE)
+}
+
+report_kable <- function(x, ..., col.names = NULL) {
+  if (is.null(col.names) && !is.null(colnames(x))) {
+    col.names <- report_table_labels(colnames(x))
+  }
+  knitr::kable(x, ..., col.names = col.names)
 }
 
 read_result_table <- function(path) {
@@ -202,7 +294,6 @@ report_artifact_candidates <- function(section) {
     ),
     qol = c(
       "results/primary/quality-of-life/summary.parquet",
-      "results/primary/quality-of-life/estimand-draws.parquet",
       "results/main/qol/summary.parquet", "results/main/qol/summary.csv",
       "results/qol/summary.parquet", "results/qol/summary.csv"
     ),
@@ -228,7 +319,90 @@ report_artifact_candidates <- function(section) {
 report_table_artifacts <- function(state) {
   artifacts <- state$artifacts %||% character()
   artifacts[file.exists(artifacts) &
+              !grepl("draws", basename(artifacts), ignore.case = TRUE) &
               tolower(tools::file_ext(artifacts)) %in% c("parquet", "rds", "csv", "tsv")]
+}
+
+# Keep book images inside the book root for both HTML and Typst.
+report_include_graphics <- function(path, ...) {
+  stopifnot(length(path) > 0L, all(file.exists(path)))
+  directory <- here::here("reports", "_figures")
+  dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+  relative <- substring(normalizePath(path, winslash = "/"),
+                        nchar(normalizePath(here::here(), winslash = "/")) + 2L)
+  destination <- file.path(directory, gsub("[/\\\\:]", "-", relative))
+  same <- normalizePath(path, winslash = "/", mustWork = TRUE) ==
+    normalizePath(destination, winslash = "/", mustWork = FALSE)
+  if (any(!same)) stopifnot(all(file.copy(path[!same], destination[!same], overwrite = TRUE)))
+  knitr::include_graphics(destination, ...)
+}
+
+report_run_details <- function(analysis, imputation_source) {
+  models <- read.csv(here::here("reports", "_data", "model-runs.csv"))
+  imputations <- read.csv(here::here("reports", "_data", "imputation-runs.csv"))
+  models <- models[models$analysis == analysis, ]
+  imputation <- imputations[imputations$source == imputation_source, ]
+  stopifnot(nrow(imputation) == 1L)
+  values <- function(x) paste(sort(unique(x)), collapse = ", ")
+  settings <- data.frame(
+    `Imputations created` = imputation$completed,
+    `Imputations fitted` = nrow(models),
+    `MICE maxit` = imputation$maxit,
+    `Chains per fit` = values(models$chains),
+    `Iterations per chain` = values(models$iterations),
+    `Retained per chain` = values(models$retained),
+    check.names = FALSE
+  )
+  data.frame(Setting = names(settings), Value = unlist(settings, use.names = FALSE))
+}
+
+report_analysis_label <- function(x) {
+  x <- sub("^(primary|supporting|secondary)/", "", x)
+  x <- gsub("overall-survival", "OS", x, fixed = TRUE)
+  x <- gsub("quality-of-life", "QoL", x, fixed = TRUE)
+  x <- gsub("os_adjusted", "fixed adjustment", x, fixed = TRUE)
+  x <- gsub("[\\/_-]", " ", x)
+  x <- gsub("\\bqol\\b", "QoL", x)
+  x <- gsub("\\bos\\b", "OS", x)
+  x <- gsub("\\bpfs\\b", "PFS", x)
+  x <- gsub("\\bbsc\\b", "BSC", x)
+  gsub("\\btaooh\\b", "TAOOH", x)
+}
+
+report_model_run_table <- function(scope = "") {
+  runs <- read.csv(here::here("reports", "_data", "model-runs.csv"))
+  runs <- runs[Reduce(`|`, lapply(scope, function(prefix) startsWith(runs$analysis, prefix))), ]
+  summary <- runs |>
+    dplyr::group_by(analysis) |>
+    dplyr::summarise(Imputations = dplyr::n(),
+      Chains = paste(sort(unique(chains)), collapse = ", "),
+      Iterations = paste(sort(unique(iterations)), collapse = ", "),
+      Retained = paste(sort(unique(retained)), collapse = ", "), .groups = "drop")
+  imputation_sources <- c(
+    "primary/overall-survival" = "primary/overall-survival/imputations.rds",
+    "primary/quality-of-life" = "primary/quality-of-life/imputation-fits.rds",
+    "primary/taooh" = "primary/taooh/imputations/imputation-fit.rds",
+    "supporting/os-unrestricted-ph" = "supporting/os-unrestricted/imputations.rds",
+    "supporting/os-unrestricted-hierarchical" = "supporting/os-unrestricted-hierarchical/imputation.rds",
+    "supporting/qol-unadjusted-landmark" = "primary/quality-of-life/imputation-fits.rds",
+    "supporting/qol-death-inclusive-longitudinal" = "supporting/qol-death-inclusive-longitudinal/baseline-imputations.rds",
+    "supporting/taooh-first-order" = "primary/taooh/imputations/imputation-fit.rds",
+    "secondary/bsc/adjusted-cause_specific" = "secondary/bsc/imputations.rds",
+    "secondary/bsc/adjusted-composite" = "secondary/bsc/imputations.rds",
+    "secondary/bsc-diagnosis/cause_specific" = "secondary/bsc-diagnosis/imputation.rds",
+    "secondary/bsc-diagnosis/composite" = "secondary/bsc-diagnosis/imputation.rds",
+    "secondary/pfs/os_adjusted" = "secondary/pfs/imputations-os_adjusted.rds",
+    "secondary/pfs/diagnosis" = "secondary/pfs/imputations-diagnosis.rds"
+  )
+  imputations <- read.csv(here::here("reports", "_data", "imputation-runs.csv"))
+  summary$maxit <- imputations$maxit[match(imputation_sources[summary$analysis], imputations$source)]
+  complete_data <- grepl("^secondary/(bsc|pfs)/unadjusted", summary$analysis) |
+    summary$analysis == "supporting/os-unrestricted-censoring" |
+    startsWith(summary$analysis, "supporting/os-censoring-scenarios")
+  summary$Imputations[complete_data] <- 0L
+  summary |>
+    dplyr::mutate(Analysis = report_analysis_label(analysis), .before = 1) |>
+    dplyr::select(Analysis, Imputations, maxit, Chains, Iterations, Retained)
 }
 
 report_figure_artifacts <- function(state) {
@@ -257,7 +431,7 @@ report_render_tables <- function(state, max_tables = 3L) {
     table <- tryCatch(read_result_table(path), error = function(error) NULL)
     if (is.null(table)) next
     if (requireNamespace("knitr", quietly = TRUE)) {
-      print(knitr::kable(table, format = "pipe"))
+      print(report_kable(table, format = "pipe"))
     } else {
       print(table)
     }
@@ -271,7 +445,7 @@ report_render_figures <- function(state) {
   if (length(paths) == 0L) return(invisible(FALSE))
   if (!requireNamespace("knitr", quietly = TRUE)) return(invisible(FALSE))
   for (path in paths) {
-    print(knitr::include_graphics(path))
+    print(report_include_graphics(path))
   }
   invisible(TRUE)
 }
@@ -352,4 +526,33 @@ list_public_report_outputs <- function(root = report_project_root("reports")) {
   files <- files[!grepl("/(private|raw|derived|logs|cache)/",
                         gsub("\\\\", "/", files))]
   normalizePath(files, winslash = "/", mustWork = TRUE)
+}
+
+read_diagnostics <- function(endpoint) {
+  paths <- list.files(file.path(report_root, "artifacts", "primary", endpoint, "diagnostics"),
+                      pattern = "^diagnostics-[0-9]+\\.parquet$", full.names = TRUE)
+  stopifnot(length(paths) > 0)
+  bind_rows(lapply(paths, function(path) {
+    x <- read_result_table(path)
+    if (!"imputation" %in% names(x)) x$imputation <- as.integer(sub("diagnostics-([0-9]+).*", "\\1", basename(path)))
+    x
+  }))
+}
+show_model_output <- function(endpoint) {
+  diagnostics <- read_diagnostics(endpoint)
+  parameters <- diagnostics |> filter(!grepl("^log_lik\\[", variable))
+  write.csv(parameters, file.path(report_root, "reports", "_data", paste0(endpoint, "-model-output.csv")), row.names = FALSE)
+  convergence <- diagnostics |>
+    summarise(`Fits` = n_distinct(imputation),
+      `Maximum R-hat` = max(rhat, na.rm = TRUE),
+      `Minimum bulk ESS` = min(ess_bulk, na.rm = TRUE),
+      `Minimum tail ESS` = min(ess_tail, na.rm = TRUE),
+      `Fits with R-hat > 1.01` = n_distinct(imputation[is.finite(rhat) & rhat > 1.01]))
+  print(report_kable(convergence, digits = 3, format = "pipe"))
+  cat("\n\nParameter summaries below are from the first completed dataset, to show the fitted model's coefficients and uncertainty. The 5th and 95th percentiles form a 90% interval. Main-chapter treatment estimates combine imputations.\n\n")
+  first <- parameters |>
+    filter(imputation == min(imputation)) |>
+    select(Parameter = variable, Median = median, `5th percentile` = q5, `95th percentile` = q95)
+  print(report_kable(first, digits = 3, format = "pipe"))
+  cat("\n\n[Parameter summaries and convergence statistics for every fitted imputation](../_data/", endpoint, "-model-output.csv).\n\n", sep = "")
 }
