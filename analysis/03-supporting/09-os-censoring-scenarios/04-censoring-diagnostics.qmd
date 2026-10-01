@@ -1,0 +1,115 @@
+---
+title: "Overall survival — observed and assumed administrative-only censoring"
+subtitle: "Reverse Kaplan–Meier estimates and adjusted parametric curves"
+format: html
+execute:
+  freeze: false
+---
+
+The observed analysis uses recorded follow-up. In both survival scenarios,
+participants without a recorded death who were censored within 14 days of
+potential follow-up are assumed alive to that endpoint and censored there.
+The administrative-only comparison uses the best-case endpoint: it also
+extends the earlier-censored participants to the same cutoff. Recorded deaths
+retain their times. These are assumptions about unobserved survival, not
+verification of vital status. Only preserved elapsed durations are used;
+the cutoff is unchanged and no shifted calendar dates are linked.
+
+Both analyses show non-parametric reverse Kaplan–Meier estimates and the same
+adjusted M-spline model, standardized over the same randomized population.
+Deaths are censored observations in this reversed analysis. Adjustment uses
+binary ECOG, stage, categorical mGPS, and diagnosis random intercepts; missing
+ECOG and mGPS use pooled modal replacement without multiple imputation.
+
+```{r}
+#| label: compare-os-censoring-patterns
+#| include: false
+library(tidyverse)
+source(here::here("R", "survival-helpers.R"))
+source(here::here("R", "censoring-helpers.R"))
+source(here::here("R", "analysis-config.R"))
+config <- read_analysis_config()
+cohort <- arrow::read_parquet(here::here(config_get(config, "paths", "private_data"), "cohort_follow_up.parquet"))
+prepared <- prepare_censoring_data(cohort)
+administrative <- prepared$data
+best_case <- prepare_os_censoring_scenarios(cohort) |> filter(scenario == "best-case")
+stopifnot(identical(administrative$id, best_case$id))
+administrative$follow_up_days <- best_case$survival_time_days
+patterns <- list(observed = prepared$data, administrative = administrative)
+artifact_dirs <- list(
+  observed = here::here("artifacts", "supporting", "os-unrestricted-censoring"),
+  administrative = here::here("artifacts", "supporting", "os-censoring-scenarios", "censoring")
+)
+result_dirs <- list(
+  observed = here::here("results", "supporting", "os-unrestricted-censoring"),
+  administrative = here::here("results", "supporting", "os-censoring-scenarios", "censoring")
+)
+max_follow_up <- max(cohort$potential_follow_up_days)
+analyses <- cox_results <- cox_ph_results <- km_landmarks <- list()
+for (pattern in names(patterns)) {
+  data <- patterns[[pattern]]
+  analyses[[pattern]] <- analyze_adjusted_censoring(
+    data, artifact_dirs[[pattern]], result_dirs[[pattern]], max_follow_up
+  )
+  arrow::write_parquet(prepared$replacements, file.path(result_dirs[[pattern]], "modal-replacements.parquet"))
+  cox <- survival::coxph(survival::Surv(follow_up_days, censoring_event) ~ tx, data = data)
+  cox_summary <- summary(cox)
+  ph_test <- survival::cox.zph(cox)$table
+  cox_ph_results[[pattern]] <- tibble(pattern, term = rownames(ph_test),
+    chisq = ph_test[, "chisq"], df = ph_test[, "df"], p_value = ph_test[, "p"])
+  cox_results[[pattern]] <- tibble(pattern, hazard_ratio = cox_summary$conf.int[1, "exp(coef)"],
+    lower_95 = cox_summary$conf.int[1, "lower .95"], upper_95 = cox_summary$conf.int[1, "upper .95"],
+    p_value = cox_summary$coefficients[1, "Pr(>|z|)"], participants = nrow(data),
+    censoring_events = sum(data$censoring_event))
+  km <- survival::survfit(survival::Surv(follow_up_days, censoring_event) ~ tx, data = data)
+  landmark <- summary(km, times = c(182, 365, 547, 730), extend = TRUE)
+  km_landmarks[[pattern]] <- tibble(pattern, tx = as.integer(sub("tx=", "", landmark$strata)),
+    time = landmark$time, estimate = landmark$surv)
+}
+comparison_dir <- result_dirs$administrative
+hazard_ratios <- imap_dfr(analyses, ~ mutate(.x$adjusted_summary, pattern = .y, .before = 1))
+diagnostics <- imap_dfr(analyses, ~ mutate(.x$diagnostics, pattern = .y, .before = 1))
+landmarks <- bind_rows(km_landmarks)
+arrow::write_parquet(hazard_ratios, file.path(comparison_dir, "adjusted-comparison.parquet"))
+arrow::write_parquet(diagnostics, file.path(comparison_dir, "diagnostics-comparison.parquet"))
+arrow::write_parquet(bind_rows(cox_results), file.path(comparison_dir, "cox-comparison.parquet"))
+arrow::write_parquet(bind_rows(cox_ph_results), file.path(comparison_dir, "cox-ph-comparison.parquet"))
+arrow::write_parquet(landmarks, file.path(comparison_dir, "reverse-km-landmarks.parquet"))
+```
+
+## Observed censoring
+
+```{r}
+#| label: fig-scenarios-observed-censoring
+#| fig-cap: "Observed censoring: dashed reverse Kaplan–Meier estimates and solid adjusted predictions with 95% credible bands. Marks represent deaths; table events represent censoring."
+#| fig-alt: "Observed reverse Kaplan–Meier curves and adjusted predictions for both groups, with numbers at risk and cumulative censoring."
+analyses$observed$reverse_plot
+```
+
+## Assumed administrative-only censoring
+
+```{r}
+#| label: fig-scenarios-administrative-censoring
+#| fig-cap: "Assumed administrative-only censoring: all participants without recorded deaths are assumed alive to the cutoff, including those censored within 14 days. Dashed lines are reverse Kaplan–Meier estimates; solid lines are adjusted predictions with 95% credible bands."
+#| fig-alt: "Reverse Kaplan–Meier and adjusted curves after extending censored patients to the cutoff, with numbers at risk and cumulative censoring."
+analyses$administrative$reverse_plot
+```
+
+## Comparison
+
+```{r}
+knitr::kable(hazard_ratios, digits = 3)
+knitr::kable(bind_rows(cox_results), digits = 3)
+knitr::kable(bind_rows(cox_ph_results), digits = 3)
+knitr::kable(landmarks, digits = 3)
+knitr::kable(diagnostics, digits = 3)
+```
+
+A constant blocked allocation ratio supports comparable recruitment-time
+opportunities between randomized groups. It does not make the realized
+reverse Kaplan–Meier estimates identical or establish survival after early
+censoring. Lower mortality alone does not systematically lower a reverse
+Kaplan–Meier curve under independent censoring. Similarity between the
+observed and constructed curves describes sensitivity to the assumed
+extension of follow-up; it does not establish non-informative censoring or
+attribute the group difference solely to chance.
