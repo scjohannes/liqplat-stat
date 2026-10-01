@@ -10,9 +10,9 @@ execute:
 
 Both treatment paths are predicted for every participant with at least one
 observed weekly TAOOH outcome. The participant-specific results are averaged
-by `avg_sops()` and `avg_comparisons()`; 200 posterior draws from each
-completed dataset are pooled with equal weight. The workflow targets all 50
-imputations and resumes from existing per-imputation checkpoints.
+by `avg_sops()` and `avg_comparisons()`; `markov$post_estimation_draws` posterior draws
+from each completed dataset are pooled with equal weight. The workflow targets
+all `imputation$main$m` imputations and resumes from existing per-imputation checkpoints.
 
 ```{r}
 #| label: derive-taooh-estimand
