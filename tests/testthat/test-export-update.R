@@ -17,10 +17,10 @@ test_that("unrestricted TAOOH retains partial terminal weeks and death at week 5
   expect_error(validate_taooh_follow_up(
     dplyr::filter(taooh, !(id == "censored" & week == 50L)), cohort
   ), "final")
-  empirical <- taooh_empirical_history(taooh, 364)
+  empirical <- taooh_carry_death_forward(taooh, 364)
   expect_equal(empirical$week[empirical$id == "death" & empirical$y_taooh == 5L], 50:52)
   expect_equal(max(empirical$week[empirical$id == "censored"]), 50L)
-  expect_equal(max(taooh_empirical_history(taooh, 182)$week), 26L)
+  expect_equal(max(taooh_carry_death_forward(taooh, 182)$week), 26L)
   expect_equal(max(taooh$week), 50L)
   expect_equal(taooh_horizon_weeks(728), 104L)
   expect_error(taooh_horizon_weeks(183), "whole number of weeks")
@@ -53,7 +53,7 @@ test_that("death on day zero and exact week boundaries use the terminal week", {
                        status_death_unrestricted = c(1L, 1L, 1L))
   taooh <- data.frame(id = cohort$id, week = c(1L, 1L, 2L), y_taooh = 5L)
   expect_silent(validate_taooh_follow_up(taooh, cohort))
-  expect_equal(sum(taooh_empirical_history(taooh, 364)$week == 52L), 3L)
+  expect_equal(sum(taooh_carry_death_forward(taooh, 364)$week == 52L), 3L)
 })
 
 test_that("recruitment allows identical rows and missing consent but exactly three columns", {
