@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
-# End-to-end no-PHI smoke test.  It validates a synthetic schema/helper/
-# checkpoint/report path and renders the artifact-only report to both HTML and
+# End-to-end no-PHI smoke test. It validates a synthetic schema/helper/report
+# path and renders the artifact-only report to both HTML and
 # Typst.  Expensive Stan models are intentionally not called.
 
 script_args <- commandArgs(trailingOnly = FALSE)
@@ -16,7 +16,6 @@ project_root <- if (nzchar(script_file)) {
 
 source(file.path(project_root, "R", "analysis-config.R"), local = FALSE)
 source(file.path(project_root, "R", "paths-artifacts.R"), local = FALSE)
-source(file.path(project_root, "R", "checkpoints.R"), local = FALSE)
 source(file.path(project_root, "R", "data-helpers.R"), local = FALSE)
 source(file.path(project_root, "R", "data-validation.R"), local = FALSE)
 source(file.path(project_root, "R", "survival-helpers.R"), local = FALSE)
@@ -27,7 +26,6 @@ source(file.path(project_root, "scripts", "generate-synthetic-fixture.R"), local
 run_synthetic_smoke <- function(project_root) {
   fixture <- synthetic_fixture(project_root = project_root)
   on.exit(unlink(fixture$root, recursive = TRUE, force = TRUE), add = TRUE)
-  if (!isTRUE(fixture$checkpoint_current)) stop("Synthetic checkpoint is not current.")
   if (!identical(fixture$report_state$status, "available")) {
     stop("Synthetic report artifact was not read as available.")
   }
