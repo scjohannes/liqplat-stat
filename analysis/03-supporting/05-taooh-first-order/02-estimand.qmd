@@ -7,8 +7,8 @@ execute:
 ---
 
 Both treatment paths are predicted for the same observed participants used by
-the primary TAOOH analysis. Two hundred posterior draws from each of 50
-completed datasets are pooled with equal weight. Existing per-imputation
+the primary TAOOH analysis. `markov$post_estimation_draws` posterior draws from
+each of the `imputation$main$m` completed datasets are pooled with equal weight. Existing per-imputation
 checkpoints are reused on later renders.
 
 ```{r}
