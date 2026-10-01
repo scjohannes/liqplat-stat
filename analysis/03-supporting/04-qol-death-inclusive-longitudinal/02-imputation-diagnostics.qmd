@@ -10,7 +10,7 @@ execute:
 
 This document evaluates only the two-stage imputation. It separates baseline
 MICE diagnostics from the longitudinal Q30 diagnostics and quantifies how much
-the eight completed datasets differ at the patient-week, participant, week,
+the completed datasets differ at the patient-week, participant, week,
 and whole-dataset levels. Death is inspected separately because it is appended
 from observed data after MICE and must be identical in every completion.
 
@@ -22,7 +22,7 @@ source(here::here("R", "analysis-config.R"))
 library(tidyverse)
 
 config <- read_analysis_config()
-n_imputations <- 8L
+n_imputations <- as.integer(config$imputation$main$m)
 indices <- seq_len(n_imputations)
 output_dir <- here::here(
   "artifacts", "supporting", "qol-death-inclusive-longitudinal"
@@ -54,10 +54,10 @@ run_summary <- arrow::read_parquet(
   as.data.frame()
 
 if (!identical(as.integer(baseline_imputations$m), n_imputations)) {
-  stop("Imputation diagnostics require exactly eight baseline completions.")
+  stop("Imputation diagnostics require the configured number of baseline completions.")
 }
 if (!identical(run_summary$imputation, indices)) {
-  stop("Imputation diagnostics require all eight longitudinal completions.")
+  stop("Imputation diagnostics require all configured longitudinal completions.")
 }
 ```
 
@@ -296,7 +296,7 @@ ggsave(
 #| fig-subcap:
 #|   - "MICE chain means and standard deviations for imputed baseline Q30 and ECOG"
 #|   - "Observed distributions (black points) and distributions in each completed dataset (coloured lines)"
-#| fig-alt: "The first panel shows eight MICE chains over 50 iterations for the mean and standard deviation of baseline Q30 and ECOG. The second compares observed and completed categorical distributions for baseline Q30, ECOG, and diagnosis."
+#| fig-alt: "The first panel shows one MICE chain per completed dataset over 50 iterations for the mean and standard deviation of baseline Q30 and ECOG. The second compares observed and completed categorical distributions for baseline Q30, ECOG, and diagnosis."
 #| layout-ncol: 1
 #| fig-width: 11
 #| fig-height: 6
@@ -309,7 +309,7 @@ baseline_distribution_plot
 ## Longitudinal Q30 convergence
 
 Each longitudinal fit is an independent single-completion MICE run. The traces
-therefore show one chain for each of the eight completed datasets. Both the
+therefore show one chain for each completed dataset. Both the
 mean and standard deviation of imputed Q30 are shown; stable traces without a
 trend are more informative than comparing only the final iteration.
 
@@ -364,8 +364,8 @@ ggsave(
 
 ```{r}
 #| label: fig-death-inclusive-qol-longitudinal-traces
-#| fig-cap: "Longitudinal Q30 MICE traces across eight independent completions"
-#| fig-alt: "Two panels show the mean and standard deviation of imputed Q30 over 50 MICE iterations, with one colored line for each of eight independent completions."
+#| fig-cap: "Longitudinal Q30 MICE traces across independent completions"
+#| fig-alt: "Two panels show the mean and standard deviation of imputed Q30 over 50 MICE iterations, with one colored line for each independent completion."
 #| fig-width: 9
 #| fig-height: 7
 #| echo: false
@@ -516,7 +516,7 @@ ggsave(
 #|   - "Smoothed densities: observed Q30 in black and imputed Q30 by completed dataset"
 #|   - "Exact ordinal state proportions: observed Q30 in black and imputed Q30 by completed dataset"
 #|   - "Death-inclusive model-row proportions for living Q30 states 1--7 and observed death state 8"
-#| fig-alt: "Three panels compare observed Q30 with imputed values from eight datasets using smoothed densities and exact state proportions, then show the final model-row distribution including death state eight."
+#| fig-alt: "Three panels compare observed Q30 with imputed values from all completed datasets using smoothed densities and exact state proportions, then show the final model-row distribution including death state eight."
 #| layout-ncol: 1
 #| fig-width: 9
 #| fig-height: 5
@@ -527,7 +527,7 @@ q30_state_proportion_plot
 model_state_proportion_plot
 ```
 
-## How variable are the eight imputations?
+## How variable are the imputations?
 
 Variability is assessed only where living Q30 was originally missing. For each
 patient-week cell, we count distinct states, calculate its range and normalized
@@ -556,7 +556,7 @@ cell_variability <- imputed_cells |>
     .by = c(id, week, tx)
   )
 if (any(cell_variability$imputations != n_imputations)) {
-  stop("Every missing living Q30 cell must be represented in all eight imputations.")
+  stop("Every missing living Q30 cell must be represented in all imputations.")
 }
 
 participant_variability <- imputed_cells |>
@@ -652,7 +652,7 @@ variability_summary |>
 ```
 
 Across the originally missing living-Q30 cells, the proportion receiving more
-than one state across the eight completions is
+than one state across the completions is
 `r scales::percent(variability_summary$proportion_variable, accuracy = 0.1)`.
 The median cell receives `r variability_summary$median_distinct_states`
 distinct states, and pairwise exact agreement averages
@@ -661,7 +661,7 @@ At participant level, the median between-imputation standard deviation of mean
 imputed Q30 is `r round(variability_summary$median_participant_mean_sd, 2)`
 states. These diagnostics indicate substantial patient-week uncertainty even
 when aggregate distributions and MICE traces are stable; the uncertainty is
-therefore carried forward by fitting and pooling all eight datasets rather
+therefore carried forward by fitting and pooling all completed datasets rather
 than selecting a single completion.
 
 ```{r}
@@ -674,7 +674,7 @@ cell_variability_plot <- ggplot(
 ) +
   geom_bar(fill = "#D95F02", colour = "white") +
   labs(
-    x = "Distinct imputed Q30 states across 8 datasets",
+    x = "Distinct imputed Q30 states across datasets",
     y = "Missing patient-week cells"
   ) +
   theme_bw()
@@ -791,7 +791,7 @@ purrr::iwalk(variability_plots, function(plot, filename) {
 #| fig-subcap:
 #|   - "Number of distinct Q30 states assigned to each missing patient-week"
 #|   - "Mean normalized imputation entropy by week; ribbons show the interquartile range across missing patient-weeks"
-#| fig-alt: "A bar chart counts how many distinct Q30 states each missing patient-week receives across eight imputations. A second chart shows normalized entropy over weeks by randomized group."
+#| fig-alt: "A bar chart counts how many distinct Q30 states each missing patient-week receives across imputations. A second chart shows normalized entropy over weeks by randomized group."
 #| layout-ncol: 1
 #| fig-width: 8
 #| fig-height: 5
@@ -805,9 +805,9 @@ entropy_plot
 #| label: fig-death-inclusive-qol-weekly-variability
 #| fig-cap: "Between-imputation variability in weekly Q30 summaries"
 #| fig-subcap:
-#|   - "Mean living Q30 state; ribbons span the minimum to maximum across eight datasets"
-#|   - "Proportion with good-or-better living Q30; ribbons span the minimum to maximum across eight datasets"
-#| fig-alt: "Two line charts show weekly mean living Q30 and the weekly proportion in states one through three by randomized group. Shaded bands show the full range across eight completed datasets."
+#|   - "Mean living Q30 state; ribbons span the minimum to maximum across completed datasets"
+#|   - "Proportion with good-or-better living Q30; ribbons span the minimum to maximum across completed datasets"
+#| fig-alt: "Two line charts show weekly mean living Q30 and the weekly proportion in states one through three by randomized group. Shaded bands show the full range across completed datasets."
 #| layout-ncol: 1
 #| fig-width: 9
 #| fig-height: 5
@@ -820,7 +820,7 @@ weekly_good_plot
 ```{r}
 #| label: fig-death-inclusive-qol-pairwise-agreement
 #| fig-cap: "Pairwise exact agreement of imputed Q30 values"
-#| fig-alt: "An eight-by-eight heat map gives the proportion of originally missing patient-week Q30 values assigned the same state in each pair of completed datasets."
+#| fig-alt: "A heat map gives the proportion of originally missing patient-week Q30 values assigned the same state in each pair of completed datasets."
 #| fig-width: 7
 #| fig-height: 6
 #| echo: false
