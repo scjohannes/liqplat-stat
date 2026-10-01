@@ -37,13 +37,13 @@ location; it is never a place to commit or archive data.
 - Packages specified by the project lockfile, including `yaml`, `here`,
   `arrow`, `mice`, `miceadds`, `rmsb`, `rstanarm`, `posterior`, `ggsurvfit`,
   and `digest`
-- The reviewed clean `markov.misc` release exposing `blrm_markov()`,
-  `avg_sops()`, and `sops()`
+- `mostr` (https://github.com/scjohannes/mostr), which provides
+  `blrm_markov()`, `avg_sops()`, and `avg_comparisons()`
 
 Restore the environment with `renv::restore()`. `renv.lock` is a valid skeleton
 for the current R version; it intentionally does not invent package hashes.
-Before a production run, update it and the `markov_misc` entries in
-[`config/analysis.yml`](config/analysis.yml) with the reviewed clean package
+Before a production run, update it and the `mostr` entries in
+[`config/analysis.yml`](config/analysis.yml) with the reviewed package
 version and its exact 40-hex Git SHA. Production preflight rejects the current
 placeholders.
 
