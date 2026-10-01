@@ -20,18 +20,6 @@ for (.liqplat_file in .liqplat_source_files) {
   sys.source(.liqplat_file, envir = .GlobalEnv)
 }
 
-# Secondary contracts and the runtime's exact-imputation guard are kept next to
-# their modules rather than in R/, but are inexpensive and safe to source for
-# tests.
-.liqplat_secondary_helpers <- file.path(
-  .liqplat_project_root, "analysis", "05-secondary", "secondary-helpers.R"
-)
-if (file.exists(.liqplat_secondary_helpers)) {
-  sys.source(.liqplat_secondary_helpers, envir = .GlobalEnv)
-}
-.liqplat_runtime <- file.path(.liqplat_project_root, "analysis", "module-runtime.R")
-if (file.exists(.liqplat_runtime)) sys.source(.liqplat_runtime, envir = .GlobalEnv)
-
 liqplat_path <- function(...) {
   file.path(.liqplat_project_root, ...)
 }
