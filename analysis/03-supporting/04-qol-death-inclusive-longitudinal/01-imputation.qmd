@@ -1,14 +1,14 @@
 ---
 title: "QoL death-inclusive Markov — imputation"
-subtitle: "Independent long-format imputation using 8 completed datasets"
+subtitle: "Independent long-format imputation using the configured completed datasets"
 format: html
 execute:
   freeze: false
 ---
 
-This test-cycle workflow creates eight independently completed longitudinal
-datasets. Baseline variables are first imputed in one patient-level MICE
-object with eight completed datasets. Each completed baseline dataset is then
+This workflow creates `config$imputation$main$m` independently completed
+longitudinal datasets. Baseline variables are first imputed in one
+patient-level MICE object with the same number of completed datasets. Each completed baseline dataset is then
 joined to the weekly data before living QoL states 1--7 are imputed. The
 previous-state predictor is based on the completed baseline state through the
 first observed follow-up QoL value; thereafter, the most recent observed
@@ -29,7 +29,7 @@ library(tidyverse)
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
-n_imputations <- 8L
+n_imputations <- as.integer(config$imputation$main$m)
 indices <- seq_len(n_imputations)
 
 input_path <- here::here(
@@ -205,7 +205,7 @@ if (run_baseline_imputation) {
 }
 
 if (!identical(as.integer(baseline_imputations$m), n_imputations)) {
-  stop("The baseline MICE object does not contain the eight required datasets.")
+  stop("The baseline MICE object does not contain the required number of datasets.")
 }
 
 completed_baseline_variables <- setdiff(
