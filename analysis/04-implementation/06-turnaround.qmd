@@ -28,9 +28,6 @@ dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 samples <- arrow::read_parquet(samples_path) |>
   as.data.frame()
 
-sample_date <- parse_analysis_date(samples$sample_date, "sample_date")
-report_date <- parse_analysis_date(samples$analysis_date, "analysis_date")
-
 turnaround_days <- as.numeric(report_date - sample_date)
 
 values <- data.frame(
