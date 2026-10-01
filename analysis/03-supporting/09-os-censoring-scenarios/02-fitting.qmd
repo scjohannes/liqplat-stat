@@ -1,0 +1,59 @@
+---
+title: "Overall survival censoring scenarios — fitting"
+subtitle: "One unadjusted Bayesian PH model per scenario"
+format: html
+execute:
+  freeze: false
+---
+
+Each scenario is fitted once with randomized treatment as the only predictor.
+The M-spline baseline hazard and priors match the previous unadjusted analysis.
+No imputation is required. Day-zero deaths enter the likelihood at 0.5 days,
+within their recorded week; observations censored at day zero are excluded
+from the likelihood because they contribute no follow-up.
+
+```{r}
+#| label: fit-supporting-os-censoring-scenarios
+#| include: false
+library(tidyverse)
+library(rstanarm)
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+artifact_dir <- here::here(
+  "artifacts", "supporting", "os-censoring-scenarios"
+)
+prepared_path <- file.path(artifact_dir, "scenarios.parquet")
+prepared <- arrow::read_parquet(prepared_path)
+model_dir <- file.path(artifact_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+scenarios <- c("best-case", "worst-case")
+for (index in seq_along(scenarios)) {
+  scenario_name <- scenarios[[index]]
+  model_path <- file.path(model_dir, paste0(scenario_name, "-model.rds"))
+  if (!force && file.exists(model_path) &&
+      file.mtime(model_path) >= file.mtime(prepared_path)) next
+
+  fitting_data <- prepared |>
+    dplyr::filter(scenario == scenario_name, fitting_time_days > 0)
+  model <- rstanarm::stan_surv(
+    formula = survival::Surv(fitting_time_days, event_death) ~ tx,
+    data = fitting_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = rstanarm::normal(0, 0.55),
+    prior_intercept = rstanarm::normal(0, 20),
+    prior_aux = rstanarm::dirichlet(1),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    seed = analysis_seed(config, "supporting", index, offset = 1300L)
+  )
+  saveRDS(model, model_path, compress = "xz")
+}
+```
+
