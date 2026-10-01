@@ -1,6 +1,6 @@
 ---
 title: "QoL death-inclusive Markov — model diagnostics"
-subtitle: "Posterior sampling quality across 8 completed datasets"
+subtitle: "Posterior sampling quality across completed datasets"
 format:
   html:
     toc: true
@@ -8,7 +8,7 @@ execute:
   freeze: false
 ---
 
-This document contains only posterior sampling diagnostics for the eight fitted
+This document contains only posterior sampling diagnostics for all fitted
 Markov models. Imputation diagnostics are reported separately. The configured
 R-hat, effective sample size, divergence, and treedepth thresholds are applied
 to every model, with E-BFMI checked when available; a complete `stanDx()` text
@@ -24,7 +24,7 @@ library(tidyverse)
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
-n_imputations <- 8L
+n_imputations <- as.integer(config$imputation$main$m)
 indices <- seq_len(n_imputations)
 output_dir <- here::here(
   "artifacts", "supporting", "qol-death-inclusive-longitudinal"
@@ -221,11 +221,11 @@ ggsave(
 
 ```{r}
 #| label: fig-death-inclusive-qol-posterior-diagnostics
-#| fig-cap: "Posterior convergence and effective sample size across eight imputations"
+#| fig-cap: "Posterior convergence and effective sample size across imputations"
 #| fig-subcap:
 #|   - "Parameter-level R-hat distributions; the dashed line is the configured maximum"
 #|   - "Parameter-level bulk and tail effective sample sizes; the dashed line is the configured minimum"
-#| fig-alt: "Two panels summarize posterior diagnostics for each of eight Markov models. R-hat values remain below the configured threshold and effective sample sizes remain above the configured minimum."
+#| fig-alt: "Two panels summarize posterior diagnostics for each Markov model. R-hat values remain below the configured threshold and effective sample sizes remain above the configured minimum."
 #| layout-ncol: 1
 #| fig-width: 9
 #| fig-height: 5
