@@ -1,0 +1,144 @@
+---
+title: "Imaging — model fitting"
+format: html
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+Following the SAP (*Comparative Clinical Outcomes — Imaging Count*), the total
+number of imaging examinations is modeled with a Bayesian negative binomial
+regression with a `log(exposure)` offset, adjusting for randomized group,
+linear age, and ECOG (0 as reference, 1, 2, 3+). 
+
+We also fit the model without covariates (randomized
+group and offset only).
+
+The regression coefficients get weakly informative $\mathcal{N}(0, 2.5)$
+priors; the intercept and the negative binomial shape keep the `brms`
+defaults.
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+
+source(here::here("R", "analysis-config.R"))
+
+config <- read_analysis_config()
+force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+
+result_dir <- here::here("results", "secondary", "imaging")
+
+imaging_data <- arrow::read_parquet(file.path(result_dir, "analysis-data.parquet"))
+completed_datasets <- readRDS(file.path(result_dir, "completed-datasets.rds"))
+```
+
+## Model formulas
+
+```{r}
+#| label: model-formulas
+
+imaging_formulas <- list(
+  adjusted = brms::bf(
+    n_imaging_total ~ tx + age + ecog_group + offset(log(exposure_days))
+  ),
+  unadjusted = brms::bf(
+    n_imaging_total ~ tx + offset(log(exposure_days))
+  )
+)
+
+coefficient_prior <- brms::prior(normal(0, 2.5), class = "b")
+```
+
+## Fitting
+
+The adjusted model is fitted to every completed dataset with
+`brm_multiple()`, keeping one fit per imputation so that predictions can use
+each imputation's own covariates. The unadjusted model needs no imputation and
+is fitted once to the observed data. Both are stored as a list of fits.
+
+```{r}
+#| label: fit-models
+
+fit_imaging_model <- function(adjustment, seed_offset) {
+  model_path <- file.path(result_dir, paste0("model-", adjustment, ".rds"))
+
+  if (force || !file.exists(model_path)) {
+    seed <- analysis_seed(config, "supporting", offset = seed_offset)
+
+    fits <- if (adjustment == "adjusted") {
+      brms::brm_multiple(
+        imaging_formulas$adjusted,
+        data = completed_datasets,
+        family = brms::negbinomial(),
+        prior = coefficient_prior,
+        chains = 4L,
+        iter = 2000L,
+        cores = 1L,
+        init = 0,
+        seed = seed,
+        combine = FALSE,
+        refresh = 0L
+      )
+    } else {
+      list(brms::brm(
+        imaging_formulas$unadjusted,
+        data = imaging_data,
+        family = brms::negbinomial(),
+        prior = coefficient_prior,
+        chains = 4L,
+        iter = 2000L,
+        cores = 1L,
+        init = 0,
+        seed = seed,
+        refresh = 0L
+      ))
+    }
+
+    saveRDS(fits, model_path, compress = "xz")
+  }
+
+  readRDS(model_path)
+}
+
+imaging_fits <- tibble(
+  adjustment = c("adjusted", "unadjusted"),
+  seed_offset = c(2601L, 2602L)
+) |>
+  mutate(fits = map2(adjustment, seed_offset, fit_imaging_model))
+```
+
+## Diagnostics
+
+```{r}
+#| label: tbl-model-diagnostics
+#| tbl-cap: "Largest R-hat and smallest bulk effective sample size per model and imputation"
+
+imaging_fits |>
+  mutate(diagnostics = map(fits, \(fits) {
+    tibble(
+      imputation = seq_along(fits),
+      max_rhat = map_dbl(fits, \(fit) max(brms::rhat(fit), na.rm = TRUE)),
+      min_ess_bulk = map_dbl(fits, \(fit) {
+        min(posterior::summarise_draws(fit, "ess_bulk")$ess_bulk, na.rm = TRUE)
+      })
+    )
+  })) |>
+  select(adjustment, diagnostics) |>
+  unnest(diagnostics) |>
+  knitr::kable(digits = 3)
+```
+
+```{r}
+#| label: tbl-adjusted-coefficients
+#| tbl-cap: "Posterior coefficients of the adjusted imaging model (first imputation)"
+
+imaging_fits |>
+  filter(adjustment == "adjusted") |>
+  pull(fits) |>
+  pluck(1, 1) |>
+  brms::fixef() |>
+  knitr::kable(digits = 3)
+```
