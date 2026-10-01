@@ -15,8 +15,6 @@ counted.
 ```{r}
 #| label: turnaround
 
-source(here::here("R", "data-helpers.R"))
-
 samples_path <- here::here(
   "analysis", "00-data", "results", "analysis-ctdna-samples.parquet"
 )
@@ -28,7 +26,8 @@ dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 samples <- arrow::read_parquet(samples_path) |>
   as.data.frame()
 
-turnaround_days <- as.numeric(report_date - sample_date)
+turnaround_days <- as.numeric(samples$analysis_date - samples$sample_date)
+turnaround_days[turnaround_days < 0] <- NA_real_
 
 values <- data.frame(
   turnaround_days = turnaround_days[!is.na(turnaround_days)]
