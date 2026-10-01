@@ -23,12 +23,13 @@ cohort_path <- here::here(
   "analysis", "00-data", "results", "analysis-cohort.parquet"
 )
 result_dir <- here::here("analysis", "04-implementation", "results")
+figure_dir <- file.path(result_dir, "figures")
 model_path <- here::here(
   "analysis", "04-implementation", "models", "invitation-accepted.rds"
 )
 summary_path <- file.path(result_dir, "invitation-accepted-summary.parquet")
 draws_path <- file.path(result_dir, "invitation-accepted-draws.parquet")
-dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(dirname(model_path), recursive = TRUE, showWarnings = FALSE)
 
 if (force || any(!file.exists(c(summary_path, draws_path, model_path)))) {
@@ -87,6 +88,34 @@ accepted_summary |>
   knitr::kable()
 ```
 
+```{r}
+#| label: fig-accepted-posterior
+#| fig-cap: "Posterior standardized probability of invitation acceptance. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "A half-eye density above a posterior dot plot of the age- and sex-standardized probability that offered patients accepted the invitation, in percent, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 5
+
+accepted_draws <- arrow::read_parquet(draws_path) |>
+  as.data.frame()
+
+accepted_posterior_plot <- ggplot2::ggplot(
+  accepted_draws, ggplot2::aes(x = 100 * draw)
+) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(.width = c(0.66, 0.95), point_interval = ggdist::median_qi) +
+  ggplot2::labs(x = "Probability of invitation acceptance, %", y = NULL) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    axis.text.y = ggplot2::element_blank(),
+    axis.ticks.y = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor.y = ggplot2::element_blank()
+  )
+ggplot2::ggsave(file.path(figure_dir, "invitation-accepted-posterior.png"),
+  accepted_posterior_plot, width = 8, height = 5, dpi = 300)
+accepted_posterior_plot
+```
+
 Predictions for men and women are averaged over the observed covariate rows
 within each gender using `by = "gender"`. These descriptive estimates retain
 each group's observed age distribution.
@@ -95,6 +124,7 @@ each group's observed age distribution.
 #| label: accepted-gender-predictions
 
 fit <- readRDS(model_path)
+fit <- marginaleffects::set_modeldata(fit, fit$data)
 gender_draws <- marginaleffects::avg_predictions(
   fit, by = "gender", type = "response", re_formula = NA
 ) |>
@@ -126,4 +156,30 @@ arrow::write_parquet(
 
 gender_summary |>
   knitr::kable()
+```
+
+```{r}
+#| label: fig-accepted-gender-predictions
+#| fig-cap: "Descriptive posterior probability of invitation acceptance by gender. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Posterior half-eye densities and dot plots of the probability that offered patients accepted the invitation, in percent, shown in separate panels for each gender, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 7
+
+gender_predictions_plot <- ggplot2::ggplot(
+  gender_draws, ggplot2::aes(x = 100 * draw)
+) +
+  ggdist::stat_dots(side = "bottom") +
+  ggdist::stat_halfeye(.width = c(0.66, 0.95), point_interval = ggdist::median_qi) +
+  ggplot2::facet_wrap(~ gender, ncol = 1) +
+  ggplot2::labs(x = "Probability of invitation acceptance, %", y = NULL) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    axis.text.y = ggplot2::element_blank(),
+    axis.ticks.y = ggplot2::element_blank(),
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor.y = ggplot2::element_blank()
+  )
+ggplot2::ggsave(file.path(figure_dir, "invitation-accepted-gender-predictions.png"),
+  gender_predictions_plot, width = 8, height = 7, dpi = 300)
+gender_predictions_plot
 ```
