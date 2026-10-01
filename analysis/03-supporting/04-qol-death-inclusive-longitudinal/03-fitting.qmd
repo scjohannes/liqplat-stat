@@ -1,12 +1,12 @@
 ---
 title: "QoL death-inclusive Markov — model fitting"
-subtitle: "First-order ordinal transition models for 8 completed datasets"
+subtitle: "First-order ordinal transition models for each completed dataset"
 format: html
 execute:
   freeze: false
 ---
 
-A Bayesian first-order ordinal transition model is fitted to each of the eight
+A Bayesian first-order ordinal transition model is fitted to each of the
 independently completed longitudinal datasets. Death is state 8 and absorbing.
 The model uses the imputed previous state; the partial proportional-odds term
 permits the time effect to differ across outcome cut-points. The formula is
@@ -25,7 +25,7 @@ library(rmsb)
 
 config <- read_analysis_config()
 force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
-n_imputations <- 8L
+n_imputations <- as.integer(config$imputation$main$m)
 indices <- seq_len(n_imputations)
 default_retained_draws <- 3000L
 if (default_retained_draws %% config$markov$chains != 0L) {
