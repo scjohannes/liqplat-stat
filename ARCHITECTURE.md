@@ -124,7 +124,7 @@ explicitly by `scripts/run-all.R`.
 ### Environment and smoke tests
 
 - `scripts/check-environment.R` — confirms the exact R version, Quarto, the
-  required packages, and (with `--strict`) the approved `markov.misc`
+  required packages, and (with `--strict`) the approved `mostr`
   provenance.
 - `scripts/synthetic-smoke-test.R` — renders the artifact-only report to HTML
   and Typst from a generated synthetic fixture, without fitting Stan models or
@@ -150,8 +150,8 @@ All analysis constants live here and are loaded by
   `taooh`, `survival`, `supporting`, `diagnostics`, `reports`).
 - `diagnostics` — sampler thresholds (`max_rhat`, min ESS bulk/tail,
   divergent transitions, treedepth, B-FMI) and retry settings.
-- `provenance.markov_misc` — the reviewed clean `markov.misc` version and
-  40-hex Git SHA (currently an invalid placeholder until the clean release is
+- `provenance.mostr` — the reviewed `mostr` version and 40-hex Git SHA
+  (the SHA is currently an invalid placeholder until the reviewed commit is
   recorded).
 - `paths` — `private_data`, `schema_dir`, `derived_data`, `artifacts`,
   `results`, `reports`, `logs`.
@@ -213,7 +213,7 @@ surface.
 | `R/data-helpers.R` | Date parsing, censoring at the fixed lock, exposure construction, missing-vs-zero semantics, `invert_q30()`. |
 | `R/data-validation.R` | Schema-aware validation, PHI deny-list, pseudonymized Parquet reader. |
 | `R/imputation.R` | Deterministic one-imputation MICE branches and equal-weight draw pooling (`pool_equal_weight_draws`). |
-| `R/markov-helpers.R` | Thin auditable wrappers around `markov.misc` (`blrm_markov`, `sops`, `avg_sops`, `avg_comparisons`), diagnostics, and retry. |
+| `R/markov-helpers.R` | Posterior sampling diagnostics for `mostr::blrm_markov()` fits (`markov_diagnostics`, `assert_markov_diagnostics`). Notebooks call `mostr` directly. |
 | `R/survival-helpers.R` | mGPS/ECOG derivation, `stan_surv` fitting, standardized survival curves, RMST and risk draws. |
 | `R/model-helpers.R` | Posterior summaries, credible intervals, probability of benefit, draw stacking. |
 | `R/count-helpers.R` | Bayesian negative-binomial count/rate helpers for secondary analyses. |
@@ -283,7 +283,7 @@ analysis is primary.
 `analysis/02-primary/03-taooh/`
 
 1. `00-no-treatment-sentinel.qmd` — a reduced second-order model (no treatment
-   term) that validates the `markov.misc::blrm_markov()` API and the weekly
+   term) that validates the `mostr::blrm_markov()` API and the weekly
    data contract (death state 5 is absorbing; censoring after last follow-up)
    before the 50 full fits.
 2. `01-preparation.qmd` — prepares the weekly TAOOH endpoint.
@@ -293,7 +293,7 @@ analysis is primary.
    patient-level random intercept to all 50 imputations, with a retry loop.
 5. `04-estimand.qmd` — computes posterior-standardized state occupancy
    probabilities and the intervention-minus-control difference in time alive
-   and out of hospital over 26 weeks via `markov.misc::avg_sops()` and
+   and out of hospital over 26 weeks via `mostr::avg_sops()` and
    `avg_comparisons()`, pooling equal draw counts.
 6. `05-diagnostics.qmd` — validates posterior diagnostics.
 
