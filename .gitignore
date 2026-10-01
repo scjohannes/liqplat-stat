@@ -28,8 +28,9 @@
 /analysis/**/output/
 /analysis/**/artifacts/
 /analysis/**/_files/
-/reports/_files/
-/reports/_freeze/
+
+# Report sources and renders are local-only; never commit anything under reports/
+/reports/
 
 # Quarto, knitr, and notebook renders
 /_site/
@@ -76,3 +77,4 @@ nohup.out
 /sap/SAP.pdf
 /sap/SAP.typ
 /sap/SAP_files/
+tmp/
