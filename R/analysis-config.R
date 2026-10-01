@@ -27,6 +27,15 @@ read_analysis_config <- function(path = NULL, production = FALSE) {
     stop("Analysis configuration does not exist: ", path)
   }
   config <- yaml::read_yaml(path)
+  if (isTRUE(config$imputation$development)) {
+    config$imputation$main$m <- 5L
+    config$imputation$main$maxit <- 50L
+    config$imputation$supporting$m <- 5L
+    config$imputation$supporting$maxit <- 50L
+    config$imputation$supporting$indices <- 1:5
+    config$imputation$supporting$post_estimation_draws <- 1000L
+    config$markov$post_estimation_draws <- 1000L
+  }
   validate_analysis_config(config, production = production)
   attr(config, "config_path") <- path
   class(config) <- c("liqplat_analysis_config", class(config))
@@ -70,26 +79,41 @@ validate_analysis_config <- function(config, production = FALSE) {
     config,
     "imputation", "supporting", "post_estimation_draws"
   ))
-  if (!identical(main_m, 50L) || !identical(main_maxit, 50L)) {
-    stop("Main imputation settings must be m = 50 and maxit = 50.")
+  development <- isTRUE(config$imputation$development)
+  if (isTRUE(production) && development) {
+    stop("Disable imputation development mode before the final production run.")
   }
-  if (!identical(supporting, 1:5)) {
-    stop("Supporting imputations must be exactly 1:5.")
+  # Development: five imputations everywhere with 1000 estimand draws each.
+  # Final: 50 main / 5 supporting imputations with 200 / 500 draws.
+  expected_main <- if (development) 5L else 50L
+  expected_supporting <- 5L
+  expected_maxit <- 50L
+  expected_supporting_draws <- if (development) 1000L else 500L
+  expected_markov_draws <- if (development) 1000L else 200L
+  if (!identical(main_m, expected_main) || !identical(main_maxit, expected_maxit)) {
+    stop("Main imputation settings do not match the selected development/final mode.")
   }
-  if (!identical(supporting_draws, 500L)) {
-    stop("Five-imputation supporting analyses must use 500 posterior draws per imputation.")
+  if (!identical(supporting, seq_len(expected_supporting)) ||
+      !identical(as.integer(config$imputation$supporting$m), expected_supporting) ||
+      !identical(as.integer(config$imputation$supporting$maxit), expected_maxit)) {
+    stop("Supporting imputation settings do not match the selected development/final mode.")
+  }
+  if (!identical(supporting_draws, expected_supporting_draws)) {
+    stop("Supporting analyses must use ", expected_supporting_draws,
+         " posterior draws per imputation.")
   }
 
   markov <- config$markov
   expected_markov <- c(chains = 4L, iterations = 1000L, warmup = 500L,
                        retry_iterations = 2000L,
-                       post_estimation_draws = 200L)
+                       post_estimation_draws = expected_markov_draws)
   actual_markov <- vapply(names(expected_markov), function(name) {
     as.integer(markov[[name]])
   }, integer(1))
   if (!identical(actual_markov, expected_markov)) {
     stop("Markov settings must be 4 chains, 1000 iterations, 500 warmup, ",
-         "2000 retry iterations, and 200 post-estimation draws.")
+         "2000 retry iterations, and ", expected_markov_draws,
+         " post-estimation draws.")
   }
 
   thresholds <- config$diagnostics
@@ -108,10 +132,10 @@ validate_analysis_config <- function(config, production = FALSE) {
     stop("Diagnostic posterior draws must be exactly 200.")
   }
 
-  provenance <- config_get(config, "provenance", "markov_misc")
+  provenance <- config_get(config, "provenance", "mostr")
   if (is.null(provenance) ||
-      !identical(as.character(provenance$package), "markov.misc")) {
-    stop("markov.misc provenance is missing or names the wrong package.")
+      !identical(as.character(provenance$package), "mostr")) {
+    stop("mostr provenance is missing or names the wrong package.")
   }
   sha <- as.character(provenance$git_sha %||% "")
   version <- as.character(provenance$version %||% "")
@@ -120,8 +144,8 @@ validate_analysis_config <- function(config, production = FALSE) {
     !grepl("REPLACE|REQUIRED|INVALID|FUTURE|0\\.0\\.0", version,
            ignore.case = TRUE)
   if (isTRUE(production) && (!valid_sha || !valid_version)) {
-    stop("Production preflight requires the reviewed clean markov.misc ",
-         "version and 40-hex Git SHA; the configured values are placeholders.")
+    stop("Production preflight requires the reviewed mostr version and ",
+         "40-hex Git SHA; the configured values are placeholders.")
   }
   invisible(config)
 }
@@ -147,7 +171,7 @@ analysis_seed <- function(config, family, imputation = NULL, offset = 0L) {
   as.integer(seed)
 }
 
-package_provenance <- function(package = "markov.misc") {
+package_provenance <- function(package = "mostr") {
   if (!requireNamespace(package, quietly = TRUE)) {
     return(list(package = package, installed = FALSE, version = NA_character_,
                 library = NA_character_, git_sha = NA_character_))
@@ -164,8 +188,8 @@ package_provenance <- function(package = "markov.misc") {
   )
 }
 
-validate_package_provenance <- function(config, package = "markov.misc") {
-  expected <- config_get(config, "provenance", "markov_misc")
+validate_package_provenance <- function(config, package = "mostr") {
+  expected <- config_get(config, "provenance", "mostr")
   observed <- package_provenance(package)
   if (!isTRUE(observed$installed)) {
     stop("Required package is not installed: ", package)
