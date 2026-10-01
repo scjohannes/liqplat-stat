@@ -61,7 +61,7 @@ taooh_outputs_current <- function(outputs, inputs) {
     min(file.info(outputs)$mtime) >= max(file.info(inputs)$mtime)
 }
 
-taooh_empirical_history <- function(taooh, horizon_days = 182) {
+taooh_carry_death_forward <- function(taooh, horizon_days = 182) {
   weeks <- taooh_horizon_weeks(horizon_days)
   observed <- taooh |>
     dplyr::select(id, week, y_taooh) |>
