@@ -1,57 +1,45 @@
-# Public, version-controlled analysis constants.
-#
-# The reviewed mostr commit is deliberately not filled in yet. Production
-# preflight must fail until the exact commit is recorded after the package has
-# been reviewed and installed from it.
+# Analysis settings shared by all notebooks. Each notebook reads this file with
+# `config <- read_yaml(here("config", "analysis.yml"))`.
+
 analysis:
-  name: LIQPLAT
-  config_version: 1
   data_lock: "2026-09-05"
   horizon_days: 182
 
 imputation:
-  # Temporary: use five imputations with 50 MICE iterations in every analysis,
-  # and 1000 posterior draws per imputation for estimands (both
-  # imputation.supporting and markov post_estimation_draws). Set development
-  # to false for the final run; settings below are preserved.
-  development: true
-  main:
-    m: 50
-    maxit: 50
-    donors: 5
-  supporting:
-    indices: [1, 2, 3, 4, 5]
-    m: 5
-    maxit: 50
-    donors: 5
-    post_estimation_draws: 500
-  method: mice
+  # Imputations for the three main analyses (overall survival, the six-month
+  # QoL landmark, and TAOOH). Each imputation is created and fitted on its own
+  # with a per-index seed, so raising m_main from 5 to 50 adds imputations
+  # 6-50 and leaves 1-5 unchanged.
+  m_main: 5
+  # All other analyses use imputations 1-5 (SAP).
+  m_supporting: 5
+  maxit: 50
+  donors: 5
+
+posterior_draws:
+  # Posterior draws per imputation used to compute estimands. Estimands are
+  # recomputed from the saved fits on every render, so changing these only
+  # changes the post-estimation, not the fits.
+  main: 1000
+  supporting: 1000
 
 markov:
   chains: 4
   iterations: 1000
   warmup: 500
+  # A Markov model that fails the diagnostic thresholds is refitted once with
+  # this many iterations.
   retry_iterations: 2000
-  post_estimation_draws: 200
-  first_order:
-    order: 1
-    p_var: yprev
-  second_order:
-    order: 2
-    p_var: yprev
-    p2_var: ypprev
 
 seeds:
-  # Every stochastic stage receives a named family.  Stage code must derive
-  # per-imputation seeds with analysis_seed(), never from the clock.
-  data: 17001
+  # Seed families. Per-imputation seeds are family + (imputation - 1) * 1000,
+  # plus a fixed offset where one family is used for several steps.
   imputation: 17002
   qol: 17003
   taooh: 17004
   survival: 17005
   supporting: 17006
   diagnostics: 17007
-  reports: 17008
 
 diagnostics:
   max_rhat: 1.01
@@ -60,23 +48,5 @@ diagnostics:
   max_divergent_transitions: 0
   max_treedepth_exceeded: 0
   min_bfmi: 0.3
+  # Posterior draws used by graphical model checks.
   posterior_draws: 200
-  retry_on_failure: true
-
-provenance:
-  mostr:
-    package: mostr
-    version: "0.1.0"
-    # INVALID PLACEHOLDER: replace with the reviewed commit the installed
-    # package was built from.
-    git_sha: "REPLACE_WITH_REVIEWED_MOSTR_40_HEX_SHA"
-    source: "https://github.com/scjohannes/mostr"
-
-paths:
-  private_data: data/private
-  schema_dir: data/schema
-  derived_data: data/derived
-  artifacts: artifacts
-  results: results
-  reports: reports
-  logs: logs

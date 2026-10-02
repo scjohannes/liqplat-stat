@@ -1,134 +1,122 @@
-#!/usr/bin/env Rscript
+# Render all LIQPLAT analysis notebooks in dependency order.
+#
+#   Rscript scripts/run-all.R                              # everything
+#   Rscript scripts/run-all.R --from analysis/04-taooh     # from the first match on
+#   Rscript scripts/run-all.R --only analysis/09-imaging   # only matching notebooks
+#
+# --from and --only take a path prefix. Notebooks inside a folder run in file
+# name order; the order of the folders below encodes the dependencies between
+# analyses. Imputations and model fits are cached in each analysis's results/
+# folder: delete that folder to recompute them.
 
-# Explicit ordered Quarto-stage runner.  This intentionally has no target
-# graph: stage order and paths come only from config/stages.yml.
-
-script_args <- commandArgs(trailingOnly = FALSE)
-script_file_arg <- script_args[grepl("^--file=", script_args)]
-script_file <- if (length(script_file_arg) == 0L) "" else
-  sub("^--file=", "", script_file_arg[[1L]])
-script_root <- if (nzchar(script_file)) {
-  normalizePath(dirname(script_file), winslash = "/", mustWork = TRUE)
-} else {
-  normalizePath(file.path(getwd(), "scripts"), winslash = "/", mustWork = FALSE)
-}
-project_root <- normalizePath(file.path(script_root, ".."), winslash = "/", mustWork = FALSE)
-config_file <- file.path(project_root, "config", "stages.yml")
-required_r_version <- "4.6.1"
-
-runner_usage <- function() {
-  cat(paste(
-    "Usage: Rscript scripts/run-all.R [options]",
-    "",
-    "Options:",
-    "  --from VALUE   First stage index or stage id (default: 1)",
-    "  --to VALUE     Last stage index or stage id (default: final stage)",
-    "  --force        Re-render selected stages and set LIQPLAT_FORCE=1",
-    "  --help         Show this help",
-    "",
-    "The LIQPLAT_FORCE=1 environment variable has the same effect as --force.",
-    sep = "\n"
-  ), "\n")
+if (getRversion() != "4.6.1") {
+  stop("LIQPLAT requires R 4.6.1; this is R ", getRversion(), ".")
 }
 
-parse_runner_args <- function(args) {
-  result <- list(from = NULL, to = NULL, force = identical(Sys.getenv("LIQPLAT_FORCE"), "1"))
-  index <- 1L
-  while (index <= length(args)) {
-    arg <- args[[index]]
-    if (arg %in% c("--help", "-h")) {
-      runner_usage()
-      quit(save = "no", status = 0L)
-    }
-    if (arg == "--force") {
-      result$force <- TRUE
-      index <- index + 1L
-      next
-    }
-    option <- sub("=.*$", "", arg)
-    if (option %in% c("--from", "--to")) {
-      value <- sub("^[^=]+=", "", arg)
-      if (identical(value, arg)) {
-        index <- index + 1L
-        if (index > length(args)) stop("Missing value for ", option)
-        value <- args[[index]]
-      }
-      if (!nzchar(value)) stop("Empty value for ", option)
-      result[[sub("^--", "", option)]] <- value
-      index <- index + 1L
-      next
-    }
-    stop("Unknown option: ", arg)
+library(here)
+
+run_order <- c(
+  "analysis/00-data",
+  "analysis/01-population",
+
+  # Overall survival, main model first: the QoL analysis decision needs its
+  # RMST. The 26-week death analysis needs the QoL vital-status model, so it
+  # runs after the QoL landmark imputation.
+  "analysis/02-overall-survival/01-main",
+  "analysis/02-overall-survival/02-non-proportional-hazards",
+  "analysis/03-quality-of-life/00-analysis-decision.qmd",
+  "analysis/03-quality-of-life/01-preparation.qmd",
+  "analysis/03-quality-of-life/02-six-month-landmark",
+  "analysis/02-overall-survival/03-death-at-26-weeks",
+  "analysis/03-quality-of-life/03-longitudinal-with-death",
+  "analysis/03-quality-of-life/05-longitudinal-unadjusted",
+  "analysis/02-overall-survival/04-unrestricted-follow-up",
+  "analysis/02-overall-survival/05-unrestricted-hierarchical",
+  "analysis/02-overall-survival/06-censoring",
+  "analysis/02-overall-survival/07-acceptance-kaplan-meier",
+  "analysis/02-overall-survival/08-survival-rates",
+  "analysis/02-overall-survival/09-unadjusted",
+
+  "analysis/04-taooh/01-preparation.qmd",
+  "analysis/04-taooh/02-imputation.qmd",
+  "analysis/04-taooh/03-second-order-markov",
+  "analysis/04-taooh/04-first-order-markov",
+  "analysis/04-taooh/05-unadjusted-second-order",
+  "analysis/05-progression-free-survival",
+  "analysis/06-best-supportive-care",
+  "analysis/07-blood-products",
+  "analysis/08-tissue-biopsy",
+  "analysis/09-imaging",
+  "analysis/10-implementation"
+)
+
+notebooks <- unlist(lapply(run_order, function(entry) {
+  if (grepl("\\.qmd$", entry)) {
+    return(entry)
   }
-  result
+  files <- list.files(here(entry), pattern = "\\.qmd$", recursive = TRUE)
+  file.path(entry, sort(files, method = "radix"))
+}))
+
+stopifnot(all(file.exists(here(notebooks))), !anyDuplicated(notebooks))
+
+args <- commandArgs(trailingOnly = TRUE)
+option_value <- function(name) {
+  position <- match(name, args)
+  if (is.na(position)) NULL else args[[position + 1L]]
 }
 
-load_stage_registry <- function(path = config_file) {
-  if (!requireNamespace("yaml", quietly = TRUE)) stop("Package 'yaml' is required.")
-  if (!file.exists(path)) stop("Stage registry does not exist: ", path)
-  registry <- yaml::read_yaml(path)
-  stages <- registry$stages
-  if (!is.list(stages) || length(stages) == 0L) stop("Stage registry is empty.")
-  ids <- vapply(stages, function(x) as.character(x$id), character(1))
-  numbers <- vapply(stages, function(x) as.integer(x$number), integer(1))
-  paths <- vapply(stages, function(x) as.character(x$path), character(1))
-  if (anyDuplicated(ids) || anyDuplicated(numbers) || anyDuplicated(paths)) {
-    stop("Stage registry ids, numbers, and paths must be unique.")
+from <- option_value("--from")
+if (!is.null(from)) {
+  first <- which(startsWith(notebooks, from))[1]
+  if (is.na(first)) stop("No notebook matches --from ", from)
+  notebooks <- notebooks[first:length(notebooks)]
+}
+
+only <- option_value("--only")
+if (!is.null(only)) {
+  notebooks <- notebooks[startsWith(notebooks, only)]
+  if (length(notebooks) == 0L) stop("No notebook matches --only ", only)
+}
+
+# Quarto renders with this R and the Rtools45 compiler path. Sorting uses the
+# C collation, so factor levels and orderings do not depend on the machine;
+# characters use UTF-8 so that labels with dashes or Greek letters print
+# correctly (LC_ALL = C would turn them into "<U+2013>").
+Sys.unsetenv("LC_ALL")
+Sys.setenv(
+  QUARTO_R = R.home("bin"),
+  LC_COLLATE = "C",
+  LC_CTYPE = "English_United States.utf8",
+  MAKEFLAGS = "PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin"
+)
+
+# Quarto scans the whole project directory before rendering. If a file
+# disappears during that scan (e.g. while the report is rendered at the same
+# time), the render fails with "os error 2): stat"; such renders are retried.
+render <- function(notebook) {
+  log_file <- tempfile(fileext = ".log")
+  status <- system2(
+    "quarto",
+    c("render", shQuote(here(notebook))),
+    stdout = log_file,
+    stderr = log_file
+  )
+  log <- readLines(log_file, warn = FALSE)
+  writeLines(log)
+  list(status = status, scan_race = any(grepl("os error 2): stat", log, fixed = TRUE)))
+}
+
+for (notebook in notebooks) {
+  message(format(Sys.time(), "%H:%M"), "  ", notebook)
+
+  result <- render(notebook)
+  attempt <- 1L
+  while (result$status != 0L && result$scan_race && attempt < 3L) {
+    attempt <- attempt + 1L
+    message("Retrying after a Quarto project-scan error: ", notebook)
+    result <- render(notebook)
   }
-  if (!identical(numbers, sort(numbers))) stop("Stage registry must be numerically ordered.")
-  if (any(!grepl("\\.qmd$", paths, ignore.case = TRUE))) stop("Every stage path must be a .qmd file.")
-  stages
-}
 
-resolve_stage_index <- function(value, stages, option_name) {
-  if (is.null(value)) return(if (option_name == "from") 1L else length(stages))
-  as_index <- suppressWarnings(as.integer(value))
-  if (!is.na(as_index) && identical(as.character(as_index), as.character(value))) {
-    if (as_index < 1L || as_index > length(stages)) {
-      stop(option_name, " index must be between 1 and ", length(stages), ".")
-    }
-    return(as_index)
-  }
-  ids <- vapply(stages, function(x) as.character(x$id), character(1))
-  match_index <- match(value, ids)
-  if (is.na(match_index)) stop("Unknown ", option_name, " stage: ", value)
-  match_index
+  if (result$status != 0L) stop("Rendering failed: ", notebook)
 }
-
-render_stage <- function(stage, force = FALSE) {
-  stage_path <- file.path(project_root, stage$path)
-  stage_path <- normalizePath(stage_path, winslash = "/", mustWork = FALSE)
-  if (!file.exists(stage_path)) stop("Stage file does not exist: ", stage_path)
-  quarto <- Sys.which("quarto")
-  if (!nzchar(quarto)) stop("Quarto is required to render stage: ", stage$id)
-  old_force_exists <- nzchar(Sys.getenv("LIQPLAT_FORCE", unset = ""))
-  old_force <- Sys.getenv("LIQPLAT_FORCE", unset = "")
-  on.exit({
-    if (old_force_exists) Sys.setenv(LIQPLAT_FORCE = old_force)
-    else Sys.unsetenv("LIQPLAT_FORCE")
-  }, add = TRUE)
-  if (isTRUE(force)) Sys.setenv(LIQPLAT_FORCE = "1")
-  status <- system2(quarto, args = c("render", stage_path), stdout = "", stderr = "")
-  if (!identical(status, 0L)) stop("Quarto render failed for stage ", stage$id, " (status ", status, ").")
-  invisible(TRUE)
-}
-
-main <- function(args = commandArgs(trailingOnly = TRUE)) {
-  if (!identical(as.character(getRversion()), required_r_version)) {
-    stop("LIQPLAT requires exactly R ", required_r_version,
-         "; found ", as.character(getRversion()), ".")
-  }
-  options <- parse_runner_args(args)
-  stages <- load_stage_registry()
-  first <- resolve_stage_index(options$from, stages, "--from")
-  last <- resolve_stage_index(options$to, stages, "--to")
-  if (first > last) stop("--from must not be after --to.")
-  for (index in seq.int(first, last)) {
-    stage <- stages[[index]]
-    message("Rendering stage ", index, "/", length(stages), ": ", stage$id)
-    render_stage(stage, force = options$force)
-  }
-  invisible(TRUE)
-}
-
-if (identical(environment(), globalenv())) main()
