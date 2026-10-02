@@ -1,0 +1,40 @@
+---
+title: "Overall survival — preparation"
+subtitle: "Locked 182-day survival endpoint"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(tidyverse)
+
+source(here("R", "covariates.R"))
+
+results_dir <- here("analysis", "02-overall-survival", "01-main", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: prepare-os-data
+#| include: false
+
+prepared <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  mutate(
+    ecog_binary = derive_ecog_binary(ecog_fstcnt),
+    mgps = derive_mgps(albumin, c_reactive_protein)
+  ) |>
+  # Column order sets the MICE visit sequence in the imputation notebook.
+  select(
+    id, tx, survival_time_days, event_death, ecog_binary,
+    ecog_fstcnt, stage_binary, lung, mgps, age, gender,
+    albumin, bilirubin, c_reactive_protein, lactate_dehydrogenase
+  )
+
+write_parquet(prepared, file.path(results_dir, "prepared.parquet"))
+```

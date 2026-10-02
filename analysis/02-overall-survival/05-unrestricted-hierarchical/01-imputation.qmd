@@ -1,0 +1,205 @@
+---
+title: "Unrestricted overall survival — Adjusted (hierarchical) imputation"
+format: html
+---
+
+- Sensitivity analysis: diagnosis as cluster (`2l.pmm`) instead of the lung indicator.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(mice)
+library(miceadds) # provides mice.impute.2l.pmm
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "05-unrestricted-hierarchical", "results"
+)
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+imputation_path <- file.path(results_dir, "imputation.rds")
+indices <- seq_len(config$imputation$m_supporting)
+```
+
+## Imputation data
+
+```{r}
+#| label: prepare-imputation-data
+#| include: false
+
+prepared <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  # Column order sets the MICE visit sequence.
+  select(
+    id,
+    tx,
+    survival_time_days_unrestricted,
+    status_death_unrestricted,
+    diagnosis,
+    ecog_fstcnt,
+    stage_binary,
+    age,
+    gender,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    lactate_dehydrogenase
+  ) |>
+  mutate(
+    diagnosis = factor(diagnosis),
+    diagnosis_id = as.integer(diagnosis),
+    gender = factor(gender)
+  )
+
+stopifnot(
+  !anyNA(prepared$diagnosis),
+  !anyDuplicated(prepared$id),
+  all(prepared$survival_time_days_unrestricted >= 0)
+)
+
+prepared <- prepared |>
+  mutate(
+    na_est = nelsonaalen(
+      pick(everything()),
+      timevar = survival_time_days_unrestricted,
+      statusvar = status_death_unrestricted
+    )
+  )
+
+imputation_data <- prepared |>
+  select(-diagnosis)
+```
+
+## Imputation model
+
+```{r}
+#| label: impute
+#| include: false
+
+incomplete <- names(which(colSums(is.na(imputation_data)) > 0))
+
+methods <- make.method(imputation_data)
+methods[] <- ""
+methods[incomplete] <- "2l.pmm"
+
+predictors <- make.predictorMatrix(imputation_data)
+predictors[, c("id", "survival_time_days_unrestricted")] <- 0
+predictors[!nzchar(methods), ] <- 0
+predictors[incomplete, "diagnosis_id"] <- -2
+
+if (!file.exists(imputation_path)) {
+  imputation <- mice(
+    imputation_data,
+    method = methods,
+    predictorMatrix = predictors,
+    m = config$imputation$m_supporting,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = 4101L,
+    printFlag = FALSE
+  )
+
+  saveRDS(imputation, imputation_path, compress = "xz")
+}
+
+imputation <- readRDS(imputation_path)
+```
+
+## Completed datasets
+
+```{r}
+#| label: complete
+#| include: false
+
+completed_datasets <- map(indices, \(index) {
+  completed <- complete(imputation, index) |>
+    mutate(
+      diagnosis = prepared$diagnosis,
+      ecog_binary = derive_ecog_binary(ecog_fstcnt),
+      mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2)
+    )
+
+  stopifnot(
+    !anyNA(completed),
+    all(completed$ecog_fstcnt %in% 0:4),
+    imputation$m == config$imputation$m_supporting,
+    identical(
+      completed$survival_time_days_unrestricted,
+      prepared$survival_time_days_unrestricted
+    ),
+    identical(
+      completed$status_death_unrestricted,
+      prepared$status_death_unrestricted
+    ),
+    all(imputation$predictorMatrix[incomplete, "diagnosis_id"] == -2),
+    # Binary ECOG and mGPS agree with the completed source values.
+    identical(
+      completed$ecog_binary,
+      derive_ecog_binary(completed$ecog_fstcnt)
+    ),
+    identical(
+      as.integer(as.character(completed$mgps)),
+      derive_mgps(completed$albumin, completed$c_reactive_protein)
+    )
+  )
+
+  completed
+})
+
+saveRDS(completed_datasets, file.path(results_dir, "completed-datasets.rds"))
+```
+
+## Convergence and imputed distributions
+
+```{r}
+#| label: fig-os-hierarchical-imputation-traces
+#| fig-cap: "Adjusted (hierarchical): means and standard deviations across five imputations and 50 iterations"
+#| fig-alt: "Trace plots for imputed ECOG and laboratory values, with separate traces for each of five imputations."
+#| fig-width: 8
+#| fig-height: 7
+#| echo: false
+
+plot_mice_traces(mice_chain_stats(imputation))
+```
+
+```{r}
+#| label: fig-os-hierarchical-imputation-distributions
+#| fig-cap: "Adjusted (hierarchical): observed (black) and imputed (pink, one line per completed dataset) laboratory distributions"
+#| fig-alt: "Observed and imputed densities for albumin, bilirubin, CRP, and LDH."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+lab_values <- imputed_values(
+  imputation,
+  c(
+    Albumin = "albumin",
+    Bilirubin = "bilirubin",
+    CRP = "c_reactive_protein",
+    LDH = "lactate_dehydrogenase"
+  )
+)
+
+plot_imputed_densities(lab_values$observed, lab_values$imputed)
+```
+
+```{r}
+#| label: tbl-os-hierarchical-imputation-events
+#| echo: false
+
+if (!is.null(imputation$loggedEvents)) {
+  imputation$loggedEvents |>
+    count(dep, meth, out) |>
+    kable()
+}
+```

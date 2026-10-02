@@ -1,0 +1,66 @@
+---
+title: "Overall survival with unrestricted follow-up — non-PH fitting"
+subtitle: "Supporting time-varying treatment-effect analysis using five imputations"
+format: html
+---
+
+- `rstanarm` default priors, not the SAP priors of the main model.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "04-unrestricted-follow-up", "results"
+)
+model_dir <- file.path(results_dir, "nph", "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+imputations <- readRDS(file.path(results_dir, "imputations.rds"))
+```
+
+## Fitting
+
+```{r}
+#| label: fit-nph-models
+#| include: false
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+
+  if (!file.exists(model_path)) {
+    fitting_data <- complete(imputations, index) |>
+      mutate(mgps = factor(mgps, levels = 0:2)) |>
+      # Zero follow-up is dropped from fitting only; standardization keeps it.
+      filter_out(survival_time_days_unrestricted == 0)
+
+    model <- stan_surv(
+      formula = Surv(
+        survival_time_days_unrestricted,
+        status_death_unrestricted
+      ) ~ tve(tx, df = 3, degree = 3) +
+        ecog_binary + stage_binary + lung + mgps,
+      data = fitting_data,
+      chains = 4L,
+      iter = 1000L,
+      warmup = 500L,
+      cores = 4L,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      seed = config$seeds$supporting + (index - 1) * 1000 + 900
+    )
+
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

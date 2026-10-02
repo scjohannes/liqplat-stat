@@ -1,0 +1,313 @@
+---
+title: "Overall survival — diagnostics"
+subtitle: "Posterior and model-fit diagnostics for the Bayesian survival fits"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(posterior)
+library(ggsurvfit)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here("analysis", "02-overall-survival", "01-main", "results")
+trace_dir <- file.path(results_dir, "diagnostics", "trace-plots")
+figure_dir <- file.path(results_dir, "figures")
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+horizon_days <- config$analysis$horizon_days
+```
+
+## Convergence
+
+```{r}
+#| label: check-os-models
+#| include: false
+
+diagnostics <- seq_len(config$imputation$m_main) |>
+  map(function(index) {
+    model <- readRDS(
+      file.path(results_dir, "models", sprintf("model-%02d.rds", index))
+    )
+
+    model_diagnostics <- summarise_draws(as_draws_df(model)) |>
+      as_tibble() |>
+      mutate(imputation = index)
+
+    rhat <- model_diagnostics$rhat
+    ess_bulk <- model_diagnostics$ess_bulk
+    ess_tail <- model_diagnostics$ess_tail
+    if (
+      any(rhat[is.finite(rhat)] > config$diagnostics$max_rhat) ||
+        any(ess_bulk[is.finite(ess_bulk)] < config$diagnostics$min_ess_bulk) ||
+        any(ess_tail[is.finite(ess_tail)] < config$diagnostics$min_ess_tail)
+    ) {
+      stop("OS posterior diagnostics failed for imputation ", index, ".")
+    }
+
+    draws <- as_draws_array(model)
+    trace_variables <- str_subset(
+      variables(draws),
+      "^(tx|ecog_binary|stage_binary|lung|mgps)"
+    )
+    if (length(trace_variables) == 0L) {
+      stop("No OS regression parameters were found for trace plotting.")
+    }
+    save_figure(
+      plot_traces(trace_draws(model, trace_variables), ncol = 2),
+      file.path(trace_dir, sprintf("trace-%02d.png", index)),
+      height = max(4, 1.5 * ceiling(length(trace_variables) / 2))
+    )
+
+    model_diagnostics
+  }) |>
+  list_rbind()
+
+write_parquet(diagnostics, file.path(results_dir, "diagnostics.parquet"))
+```
+
+## Kaplan–Meier versus the standardized model curves
+
+```{r}
+#| label: build-km-model-plot
+#| include: false
+
+prepared <- read_parquet(file.path(results_dir, "prepared.parquet")) |>
+  mutate(tx_plot = group_factor(tx))
+
+km_fit <- survfit2(
+  Surv(survival_time_days, event_death) ~ tx_plot,
+  data = prepared,
+  conf.type = "log-log"
+)
+
+curve_summary <- read_parquet(
+  file.path(results_dir, "survival-curves.parquet")
+) |>
+  summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(tx, time)
+  )
+
+survival_plot <- plot_km_model(
+  km_fit,
+  curve_summary,
+  x_max = horizon_days,
+  risk_every = 50
+)
+
+save_figure(
+  ggsurvfit_build(survival_plot),
+  file.path(figure_dir, "kaplan-meier-vs-posterior-model.png"),
+  height = 6.5
+)
+```
+
+```{r}
+#| label: fig-os-km-model-check
+#| fig-cap: "Observed Kaplan–Meier estimates, numbers at risk, and pooled standardized posterior survival curves"
+#| fig-alt: "Survival plot by randomized group with aligned at-risk and cumulative-event counts every 50 days. Dashed steps show Kaplan–Meier estimates with censoring marks; solid lines and bands show median Bayesian model predictions and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+## Residual checks
+
+- Companion Cox model is for supplemental Schoenfeld and deviance checks only.
+
+```{r}
+#| label: companion-cox-model
+#| include: false
+
+diagnostic_data <- readRDS(
+  file.path(results_dir, "imputations", "imputation-01.rds")
+) |>
+  complete(1) |>
+  mutate(mgps = factor(mgps, levels = 0:2)) |>
+  filter(survival_time_days > 0)
+
+cox_model <- coxph(
+  Surv(survival_time_days, event_death) ~
+    tx + ecog_binary + stage_binary + lung + mgps,
+  data = diagnostic_data,
+  x = TRUE,
+  y = TRUE
+)
+
+zph <- cox.zph(cox_model, transform = "km")
+zph_table <- as_tibble(zph$table) |>
+  mutate(term = rownames(zph$table))
+
+write_parquet(zph_table, file.path(results_dir, "ph-diagnostics.parquet"))
+```
+
+```{r}
+#| label: cox-snell-check
+#| include: false
+
+posterior_survival <- posterior_survfit(
+  readRDS(file.path(results_dir, "models", "model-01.rds")),
+  newdata = diagnostic_data,
+  times = "survival_time_days",
+  extrapolate = FALSE,
+  draws = config$diagnostics$posterior_draws,
+  seed = config$seeds$diagnostics,
+  return_matrix = TRUE
+)
+survival_draws <- as.matrix(posterior_survival[[1L]])
+stopifnot(
+  "Posterior survival predictions do not match the diagnostic dataset." =
+    ncol(survival_draws) == nrow(diagnostic_data)
+)
+
+cox_snell_residuals <- -log(pmax(survival_draws, .Machine$double.xmin))
+residual_grid <- seq(
+  0,
+  quantile(cox_snell_residuals, 0.99, names = FALSE),
+  length.out = 200L
+)
+
+cox_snell_data <- seq_len(nrow(cox_snell_residuals)) |>
+  map(function(draw) {
+    residual_fit <- survfit(
+      Surv(cox_snell_residuals[draw, ], diagnostic_data$event_death) ~ 1,
+      stype = 2,
+      ctype = 1
+    )
+    cumulative_hazard <- approx(
+      x = c(0, residual_fit$time),
+      y = c(0, residual_fit$cumhaz),
+      xout = residual_grid,
+      method = "constant",
+      f = 0,
+      rule = 2
+    )$y
+    tibble(residual = residual_grid, cumulative_hazard = cumulative_hazard)
+  }) |>
+  list_rbind() |>
+  summarise(
+    median = median(cumulative_hazard),
+    lower = quantile(cumulative_hazard, 0.025, names = FALSE),
+    upper = quantile(cumulative_hazard, 0.975, names = FALSE),
+    .by = residual
+  )
+
+write_parquet(
+  cox_snell_data,
+  file.path(results_dir, "cox-snell-posterior-summary.parquet")
+)
+
+cox_snell_plot <- ggplot(cox_snell_data, aes(x = residual, y = median)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_line(linewidth = 0.8) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = reference_line_colour
+  ) +
+  labs(
+    x = "Posterior Cox–Snell residual",
+    y = "Nelson–Aalen cumulative hazard"
+  )
+
+save_figure(cox_snell_plot, file.path(figure_dir, "cox-snell-residuals.png"))
+```
+
+```{r}
+#| label: deviance-and-schoenfeld-residuals
+#| include: false
+
+deviance_data <- tibble(
+  linear_predictor = predict(cox_model, type = "lp"),
+  deviance_residual = residuals(cox_model, type = "deviance")
+)
+
+deviance_plot <- ggplot(
+  deviance_data,
+  aes(x = linear_predictor, y = deviance_residual)
+) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = reference_line_colour) +
+  geom_point(alpha = 0.65, colour = "grey50") +
+  geom_smooth(method = "loess", formula = y ~ x, se = FALSE, colour = "black") +
+  labs(
+    x = "Companion Cox-model linear predictor",
+    y = "Deviance residual"
+  )
+
+save_figure(deviance_plot, file.path(figure_dir, "deviance-residuals.png"))
+
+# Scaled Schoenfeld residuals for treatment (circles) with survival's spline
+# estimate of Beta(t) and its two-standard-error band (dashed); time on the
+# Kaplan–Meier scale, labelled in days.
+stopifnot("tx" %in% colnames(zph$y))
+tx_column <- which(colnames(zph$y) == "tx")
+schoenfeld_smooth <- plot(zph, var = tx_column, plot = FALSE)
+schoenfeld_curves <- tibble(
+  x = schoenfeld_smooth$x,
+  estimate = schoenfeld_smooth$y[, 1],
+  upper = schoenfeld_smooth$y[, 2],
+  lower = schoenfeld_smooth$y[, 3]
+)
+day_breaks <- pretty(zph$time)
+day_breaks <- day_breaks[between(day_breaks, min(zph$time), max(zph$time))]
+unique_times <- !duplicated(zph$x)
+
+schoenfeld_plot <- ggplot(
+  tibble(x = zph$x, residual = zph$y[, tx_column]),
+  aes(x, residual)
+) +
+  geom_point(shape = 1) +
+  geom_line(data = schoenfeld_curves, aes(y = estimate)) +
+  geom_line(data = schoenfeld_curves, aes(y = upper), linetype = "dashed") +
+  geom_line(data = schoenfeld_curves, aes(y = lower), linetype = "dashed") +
+  scale_x_continuous(
+    breaks = approx(
+      zph$time[unique_times],
+      zph$x[unique_times],
+      xout = day_breaks
+    )$y,
+    labels = day_breaks
+  ) +
+  labs(
+    x = "Days since random selection (Kaplan–Meier scale)",
+    y = "Beta(t) for treatment"
+  )
+
+save_figure(
+  schoenfeld_plot,
+  file.path(figure_dir, "scaled-schoenfeld-residuals.png")
+)
+```
+
+```{r}
+#| label: fig-os-residual-checks
+#| fig-cap: "Bayesian survival-model Cox–Snell and supplemental companion-Cox deviance residual checks"
+#| fig-subcap:
+#|   - "Posterior Cox–Snell cumulative-hazard check"
+#|   - "Companion-Cox deviance residuals against the linear predictor"
+#| layout-ncol: 2
+#| fig-width: 6.5
+#| fig-height: 5
+#| echo: false
+
+cox_snell_plot
+deviance_plot
+```

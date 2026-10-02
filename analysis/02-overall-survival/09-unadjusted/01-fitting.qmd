@@ -1,0 +1,182 @@
+---
+title: "Overall survival, unadjusted — fitting"
+subtitle: "Randomised group as the only covariate, observed data"
+format: html
+---
+
+- Zero follow-up is dropped from fitting, as in the adjusted models.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(posterior)
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here("analysis", "02-overall-survival", "09-unadjusted", "results")
+model_dir <- file.path(results_dir, "models")
+trace_dir <- file.path(results_dir, "trace-plots")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  select(
+    id,
+    tx,
+    survival_time_days,
+    event_death,
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) |>
+  as.data.frame()
+
+formulas <- list(
+  "ph-182" = Surv(survival_time_days, event_death) ~ tx,
+  "nph-182" = Surv(survival_time_days, event_death) ~
+    tve(tx, df = 3, degree = 3),
+  "ph-unrestricted" = Surv(
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) ~ tx,
+  "nph-unrestricted" = Surv(
+    survival_time_days_unrestricted,
+    status_death_unrestricted
+  ) ~ tve(tx, df = 3, degree = 3)
+)
+
+# Offsets 100-400 keep these seeds apart from the main-model seeds
+# (survival + multiples of 1000).
+seeds <- config$seeds$survival + c(
+  "ph-182" = 100,
+  "nph-182" = 200,
+  "ph-unrestricted" = 300,
+  "nph-unrestricted" = 400
+)
+
+# Convergence rule of the main OS diagnostics (non-finite values ignored).
+diagnostics_pass <- function(diagnostics) {
+  finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+  finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+  finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+
+  all(finite_rhat <= config$diagnostics$max_rhat) &&
+    all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+    all(finite_tail >= config$diagnostics$min_ess_tail)
+}
+```
+
+```{r}
+#| label: fit-models
+#| include: false
+
+for (model in names(formulas)) {
+  model_path <- file.path(model_dir, sprintf("model-%s.rds", model))
+  if (file.exists(model_path)) next
+
+  model_formula <- formulas[[model]]
+  fitting_data <- cohort |>
+    filter_out(.data[[all.vars(model_formula)[1]]] == 0)
+  ph_model <- str_starts(model, "ph")
+  iterations <- if (ph_model) 2000L else 1000L
+
+  # A fit that fails the convergence rule is refitted once with twice the
+  # iterations and a new seed.
+  for (attempt in 1:2) {
+    seed <- seeds[[model]] + (attempt - 1L) * 500000L
+
+    # PH: priors of the main model; time-varying: rstanarm defaults, as in
+    # the adjusted time-varying models.
+    fit <- if (ph_model) {
+      stan_surv(
+        formula = model_formula,
+        data = fitting_data,
+        basehaz = "ms",
+        basehaz_ops = list(df = 5),
+        prior = normal(location = 0, scale = 0.55),
+        prior_intercept = normal(0, 20),
+        prior_aux = dirichlet(1),
+        chains = 4L,
+        cores = 4L,
+        iter = iterations,
+        warmup = iterations %/% 2L,
+        seed = seed
+      )
+    } else {
+      stan_surv(
+        formula = model_formula,
+        data = fitting_data,
+        chains = 4L,
+        iter = iterations,
+        warmup = iterations %/% 2L,
+        cores = 4L,
+        basehaz = "ms",
+        basehaz_ops = list(df = 5),
+        seed = seed
+      )
+    }
+
+    if (diagnostics_pass(summarise_draws(as_draws_df(fit)))) break
+    iterations <- 2L * iterations
+  }
+
+  saveRDS(fit, model_path, compress = "xz")
+}
+```
+
+## Convergence
+
+```{r}
+#| label: check-models
+#| echo: false
+
+fits <- names(formulas) |>
+  set_names() |>
+  map(\(model) readRDS(file.path(model_dir, sprintf("model-%s.rds", model))))
+
+diagnostics <- fits |>
+  imap(\(fit, model) {
+    summarise_draws(as_draws_df(fit)) |>
+      as_tibble() |>
+      mutate(model = model)
+  }) |>
+  list_rbind()
+
+write_parquet(diagnostics, file.path(results_dir, "diagnostics.parquet"))
+
+passed <- diagnostics |>
+  split(~model) |>
+  map_lgl(diagnostics_pass)
+if (!all(passed)) {
+  stop("OS posterior diagnostics failed: ", str_flatten_comma(names(passed)[!passed]))
+}
+
+iwalk(fits, \(fit, model) {
+  trace_variables <- str_subset(colnames(as.matrix(fit)), "^tx")
+  save_figure(
+    plot_traces(trace_draws(fit, trace_variables), ncol = 2),
+    file.path(trace_dir, sprintf("trace-%s.png", model)),
+    height = 4
+  )
+})
+
+diagnostics |>
+  summarise(
+    maximum_rhat = max(rhat, na.rm = TRUE),
+    minimum_ess_bulk = min(ess_bulk, na.rm = TRUE),
+    minimum_ess_tail = min(ess_tail, na.rm = TRUE),
+    .by = model
+  ) |>
+  mutate(draws = map_int(fits[model], \(fit) nrow(as.matrix(fit)))) |>
+  kable(digits = 3)
+```

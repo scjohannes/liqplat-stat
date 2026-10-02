@@ -1,0 +1,155 @@
+---
+title: "Overall survival with unrestricted follow-up — censoring diagnostics"
+subtitle: "Reverse Kaplan–Meier curves and a frequentist censoring-hazard model"
+format: html
+---
+
+- Censoring is the event; deaths are censored.
+- Descriptive only: cannot show that censoring is independent of prognosis.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(survival)
+library(ggsurvfit)
+library(knitr)
+library(here)
+library(arrow)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "06-censoring", "results"
+)
+figure_dir <- file.path(results_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Reversed survival data
+
+```{r}
+#| label: prepare-data
+#| include: false
+
+censoring_data <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  transmute(
+    tx,
+    tx_plot = group_factor(tx),
+    follow_up_days = survival_time_days_unrestricted,
+    censoring_event = 1L - status_death_unrestricted
+  )
+```
+
+## Reverse Kaplan–Meier estimates
+
+```{r}
+#| label: reverse-kaplan-meier
+#| include: false
+
+reverse_km_fit <- survfit2(
+  Surv(follow_up_days, censoring_event) ~ tx_plot,
+  data = censoring_data,
+  conf.type = "log-log"
+)
+max_follow_up <- max(censoring_data$follow_up_days, na.rm = TRUE)
+risk_times <- seq(0, max_follow_up, by = 100)
+
+# theme = NULL: use the report theme instead of ggsurvfit's own.
+reverse_km_plot <- ggsurvfit(reverse_km_fit, linewidth = 0.8, theme = NULL) +
+  add_confidence_interval(alpha = 0.16) +
+  scale_colour_group() +
+  scale_fill_group() +
+  scale_x_continuous(breaks = risk_times) +
+  coord_cartesian(xlim = c(0, max_follow_up), ylim = c(0, 1)) +
+  labs(
+    x = "Days since random selection",
+    y = "Probability of remaining uncensored",
+    colour = NULL,
+    fill = NULL
+  ) +
+  add_risktable(
+    times = risk_times,
+    risktable_stats = c("n.risk", "cum.event"),
+    stats_label = list(n.risk = "At risk", cum.event = "Events")
+  )
+
+save_figure(
+  ggsurvfit_build(reverse_km_plot),
+  file.path(figure_dir, "reverse-kaplan-meier.png"),
+  height = 6.5
+)
+```
+
+## Cox model for the censoring hazard
+
+```{r}
+#| label: cox-model
+#| include: false
+
+censoring_cox_model <- coxph(
+  Surv(follow_up_days, censoring_event) ~ tx,
+  data = censoring_data,
+  ties = "efron",
+  x = TRUE,
+  y = TRUE
+)
+
+log_hazard_ratio <- unname(coef(censoring_cox_model)[["tx"]])
+standard_error <- sqrt(vcov(censoring_cox_model)["tx", "tx"])
+
+cox_summary <- tibble(
+  comparison = "ctDNA versus usual care",
+  hazard_ratio = exp(log_hazard_ratio),
+  conf_low = exp(log_hazard_ratio - qnorm(0.975) * standard_error),
+  conf_high = exp(log_hazard_ratio + qnorm(0.975) * standard_error),
+  p_value = 2 * pnorm(-abs(log_hazard_ratio / standard_error)),
+  n_participants = nrow(censoring_data),
+  n_censoring_events = sum(censoring_data$censoring_event)
+)
+
+proportional_hazards <- cox.zph(censoring_cox_model, transform = "km")
+proportional_hazards_summary <- as.data.frame(proportional_hazards$table) |>
+  rownames_to_column("term") |>
+  as_tibble()
+
+write_parquet(
+  cox_summary,
+  file.path(results_dir, "censoring-cox-model.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  proportional_hazards_summary,
+  file.path(results_dir, "censoring-cox-ph-test.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-supporting-os-unrestricted-censoring-cox
+#| tbl-cap: "Frequentist Cox model for the unrestricted censoring hazard"
+#| echo: false
+
+kable(cox_summary)
+```
+
+```{r}
+#| label: tbl-supporting-os-unrestricted-censoring-ph-test
+#| tbl-cap: "Proportional-hazards test for the censoring model"
+#| echo: false
+
+kable(proportional_hazards_summary)
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-reverse-km
+#| fig-cap: "Reverse Kaplan–Meier estimates of the unrestricted censoring distribution; Events counts cumulative censoring"
+#| fig-alt: "Reverse Kaplan–Meier curves by randomized group with 95 percent confidence bands and at-risk and cumulative-event counts every 100 days. A falling curve indicates censoring; deaths are treated as censored observations for this diagnostic."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+reverse_km_plot
+```

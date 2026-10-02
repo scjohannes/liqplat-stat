@@ -1,0 +1,222 @@
+---
+title: "Overall survival with unrestricted follow-up — PH results"
+subtitle: "Adjusted (fixed): hazard ratio and standardized survival curves"
+format: html
+---
+
+- No RMST: follow-up is unrestricted.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(ggsurvfit)
+library(ggdist)
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "04-unrestricted-follow-up", "results"
+)
+ph_dir <- file.path(results_dir, "ph")
+curve_dir <- file.path(ph_dir, "survival-curves")
+figure_dir <- file.path(ph_dir, "figures")
+dir.create(curve_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+n_draws <- 1000L
+
+imputations <- readRDS(file.path(results_dir, "imputations.rds"))
+```
+
+## Standardized survival curves and hazard ratio
+
+```{r}
+#| label: posterior-draws
+#| include: false
+
+# Survival times are identical across imputations, so imputation 1 suffices.
+observed <- complete(imputations, 1) |>
+  mutate(tx_plot = group_factor(tx))
+max_follow_up <- max(observed$survival_time_days_unrestricted, na.rm = TRUE)
+
+ph_results <- map(indices, \(index) {
+  model <- readRDS(
+    file.path(ph_dir, "models", sprintf("model-%02d.rds", index))
+  )
+  standardization_data <- complete(imputations, index) |>
+    mutate(mgps = factor(mgps, levels = 0:2))
+
+  curves <- posterior_standardized_survival_draws(
+    model,
+    standardization_data,
+    horizon = max_follow_up,
+    n_points = 200L,
+    n_draws = n_draws,
+    seed = config$seeds$supporting + (index - 1) * 1000 + 800
+  ) |>
+    as_tibble() |>
+    mutate(tx = as.integer(tx), imputation = index)
+
+  write_parquet(
+    curves,
+    file.path(curve_dir, sprintf("survival-curves-%02d.parquet", index)),
+    compression = "zstd"
+  )
+
+  # Survival exactly at day 365 (the curve grid above need not contain it),
+  # with the same prediction seed so that the draws match the curves.
+  survival_365 <- posterior_standardized_survival_draws(
+    model,
+    standardization_data,
+    horizon = 365,
+    n_points = 2L,
+    n_draws = n_draws,
+    seed = config$seeds$supporting + (index - 1) * 1000 + 800
+  ) |>
+    as_tibble() |>
+    filter(time == 365) |>
+    mutate(tx = as.integer(tx), imputation = index)
+
+  write_parquet(
+    survival_365,
+    file.path(curve_dir, sprintf("survival-365-%02d.parquet", index)),
+    compression = "zstd"
+  )
+
+  coefficient_draws <- as.matrix(model, pars = "tx")
+  set.seed(config$seeds$supporting + (index - 1) * 1000 + 850)
+  selected_draws <- sample(seq_len(nrow(coefficient_draws)), n_draws)
+
+  hazard_ratio <- tibble(
+    imputation = index,
+    draw = seq_len(n_draws),
+    log_hazard_ratio = coefficient_draws[selected_draws, 1],
+    hazard_ratio = exp(log_hazard_ratio)
+  )
+
+  write_parquet(
+    hazard_ratio,
+    file.path(curve_dir, sprintf("hazard-ratio-%02d.parquet", index)),
+    compression = "zstd"
+  )
+
+  list(curves = curves, hazard_ratio = hazard_ratio)
+})
+
+pooled_curves <- map(ph_results, "curves") |> list_rbind()
+pooled_hr <- map(ph_results, "hazard_ratio") |> list_rbind()
+```
+
+## Pooled summaries
+
+```{r}
+#| label: pooled-summaries
+#| include: false
+
+curve_summary <- pooled_curves |>
+  summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(tx, time)
+  )
+
+hr_summary <- pooled_hr |>
+  summarise(
+    median = median(hazard_ratio),
+    ci_66_low = quantile(hazard_ratio, 0.17, names = FALSE),
+    ci_66_high = quantile(hazard_ratio, 0.83, names = FALSE),
+    ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
+    ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
+    probability_benefit = mean(hazard_ratio < 1),
+    imputations = n_distinct(imputation),
+    draws_per_imputation = n_draws
+  )
+
+write_parquet(
+  curve_summary,
+  file.path(ph_dir, "survival-curve-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  pooled_hr,
+  file.path(ph_dir, "hazard-ratio-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  hr_summary,
+  file.path(ph_dir, "hazard-ratio-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-supporting-os-unrestricted-ph-hr
+#| tbl-cap: "Pooled treatment hazard ratio from the unrestricted-follow-up PH model"
+#| echo: false
+
+kable(hr_summary, digits = 3)
+```
+
+## Figures
+
+```{r}
+#| label: build-plots
+#| include: false
+
+km_fit <- survfit2(
+  Surv(survival_time_days_unrestricted, status_death_unrestricted) ~ tx_plot,
+  data = observed,
+  conf.type = "log-log"
+)
+
+survival_plot <- plot_km_model(km_fit, curve_summary, x_max = max_follow_up)
+
+hr_plot <- plot_posterior(
+  pooled_hr$hazard_ratio,
+  x_label = "Hazard ratio, ctDNA versus usual care",
+  reference = 1,
+  log_scale = TRUE
+)
+
+save_figure(
+  ggsurvfit_build(survival_plot),
+  file.path(figure_dir, "kaplan-meier-vs-ph-model.png"),
+  height = 6.5
+)
+save_figure(hr_plot, file.path(figure_dir, "hazard-ratio-posterior.png"))
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-ph-survival
+#| fig-cap: "Kaplan–Meier estimates and standardized PH-model survival curves using unrestricted follow-up"
+#| fig-alt: "Survival curves by randomized group with at-risk and cumulative-event counts every 100 days. Dashed Kaplan–Meier curves include censoring marks; solid proportional-hazards model curves include 95 percent credible bands."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-ph-hr
+#| fig-cap: "Posterior distribution of the treatment hazard ratio from the unrestricted-follow-up PH model"
+#| fig-alt: "A half-eye density above a posterior dot plot of the ctDNA-versus-usual-care hazard ratio. Thick and thin intervals show 66 and 95 percent credible intervals; a dashed line marks a hazard ratio of one."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+hr_plot
+```

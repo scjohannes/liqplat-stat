@@ -1,0 +1,183 @@
+---
+title: "OS non-proportional hazards — estimands"
+subtitle: "Standardized survival and 182-day RMST from the time-varying-effect model"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(ggdist)
+library(ggsurvfit)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+main_dir <- here("analysis", "02-overall-survival", "01-main", "results")
+results_dir <- here(
+  "analysis", "02-overall-survival", "02-non-proportional-hazards", "results"
+)
+figure_dir <- file.path(results_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+n_draws <- config$posterior_draws$supporting
+horizon_days <- config$analysis$horizon_days
+```
+
+## Standardized survival curves and RMST
+
+```{r}
+#| label: derive-supporting-os-nph-estimands
+#| include: false
+
+pooled_curves <- indices |>
+  map(function(index) {
+    model <- readRDS(
+      file.path(results_dir, "models", sprintf("model-%02d.rds", index))
+    )
+    standardization_data <- readRDS(
+      file.path(main_dir, "imputations", sprintf("imputation-%02d.rds", index))
+    ) |>
+      complete(1) |>
+      mutate(mgps = factor(mgps, levels = 0:2))
+
+    # Same seed for both groups, so each draw pairs ctDNA and usual-care curves.
+    posterior_standardized_survival_draws(
+      model,
+      standardization_data,
+      horizon = horizon_days,
+      n_points = 200L,
+      n_draws = n_draws,
+      seed = config$seeds$supporting + (index - 1) * 1000 + 100
+    ) |>
+      mutate(tx = as.integer(tx), imputation = index)
+  }) |>
+  list_rbind()
+
+pooled_rmst <- pooled_curves |>
+  compute_rmst_draws(
+    horizon = horizon_days,
+    group_cols = c("tx", "imputation")
+  ) |>
+  pivot_wider(names_from = tx, values_from = rmst, names_prefix = "rmst_") |>
+  arrange(imputation, draw) |>
+  mutate(rmst_diff = rmst_1 - rmst_0)
+
+rmst_summary <- pooled_rmst |>
+  summarise(
+    mean = mean(rmst_diff),
+    median = median(rmst_diff),
+    ci_66_low = quantile(rmst_diff, 0.17, names = FALSE),
+    ci_66_high = quantile(rmst_diff, 0.83, names = FALSE),
+    ci_95_low = quantile(rmst_diff, 0.025, names = FALSE),
+    ci_95_high = quantile(rmst_diff, 0.975, names = FALSE),
+    probability_benefit = mean(rmst_diff > 0),
+    horizon_days = horizon_days,
+    imputations = n_distinct(imputation),
+    draws_per_imputation = n_draws
+  )
+
+curve_summary <- pooled_curves |>
+  summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(tx, time)
+  )
+
+write_parquet(
+  pooled_curves,
+  file.path(results_dir, "survival-curves.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  pooled_rmst,
+  file.path(results_dir, "rmst-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  rmst_summary,
+  file.path(results_dir, "rmst-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+## Figures
+
+```{r}
+#| label: build-supporting-os-nph-plots
+#| include: false
+
+prepared <- read_parquet(file.path(main_dir, "prepared.parquet")) |>
+  mutate(tx_plot = group_factor(tx))
+
+km_fit <- survfit2(
+  Surv(survival_time_days, event_death) ~ tx_plot,
+  data = prepared,
+  conf.type = "log-log"
+)
+
+survival_plot <- plot_km_model(km_fit, curve_summary, x_max = horizon_days)
+
+rmst_plot <- plot_posterior(
+  pooled_rmst$rmst_diff,
+  x_label = paste0(
+    "Difference in ", horizon_days,
+    "-day restricted mean survival time (ctDNA − usual care), days"
+  )
+)
+
+save_figure(
+  ggsurvfit_build(survival_plot),
+  file.path(figure_dir, "kaplan-meier-vs-nph-model.png"),
+  height = 6.5
+)
+save_figure(rmst_plot, file.path(figure_dir, "rmst-difference-posterior.png"))
+```
+
+```{r}
+#| label: save-tve-plots
+#| include: false
+
+for (index in indices) {
+  model <- readRDS(
+    file.path(results_dir, "models", sprintf("model-%02d.rds", index))
+  )
+  save_figure(
+    plot_time_varying_hr(model),
+    file.path(figure_dir, sprintf("tve-plot-%02d.png", index))
+  )
+}
+```
+
+```{r}
+#| label: fig-supporting-os-nph-survival
+#| fig-cap: "Observed Kaplan–Meier estimates and standardized survival curves from the non-proportional-hazards sensitivity model"
+#| fig-alt: "Survival plot by randomized group with at-risk and cumulative-event counts every 100 days. Dashed Kaplan–Meier curves include censoring marks; solid model curves include 95 percent credible bands."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+```{r}
+#| label: fig-supporting-os-nph-rmst
+#| fig-cap: "Posterior distribution of the 182-day RMST difference from the non-proportional-hazards sensitivity model"
+#| fig-alt: "A half-eye density above a posterior dot plot of the ctDNA-minus-usual-care difference in 182-day restricted mean survival time, pooled over the supporting imputations."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+rmst_plot
+```

@@ -1,0 +1,80 @@
+---
+title: "Overall survival — model fitting"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+
+results_dir <- here("analysis", "02-overall-survival", "01-main", "results")
+model_dir <- file.path(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+- Day-0 censoring: dropped from fitting, kept in the estimand.
+
+```{r}
+#| label: fit-os-models
+#| include: false
+
+for (index in seq_len(config$imputation$m_main)) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  if (file.exists(model_path)) next
+
+  completed_data <- readRDS(
+    file.path(results_dir, "imputations", sprintf("imputation-%02d.rds", index))
+  ) |>
+    complete(1)
+
+  expected_ecog_binary <- derive_ecog_binary(completed_data$ecog_fstcnt)
+  expected_mgps <- derive_mgps(
+    completed_data$albumin,
+    completed_data$c_reactive_protein
+  )
+  stopifnot(
+    "Binary ECOG is inconsistent with the completed ECOG values." = all(
+      is.na(expected_ecog_binary) |
+        coalesce(completed_data$ecog_binary == expected_ecog_binary, FALSE)
+    ),
+    "mGPS is inconsistent with the completed albumin and CRP values." = all(
+      is.na(expected_mgps) |
+        coalesce(completed_data$mgps == expected_mgps, FALSE)
+    )
+  )
+
+  fitting_data <- completed_data |>
+    mutate(mgps = factor(mgps, levels = 0:2)) |>
+    filter(survival_time_days > 0)
+
+  fit <- stan_surv(
+    formula = Surv(survival_time_days, event_death) ~
+      tx + ecog_binary + stage_binary + lung + mgps,
+    data = fitting_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = normal(
+      location = rep(0, 6),
+      scale = c(0.55, rep(2.5, 5))
+    ),
+    prior_intercept = normal(0, 20),
+    prior_aux = dirichlet(1),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    seed = config$seeds$survival + (index - 1) * 1000
+  )
+  saveRDS(fit, model_path, compress = "xz")
+}
+```

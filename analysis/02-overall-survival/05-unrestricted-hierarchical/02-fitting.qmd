@@ -1,0 +1,74 @@
+---
+title: "Unrestricted overall survival — Adjusted (hierarchical) fitting"
+format: html
+---
+
+- Sensitivity analysis: diagnosis random intercept instead of the lung indicator.
+- Hazard ratio is conditional on covariates and diagnosis effects.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "05-unrestricted-hierarchical", "results"
+)
+model_dir <- file.path(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
+
+stopifnot(length(datasets) == config$imputation$m_supporting)
+```
+
+## Fitting
+
+```{r}
+#| label: fit-hierarchical-models
+#| include: false
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+
+  if (!file.exists(model_path)) {
+    fitting_data <- datasets[[index]] |>
+      # Zero follow-up is dropped from fitting only.
+      filter(survival_time_days_unrestricted > 0)
+
+    stopifnot(!anyNA(fitting_data), nrow(fitting_data) > 0L)
+
+    model <- stan_surv(
+      Surv(survival_time_days_unrestricted, status_death_unrestricted) ~
+        tx + ecog_binary + stage_binary + mgps + (1 | diagnosis),
+      data = fitting_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = normal(
+        location = rep(0, 5),
+        scale = c(0.55, rep(2.5, 4))
+      ),
+      prior_intercept = normal(0, 20),
+      prior_aux = dirichlet(1),
+      prior_covariance = decov(),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      adapt_delta = 0.99,
+      refresh = 0L,
+      seed = 4200L + index
+    )
+
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

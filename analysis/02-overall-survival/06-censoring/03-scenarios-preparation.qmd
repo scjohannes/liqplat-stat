@@ -1,0 +1,171 @@
+---
+title: "Overall survival censoring scenarios — preparation"
+subtitle: "Best and worst cases without covariates or imputation"
+format: html
+---
+
+- Best case: censored over 14 days before follow-up end, assumed alive to the end.
+- Worst case: the same participants die on their censoring day.
+- Recorded deaths and censoring within 14 days of the end: unchanged.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(knitr)
+library(here)
+library(arrow)
+library(tidyverse)
+
+scenario_dir <- here(
+  "analysis", "02-overall-survival", "06-censoring", "results", "scenarios"
+)
+dir.create(scenario_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Follow-up data
+
+```{r}
+#| label: read-cohort
+#| include: false
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet"),
+  col_select = c(
+    "id",
+    "tx",
+    "survival_time_days_unrestricted",
+    "status_death_unrestricted",
+    "potential_follow_up_days"
+  )
+)
+
+stopifnot(
+  !anyNA(cohort),
+  !anyDuplicated(cohort$id),
+  all(cohort$tx %in% 0:1),
+  all(cohort$status_death_unrestricted %in% 0:1),
+  all(is.finite(cohort$survival_time_days_unrestricted)),
+  all(is.finite(cohort$potential_follow_up_days)),
+  all(cohort$survival_time_days_unrestricted >= 0),
+  all(cohort$potential_follow_up_days >= cohort$survival_time_days_unrestricted)
+)
+```
+
+## Scenarios
+
+```{r}
+#| label: build-scenarios
+#| include: false
+
+cohort <- cohort |>
+  mutate(
+    censored_near_lock = status_death_unrestricted == 0L &
+      potential_follow_up_days - survival_time_days_unrestricted <= 14
+  )
+
+best_case <- cohort |>
+  transmute(
+    id,
+    tx,
+    censored_near_lock,
+    observed_death = status_death_unrestricted,
+    scenario = "best-case",
+    survival_time_days = if_else(
+      observed_death == 1L | censored_near_lock,
+      survival_time_days_unrestricted,
+      potential_follow_up_days
+    ),
+    event_death = observed_death
+  )
+
+worst_case <- cohort |>
+  transmute(
+    id,
+    tx,
+    censored_near_lock,
+    observed_death = status_death_unrestricted,
+    scenario = "worst-case",
+    survival_time_days = survival_time_days_unrestricted,
+    event_death = as.integer(observed_death == 1L | !censored_near_lock)
+  )
+
+# A day-zero death needs positive time in the continuous PH likelihood. Half
+# a day keeps it in the first week; the original time is kept for KM.
+scenarios <- bind_rows(best_case, worst_case) |>
+  mutate(
+    fitting_time_days = if_else(
+      survival_time_days == 0 & event_death == 1L,
+      0.5,
+      survival_time_days
+    )
+  )
+
+recorded_death <- cohort$status_death_unrestricted == 1L
+stopifnot(
+  nrow(scenarios) == 2 * nrow(cohort),
+  identical(best_case$id, worst_case$id),
+  identical(best_case$tx, worst_case$tx),
+  all(worst_case$survival_time_days <= best_case$survival_time_days),
+  # Recorded deaths keep their event and their recorded time in both cases.
+  all(best_case$event_death[recorded_death] == 1L),
+  all(worst_case$event_death[recorded_death] == 1L),
+  all(
+    best_case$survival_time_days[recorded_death] ==
+      cohort$survival_time_days_unrestricted[recorded_death]
+  ),
+  all(
+    worst_case$survival_time_days[recorded_death] ==
+      cohort$survival_time_days_unrestricted[recorded_death]
+  ),
+  # Every death enters the likelihood with positive time (day-zero deaths at
+  # 0.5 days); only day-zero censoring keeps a fitting time of zero.
+  all(scenarios$fitting_time_days[scenarios$event_death == 1L] > 0),
+  all(
+    scenarios$fitting_time_days > 0 |
+      (scenarios$survival_time_days == 0 & scenarios$event_death == 0L)
+  )
+)
+
+write_parquet(
+  scenarios,
+  file.path(scenario_dir, "scenarios.parquet"),
+  compression = "zstd"
+)
+```
+
+## Scenario counts
+
+```{r}
+#| label: scenario-counts
+#| include: false
+
+scenario_counts <- scenarios |>
+  summarise(
+    participants = n(),
+    observed_deaths = sum(observed_death),
+    originally_censored = sum(observed_death == 0),
+    early_censored = sum(observed_death == 0 & !censored_near_lock),
+    censored_near_lock = sum(censored_near_lock),
+    assumed_deaths = sum(event_death - observed_death),
+    scenario_deaths = sum(event_death),
+    scenario_censored = sum(event_death == 0),
+    day_zero_deaths = sum(survival_time_days == 0 & event_death == 1),
+    zero_follow_up_censored = sum(fitting_time_days == 0),
+    .by = c(scenario, tx)
+  )
+
+write_parquet(
+  scenario_counts,
+  file.path(scenario_dir, "scenario-counts.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-supporting-os-censoring-scenarios-counts
+#| tbl-cap: "Observed and assumed deaths in each censoring scenario (0: usual care; 1: ctDNA)"
+#| echo: false
+
+kable(scenario_counts)
+```

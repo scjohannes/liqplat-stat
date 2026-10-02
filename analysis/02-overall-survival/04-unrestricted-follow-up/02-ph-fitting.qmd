@@ -1,0 +1,69 @@
+---
+title: "Overall survival with unrestricted follow-up — PH fitting"
+subtitle: "Supporting proportional-hazards analysis using five imputations"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "04-unrestricted-follow-up", "results"
+)
+model_dir <- file.path(results_dir, "ph", "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+imputations <- readRDS(file.path(results_dir, "imputations.rds"))
+```
+
+## Fitting
+
+```{r}
+#| label: fit-ph-models
+#| include: false
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+
+  if (!file.exists(model_path)) {
+    fitting_data <- complete(imputations, index) |>
+      mutate(mgps = factor(mgps, levels = 0:2)) |>
+      # Zero follow-up is dropped from fitting only; standardization keeps it.
+      filter_out(survival_time_days_unrestricted == 0)
+
+    model <- stan_surv(
+      formula = Surv(
+        survival_time_days_unrestricted,
+        status_death_unrestricted
+      ) ~ tx + ecog_binary + stage_binary + lung + mgps,
+      data = fitting_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = normal(
+        location = rep(0, 6),
+        scale = c(0.55, rep(2.5, 5))
+      ),
+      prior_intercept = normal(0, 20),
+      prior_aux = dirichlet(1),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      seed = config$seeds$supporting + (index - 1) * 1000 + 700
+    )
+
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

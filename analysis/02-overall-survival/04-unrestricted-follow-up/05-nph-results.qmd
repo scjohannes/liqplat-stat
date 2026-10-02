@@ -1,0 +1,152 @@
+---
+title: "Overall survival with unrestricted follow-up — non-PH results"
+subtitle: "Adjusted (fixed): time-varying treatment effects and standardized survival curves"
+format: html
+---
+
+- No RMST: follow-up is unrestricted.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(ggsurvfit)
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "04-unrestricted-follow-up", "results"
+)
+nph_dir <- file.path(results_dir, "nph")
+curve_dir <- file.path(nph_dir, "survival-curves")
+figure_dir <- file.path(nph_dir, "figures")
+dir.create(curve_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+n_draws <- 1000L
+
+imputations <- readRDS(file.path(results_dir, "imputations.rds"))
+```
+
+## Standardized survival curves
+
+```{r}
+#| label: posterior-draws
+#| include: false
+
+# Survival times are identical across imputations, so imputation 1 suffices.
+observed <- complete(imputations, 1) |>
+  mutate(tx_plot = group_factor(tx))
+max_follow_up <- max(observed$survival_time_days_unrestricted, na.rm = TRUE)
+
+pooled_curves <- map(indices, \(index) {
+  model <- readRDS(
+    file.path(nph_dir, "models", sprintf("model-%02d.rds", index))
+  )
+  standardization_data <- complete(imputations, index) |>
+    mutate(mgps = factor(mgps, levels = 0:2))
+
+  curves <- posterior_standardized_survival_draws(
+    model,
+    standardization_data,
+    horizon = max_follow_up,
+    n_points = 200L,
+    n_draws = n_draws,
+    seed = config$seeds$supporting + (index - 1) * 1000 + 1000
+  ) |>
+    as_tibble() |>
+    mutate(tx = as.integer(tx), imputation = index)
+
+  write_parquet(
+    curves,
+    file.path(curve_dir, sprintf("survival-curves-%02d.parquet", index)),
+    compression = "zstd"
+  )
+
+  curves
+}) |>
+  list_rbind()
+
+curve_summary <- pooled_curves |>
+  summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(tx, time)
+  )
+
+write_parquet(
+  curve_summary,
+  file.path(nph_dir, "survival-curve-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+## Figures
+
+```{r}
+#| label: build-plots
+#| include: false
+
+km_fit <- survfit2(
+  Surv(survival_time_days_unrestricted, status_death_unrestricted) ~ tx_plot,
+  data = observed,
+  conf.type = "log-log"
+)
+
+survival_plot <- plot_km_model(km_fit, curve_summary, x_max = max_follow_up)
+
+save_figure(
+  ggsurvfit_build(survival_plot),
+  file.path(figure_dir, "kaplan-meier-vs-nph-model.png"),
+  height = 6.5
+)
+
+# Time-varying hazard ratio of each fit.
+for (index in indices) {
+  model <- readRDS(
+    file.path(nph_dir, "models", sprintf("model-%02d.rds", index))
+  )
+
+  save_figure(
+    plot_time_varying_hr(model),
+    file.path(figure_dir, sprintf("time-varying-effect-%02d.png", index))
+  )
+}
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-nph-survival
+#| fig-cap: "Kaplan–Meier estimates and standardized non-PH-model survival curves using unrestricted follow-up"
+#| fig-alt: "Survival curves by randomized group with at-risk and cumulative-event counts every 100 days. Dashed Kaplan–Meier curves include censoring marks; solid non-proportional-hazards model curves include 95 percent credible bands."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plot
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-nph-time-varying-effects
+#| fig-cap: "Time-varying treatment effect from each unrestricted-follow-up non-PH model"
+#| fig-alt: "Five model-specific plots showing the estimated treatment effect as a function of follow-up time, with posterior uncertainty."
+#| fig-width: 8
+#| fig-height: 5
+#| layout-ncol: 2
+#| echo: false
+
+include_graphics(
+  file.path(figure_dir, sprintf("time-varying-effect-%02d.png", indices))
+)
+```

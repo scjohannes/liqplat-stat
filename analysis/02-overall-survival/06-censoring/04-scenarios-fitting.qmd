@@ -1,0 +1,64 @@
+---
+title: "Overall survival censoring scenarios — fitting"
+subtitle: "One unadjusted Bayesian PH model per scenario"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+scenario_dir <- here(
+  "analysis", "02-overall-survival", "06-censoring", "results", "scenarios"
+)
+model_dir <- file.path(scenario_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+scenarios <- read_parquet(file.path(scenario_dir, "scenarios.parquet"))
+```
+
+## Fitting
+
+```{r}
+#| label: fit-scenario-models
+#| include: false
+
+scenario_names <- c("best-case", "worst-case")
+
+for (index in seq_along(scenario_names)) {
+  scenario_name <- scenario_names[[index]]
+  model_path <- file.path(model_dir, paste0(scenario_name, "-model.rds"))
+
+  if (!file.exists(model_path)) {
+    # Day-zero censoring contributes no follow-up, so it is dropped.
+    fitting_data <- scenarios |>
+      filter(scenario == scenario_name, fitting_time_days > 0)
+
+    model <- stan_surv(
+      formula = Surv(fitting_time_days, event_death) ~ tx,
+      data = fitting_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = normal(0, 0.55),
+      prior_intercept = normal(0, 20),
+      prior_aux = dirichlet(1),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      seed = config$seeds$supporting + (index - 1) * 1000 + 1300
+    )
+
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

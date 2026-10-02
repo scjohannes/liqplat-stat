@@ -1,0 +1,216 @@
+---
+title: "Overall survival — estimand"
+subtitle: "182-day RMST, survival, and risk contrasts"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(mice)
+library(ggdist)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+source(here("R", "posterior.R"))
+
+results_dir <- here("analysis", "02-overall-survival", "01-main", "results")
+figure_dir <- file.path(results_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_main)
+horizon_days <- config$analysis$horizon_days
+n_draws <- config$posterior_draws$main
+```
+
+## Standardized survival curves
+
+```{r}
+#| label: standardized-survival-curves
+#| include: false
+
+pooled_curves <- indices |>
+  map(function(index) {
+    model <- readRDS(
+      file.path(results_dir, "models", sprintf("model-%02d.rds", index))
+    )
+    standardization_data <- readRDS(
+      file.path(
+        results_dir,
+        "imputations",
+        sprintf("imputation-%02d.rds", index)
+      )
+    ) |>
+      complete(1) |>
+      mutate(mgps = factor(mgps, levels = 0:2))
+
+    # Same seed for both groups, so each draw pairs ctDNA and usual-care curves.
+    posterior_standardized_survival_draws(
+      model,
+      standardization_data,
+      horizon = horizon_days,
+      n_points = 200L,
+      n_draws = n_draws,
+      seed = config$seeds$survival + (index - 1) * 1000
+    ) |>
+      mutate(tx = as.integer(tx), imputation = index)
+  }) |>
+  list_rbind()
+```
+
+## RMST and 182-day survival contrasts
+
+```{r}
+#| label: rmst-and-risk-draws
+#| include: false
+
+pooled_rmst <- pooled_curves |>
+  compute_rmst_draws(
+    horizon = horizon_days,
+    group_cols = c("tx", "imputation")
+  ) |>
+  pivot_wider(names_from = tx, values_from = rmst, names_prefix = "rmst_") |>
+  arrange(imputation, draw) |>
+  mutate(rmst_diff = rmst_1 - rmst_0)
+
+pooled_risks <- pooled_curves |>
+  survival_risk_draws(horizon = horizon_days, treatment_col = "tx") |>
+  pivot_wider(
+    names_from = tx,
+    values_from = survival,
+    names_prefix = "survival_"
+  ) |>
+  arrange(imputation, draw) |>
+  mutate(
+    risk_difference = survival_1 - survival_0,
+    risk_ratio = survival_1 / survival_0
+  )
+
+stopifnot(
+  "Treatment and control draws could not be matched." =
+    nrow(pooled_rmst) == length(indices) * n_draws &&
+    nrow(pooled_risks) == length(indices) * n_draws &&
+    !anyNA(pooled_rmst) &&
+    !anyNA(pooled_risks)
+)
+```
+
+```{r}
+#| label: summarize-estimands
+#| include: false
+
+rmst_summary <- summarize_posterior_draws(pooled_rmst$rmst_diff) |>
+  mutate(
+    probability_benefit = posterior_probability(pooled_rmst$rmst_diff),
+    # q columns above are type-8 quantiles; the ci_* bounds are type-7.
+    ci_66_low = quantile(pooled_rmst$rmst_diff, 0.17, names = FALSE),
+    ci_66_high = quantile(pooled_rmst$rmst_diff, 0.83, names = FALSE),
+    ci_95_low = quantile(pooled_rmst$rmst_diff, 0.025, names = FALSE),
+    ci_95_high = quantile(pooled_rmst$rmst_diff, 0.975, names = FALSE),
+    rope_low = -7,
+    rope_high = 7,
+    rope_66_contains = ci_66_low >= rope_low & ci_66_high <= rope_high,
+    horizon_days = horizon_days
+  )
+
+risk_summary <- bind_rows(
+  summarize_posterior_draws(pooled_risks$risk_difference),
+  summarize_posterior_draws(
+    pooled_risks$risk_ratio[is.finite(pooled_risks$risk_ratio)]
+  )
+) |>
+  transmute(
+    measure = c("survival_risk_difference", "survival_risk_ratio"),
+    mean,
+    median,
+    q025 = `q 2.5`,
+    q975 = `q97.5`,
+    horizon_days = horizon_days
+  )
+
+max_curve_day <- max(pooled_curves$time, na.rm = TRUE)
+follow_up_sufficiency <- tibble(
+  horizon_days = c(182L, 365L),
+  sufficient = c(max_curve_day >= 182, max_curve_day >= 365),
+  reason = c(
+    if (max_curve_day >= 182) {
+      "Primary OS curves cover 182 days."
+    } else {
+      "Primary OS curves do not cover 182 days."
+    },
+    if (max_curve_day >= 365) {
+      "OS curves cover 365 days."
+    } else {
+      "The primary OS curves stop before 365 days."
+    }
+  )
+)
+```
+
+```{r}
+#| label: write-estimand-results
+#| include: false
+
+write_parquet(
+  rmst_summary,
+  file.path(results_dir, "rmst-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  risk_summary,
+  file.path(results_dir, "risk-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  pooled_rmst,
+  file.path(results_dir, "estimand-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  pooled_curves,
+  file.path(results_dir, "survival-curves.parquet"),
+  compression = "zstd"
+)
+writeLines(
+  as.yaml(follow_up_sufficiency),
+  file.path(results_dir, "follow-up-sufficiency.yml")
+)
+```
+
+## Posterior RMST difference
+
+```{r}
+#| label: build-os-rmst-posterior-plot
+#| include: false
+
+rmst_posterior_plot <- plot_posterior(
+  pooled_rmst$rmst_diff,
+  x_label = paste0(
+    "Difference in ", horizon_days,
+    "-day restricted mean survival time (ctDNA − usual care), days"
+  )
+)
+
+save_figure(
+  rmst_posterior_plot,
+  file.path(figure_dir, "os-rmst-difference-posterior.png")
+)
+```
+
+```{r}
+#| label: fig-os-rmst-posterior
+#| fig-cap: "Posterior distribution of the difference in 182-day restricted mean survival time"
+#| fig-alt: "A half-eye density above a posterior dot plot of the ctDNA-minus-usual-care difference in 182-day restricted mean survival time. Thick and thin intervals show the 66 and 95 percent credible intervals, and a dashed vertical line marks zero days."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+rmst_posterior_plot
+```
