@@ -1,0 +1,207 @@
+---
+title: "Tissue biopsy — marginal rates, rate ratio, and rate difference"
+format: html
+---
+
+```{r}
+#| label: setup
+
+library(marginaleffects)
+library(ggdist)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "08-tissue-biopsy", "results")
+figure_dir <- file.path(results_dir, "figures")
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+biopsy_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
+completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
+adjusted_fits <- readRDS(file.path(results_dir, "model-adjusted.rds"))
+unadjusted_fits <- readRDS(file.path(results_dir, "model-unadjusted.rds"))
+
+rate_days <- 30
+
+adjustment_labels <- c(
+  adjusted = "Adjusted (prespecified)",
+  unadjusted = "Unadjusted"
+)
+```
+
+## Marginal rates
+
+```{r}
+#| label: marginal-rates
+
+rate_draws <- tibble(
+  adjustment = c(
+    rep("adjusted", length(adjusted_fits)),
+    "unadjusted"
+  ),
+  imputation = c(seq_along(adjusted_fits), 1L),
+  fit = c(adjusted_fits, unadjusted_fits),
+  data = c(completed_datasets, list(biopsy_data))
+) |>
+  mutate(draws = map2(fit, data, \(fit, data) {
+    fit <- set_modeldata(fit, data)
+
+    counterfactual_data <- bind_rows(
+      data |> mutate(tx = 0),
+      data |> mutate(tx = 1)
+    ) |>
+      mutate(exposure_days = rate_days)
+
+    avg_predictions(
+      fit,
+      newdata = counterfactual_data,
+      by = "tx",
+      type = "response"
+    ) |>
+      get_draws() |>
+      mutate(drawid = as.integer(as.character(drawid))) |>
+      # brms orders draws by chain, so this keeps the first chain's draws.
+      filter(drawid <= config$posterior_draws$supporting) |>
+      select(tx, drawid, draw)
+  })) |>
+  select(adjustment, imputation, draws) |>
+  unnest(draws)
+```
+
+```{r}
+#| label: contrasts
+
+biopsy_draws <- rate_draws |>
+  pivot_wider(names_from = tx, values_from = draw, names_prefix = "rate_tx") |>
+  mutate(
+    rate_ratio = rate_tx1 / rate_tx0,
+    rate_difference = rate_tx1 - rate_tx0
+  )
+
+write_parquet(
+  biopsy_draws,
+  file.path(results_dir, "draws.parquet"),
+  compression = "zstd"
+)
+```
+
+## Summary
+
+```{r}
+#| label: tbl-biopsy-summary
+#| tbl-cap: "Posterior marginal biopsy-day rates per 30 days, rate ratio, and rate difference (ctDNA - usual care)"
+
+biopsy_summary <- biopsy_draws |>
+  pivot_longer(
+    c(rate_tx0, rate_tx1, rate_ratio, rate_difference),
+    names_to = "quantity",
+    values_to = "draw"
+  ) |>
+  summarise(
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    probability_lower_rate = case_when(
+      quantity[1] == "rate_ratio" ~ mean(draw < 1),
+      quantity[1] == "rate_difference" ~ mean(draw < 0)
+    ),
+    .by = c(adjustment, quantity)
+  )
+
+write_parquet(
+  biopsy_summary,
+  file.path(results_dir, "summary.parquet"),
+  compression = "zstd"
+)
+
+kable(biopsy_summary, digits = 3)
+```
+
+## Figures
+
+```{r}
+#| label: plot-setup
+
+plot_draws <- biopsy_draws |>
+  mutate(
+    panel = factor(adjustment_labels[adjustment], levels = adjustment_labels)
+  )
+```
+
+```{r}
+#| label: fig-biopsy-rate-ratio
+#| fig-cap: "Posterior marginal rate ratio of biopsy days (ctDNA / usual care). Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Two panels, adjusted and unadjusted, each with a half-eye density above a posterior dot plot of the marginal rate ratio of biopsy days, ctDNA over usual care, on a log scale, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at a ratio of one."
+#| fig-width: 8
+#| fig-height: 7
+
+rate_ratio_plot <- plot_posterior(
+  plot_draws |> mutate(draw = rate_ratio),
+  x_label = "Rate ratio of biopsy days (ctDNA / usual care)",
+  reference = 1,
+  log_scale = TRUE
+)
+
+save_figure(
+  rate_ratio_plot,
+  file.path(figure_dir, "biopsy-rate-ratio.png"),
+  height = 7
+)
+
+rate_ratio_plot
+```
+
+```{r}
+#| label: fig-biopsy-rate-difference
+#| fig-cap: "Posterior marginal difference in biopsy days per 30 days (ctDNA − usual care). Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Two panels, adjusted and unadjusted, each with a half-eye density above a posterior dot plot of the marginal difference in biopsy days per 30 days of follow-up, ctDNA minus usual care, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at zero."
+#| fig-width: 8
+#| fig-height: 7
+
+rate_difference_plot <- plot_posterior(
+  plot_draws |> mutate(draw = rate_difference),
+  x_label = "Difference in biopsy days per 30 days (ctDNA − usual care)"
+)
+
+save_figure(
+  rate_difference_plot,
+  file.path(figure_dir, "biopsy-rate-difference.png"),
+  height = 7
+)
+
+rate_difference_plot
+```
+
+```{r}
+#| label: fig-biopsy-marginal-rates
+#| fig-cap: "Posterior marginal rate of biopsy days per 30 days by randomized group. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "A grid of posterior half-eye densities above dot plots of the marginal number of biopsy days per 30 days of follow-up, with rows for the adjusted and unadjusted models and columns for the ctDNA and the usual care group, each with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 6
+
+# No reference line: a rate has no natural reference value.
+marginal_rates_plot <- rate_draws |>
+  mutate(
+    adjustment = factor(
+      adjustment_labels[adjustment],
+      levels = adjustment_labels
+    ),
+    group = group_factor(tx)
+  ) |>
+  plot_posterior(x_label = "Biopsy days per 30 days", reference = NULL) +
+  facet_grid(adjustment ~ group)
+
+save_figure(
+  marginal_rates_plot,
+  file.path(figure_dir, "biopsy-marginal-rates.png"),
+  height = 6
+)
+
+marginal_rates_plot
+```
