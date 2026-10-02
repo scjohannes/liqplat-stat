@@ -1,0 +1,178 @@
+---
+title: "TAOOH second-order Markov model, unadjusted — fitting"
+subtitle: "Randomised group as the only patient-level covariate, observed weekly histories"
+format: html
+---
+
+- Weekly states are not imputed, so one fit to the observed data.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rms)
+library(rmsb)
+library(mostr)
+library(posterior)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "markov.R"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "04-taooh", "05-unadjusted-second-order", "results")
+model_dir <- here(results_dir, "models")
+stan_dx_dir <- here(results_dir, "stan-dx")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
+
+model_path <- here(model_dir, "model-01.rds")
+
+# A small number of divergences is retained for review rather than causing an
+# automatic full refit. Twenty or more divergences still trigger the retry.
+taooh_diagnostic_thresholds <- config$diagnostics
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
+
+treatment_prior <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.541
+)
+```
+
+```{r}
+#| label: fit-model
+#| include: false
+
+if (!file.exists(model_path)) {
+  # Coded as the completed datasets of the adjusted model.
+  data <- read_parquet(here("analysis", "04-taooh", "results", "prepared.parquet")) |>
+    as.data.frame() |>
+    transmute(
+      id = factor(id),
+      week,
+      y,
+      yprev = factor(yprev, levels = 1:4),
+      ypprev = factor(ypprev, levels = 1:4),
+      tx = factor(tx)
+    )
+
+  # mostr's default first follow-up time (week 1) must be in the model data.
+  stopifnot(min(data$week) == 1L)
+
+  dd <- datadist(data)
+  options(datadist = "dd")
+
+  model_formula <- y ~ tx + rms::rcs(week, 4) + yprev + ypprev +
+    week %ia% yprev + week %ia% ypprev + cluster(id)
+  # The +100 offset keeps the seed apart from the adjusted fits.
+  fit_seed <- config$seeds$taooh + 100L
+
+  fit <- tryCatch(
+    blrm_markov(
+      formula = model_formula,
+      pcontrast = treatment_prior,
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$iterations,
+      warmup = config$markov$warmup,
+      refresh = 1,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed,
+        parallel_chains = config$markov$chains
+      )
+    ),
+    error = identity
+  )
+
+  diagnostics <- if (inherits(fit, "error")) {
+    NULL
+  } else {
+    tryCatch(
+      markov_diagnostics(fit, taooh_diagnostic_thresholds),
+      error = function(error) NULL
+    )
+  }
+
+  if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
+    fit <- blrm_markov(
+      formula = model_formula,
+      pcontrast = treatment_prior,
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      refresh = 0L,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed + 500000L,
+        parallel_chains = config$markov$chains
+      )
+    )
+    diagnostics <- markov_diagnostics(fit, taooh_diagnostic_thresholds)
+  }
+
+  if (!isTRUE(fit$pppo == 0L) || !is.null(fit$cppo)) {
+    stop("The second-order TAOOH model must be a full proportional-odds model.")
+  }
+  assert_markov_diagnostics(diagnostics)
+
+  saveRDS(fit, model_path, compress = "xz")
+}
+```
+
+## Convergence
+
+```{r}
+#| label: diagnostics
+#| echo: false
+
+fit <- readRDS(model_path)
+diagnostics <- markov_diagnostics(fit, taooh_diagnostic_thresholds)
+assert_markov_diagnostics(diagnostics)
+
+write_parquet(
+  as.data.frame(diagnostics$summary) |>
+    mutate(
+      divergent_transitions = diagnostics$divergent_transitions,
+      treedepth_exceeded = diagnostics$treedepth_exceeded,
+      min_bfmi = diagnostics$min_bfmi
+    ),
+  here(results_dir, "diagnostics.parquet"),
+  compression = "zstd"
+)
+
+writeLines(capture.output(stanDx(fit)), here(stan_dx_dir, "stan-dx-01.txt"))
+
+# All coefficients and the random-intercept SD (sigmag).
+trace_parameters <- c(colnames(fit$draws), colnames(fit$omega))
+save_figure(
+  plot_traces(trace_draws(fit, trace_parameters), ncol = 4),
+  here(stan_dx_dir, "stan-dx-01.png"),
+  height = 1.3 * ceiling(length(trace_parameters) / 4) + 1
+)
+
+tibble(
+  iterations = fit$iter,
+  refitted = fit$iter > config$markov$iterations,
+  maximum_rhat = max(diagnostics$summary$rhat, na.rm = TRUE),
+  minimum_ess_bulk = min(diagnostics$summary$ess_bulk, na.rm = TRUE),
+  minimum_ess_tail = min(diagnostics$summary$ess_tail, na.rm = TRUE),
+  divergent_transitions = diagnostics$divergent_transitions,
+  min_bfmi = diagnostics$min_bfmi
+) |>
+  kable(digits = 3)
+```

@@ -1,0 +1,279 @@
+---
+title: "TAOOH second-order Markov model, unadjusted — estimand"
+subtitle: "Weeks alive and out of hospital over 26 weeks"
+format: html
+---
+
+- Standardised over fitted participants, keeping their random intercepts
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(mostr)
+library(ggdist)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "posterior.R"))
+source(here("R", "plot-style.R"))
+
+n_draws <- config$posterior_draws$main
+
+horizon_days <- config$analysis$horizon_days
+stopifnot(horizon_days %% 7 == 0)
+horizon_weeks <- as.integer(horizon_days / 7)
+
+results_dir <- here("analysis", "04-taooh", "05-unadjusted-second-order", "results")
+estimand_dir <- here(results_dir, "estimand")
+figure_dir <- here(results_dir, "figures")
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Post-estimation files carry the number of draws in their name, so changing
+# posterior_draws$main recomputes them.
+estimand_path <- function(kind) {
+  here(estimand_dir, sprintf("%s-01-draws-%d.parquet", kind, n_draws))
+}
+```
+
+## Post-estimation
+
+```{r}
+#| label: post-estimation
+#| include: false
+
+if (!file.exists(estimand_path("comparisons-draws"))) {
+  model <- readRDS(here(results_dir, "models", "model-01.rds"))
+
+  sops <- avg_sops(
+    model = model,
+    variables = list(tx = c(0, 1)),
+    times = seq_len(horizon_weeks),
+    y_levels = 1:5,
+    absorb = 5,
+    p_var = "yprev",
+    p2_var = "ypprev",
+    id_var = "id",
+    time_var = "week",
+    include_re = TRUE,
+    n_draws = n_draws,
+    seed = 1L,
+    posterior_summary = "median",
+    return_draws = TRUE
+  )
+
+  comparisons <- avg_comparisons(
+    model = model,
+    variables = list(tx = c(0, 1)),
+    estimand = "time_in_state",
+    state_sets = 1,
+    times = seq_len(horizon_weeks),
+    y_levels = 1:5,
+    absorb = 5,
+    id_var = "id",
+    time_var = "week",
+    p_var = "yprev",
+    p2_var = "ypprev",
+    include_re = TRUE,
+    n_draws = n_draws,
+    seed = 1L,
+    posterior_summary = "median",
+    return_draws = TRUE
+  )
+
+  sop_draws <- attr(sops, "draws")
+  comparison_draws <- attr(comparisons, "draws")
+  stopifnot(
+    "TAOOH post-estimation results must retain posterior draws." =
+      !is.null(sop_draws) && !is.null(comparison_draws)
+  )
+
+  write_parquet(
+    as.data.frame(sops),
+    estimand_path("sops-summary"),
+    compression = "zstd"
+  )
+  write_parquet(
+    as.data.frame(sop_draws),
+    estimand_path("sops-draws"),
+    compression = "zstd"
+  )
+  write_parquet(
+    as.data.frame(comparisons),
+    estimand_path("comparisons-summary"),
+    compression = "zstd"
+  )
+  # Written last: its existence marks the post-estimation as complete.
+  write_parquet(
+    as.data.frame(comparison_draws),
+    estimand_path("comparisons-draws"),
+    compression = "zstd"
+  )
+}
+```
+
+## Treatment difference
+
+```{r}
+#| label: treatment-difference
+#| include: false
+
+comparison_draws <- read_parquet(estimand_path("comparisons-draws")) |>
+  as.data.frame()
+
+stopifnot(
+  "TAOOH comparison draws must contain draw_id and estimate." =
+    all(c("draw_id", "estimate") %in% names(comparison_draws)),
+  "TAOOH must contain one matched treatment contrast per posterior draw." =
+    nrow(comparison_draws) == n_draws && !anyDuplicated(comparison_draws$draw_id)
+)
+
+# imputation = 1 keeps the file format of the adjusted model.
+home_time_draws <- comparison_draws |>
+  mutate(imputation = 1L, draw = estimate) |>
+  select(
+    draw_id,
+    imputation,
+    draw,
+    any_of(c("contrast", "comparison", "term", "state"))
+  )
+
+home_time_summary <- summarize_posterior_draws(home_time_draws$draw) |>
+  mutate(
+    probability_benefit = posterior_probability(home_time_draws$draw),
+    state = 1L,
+    horizon_weeks = horizon_weeks,
+    imputations = 1L,
+    draws_per_imputation = n_draws
+  )
+
+write_parquet(
+  as.data.frame(home_time_summary),
+  here(results_dir, "home-time-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  home_time_draws,
+  here(results_dir, "home-time-comparison-draws.parquet"),
+  compression = "zstd"
+)
+```
+
+## State occupancy probabilities
+
+```{r}
+#| label: state-occupancy
+#| include: false
+
+state_labels <- c(
+  "Alive/out of hospital",
+  "Planned admission",
+  "Emergency room",
+  "Unplanned admission",
+  "Dead"
+)
+
+sop_draws <- read_parquet(estimand_path("sops-draws")) |>
+  as.data.frame()
+
+stopifnot(
+  "TAOOH SOP draws must contain draw_id, estimate, time, state, and tx." =
+    all(c("draw_id", "estimate", "time", "state", "tx") %in% names(sop_draws)),
+  "The TAOOH SOP object must contain the configured posterior draws." =
+    n_distinct(sop_draws$draw_id) == n_draws
+)
+
+sop_summary <- sop_draws |>
+  mutate(
+    state = factor(state, levels = 1:5, labels = state_labels),
+    tx = group_factor(tx)
+  ) |>
+  group_by(tx, time, state) |>
+  summarise(
+    conf.low = quantile(estimate, 0.025, names = FALSE),
+    conf.high = quantile(estimate, 0.975, names = FALSE),
+    estimate = median(estimate),
+    .groups = "drop"
+  )
+
+write_parquet(
+  sop_summary,
+  here(results_dir, "state-occupancy-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: build-figures
+#| include: false
+
+model_sop_plot <- plot_sops(
+  sop_summary,
+  time_var = "time",
+  facet_var = NULL,
+  linetype_var = "tx"
+) +
+  scale_colour_state() +
+  scale_fill_state() +
+  scale_linetype_group() +
+  guides(
+    colour = guide_legend(nrow = 2),
+    fill = guide_legend(nrow = 2),
+    linetype = guide_legend(override.aes = list(fill = NA))
+  ) +
+  labs(
+    x = "Week after random selection",
+    y = "State occupancy probability",
+    colour = "TAOOH state",
+    fill = "TAOOH state",
+    linetype = NULL,
+    title = NULL
+  )
+
+save_figure(
+  model_sop_plot,
+  here(figure_dir, "model-state-occupancy-pooled.png"),
+  height = 5
+)
+
+home_time_posterior_plot <- plot_posterior(
+  home_time_draws,
+  x_label = paste0(
+    "Difference in time alive and out of hospital over ",
+    horizon_weeks,
+    " weeks (ctDNA − usual care), weeks"
+  )
+)
+
+save_figure(
+  home_time_posterior_plot,
+  here(figure_dir, "home-time-difference-posterior.png"),
+  height = 5
+)
+```
+
+```{r}
+#| label: fig-taooh-unadjusted-state-occupancy
+#| fig-cap: "Unadjusted model-derived TAOOH state occupancy probabilities by treatment group"
+#| fig-alt: "Line chart of posterior TAOOH state occupancy probabilities over 26 weeks from the unadjusted model. Colors identify the five states, line types identify treatment groups, and ribbons show 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+model_sop_plot
+```
+
+```{r}
+#| label: fig-taooh-unadjusted-home-time-posterior
+#| fig-cap: "Posterior distribution of the unadjusted treatment difference in time alive and out of hospital over 26 weeks"
+#| fig-alt: "A half-eye density above a posterior dot plot of the ctDNA-minus-usual-care difference in weeks alive and out of hospital from the unadjusted model. Thick and thin intervals show the 66 and 95 percent credible intervals, and a dashed vertical line marks zero weeks."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+home_time_posterior_plot
+```
