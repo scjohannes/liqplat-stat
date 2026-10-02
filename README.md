@@ -1,99 +1,86 @@
-# LIQPLAT Statistical Analysis
+# LIQPLAT statistical analysis
 
-This repository contains the public, reproducible analysis pipeline and
-Statistical Analysis Plan (SAP) for LIQPLAT, a single-arm trial evaluating
-implementation of ctDNA in routine cancer care with an external comparator.
-It contains code and schemas only; it does not contain clinical data or
-identifiers.
+LIQPLAT is a random invitation trial at the University Hospital Basel. Patients
+from a prospective research registry were randomly selected for an invitation to
+ctDNA-guided care; patients not selected received usual care. This repository
+contains the Statistical Analysis Plan (SAP) and the analysis code. It contains
+no clinical data.
 
-## Architecture
+## Structure
 
-The pipeline is organized as numbered Quarto stages registered explicitly in
-[`config/stages.yml`](config/stages.yml). Shared, testable behavior lives in
-[`R/`](R/), constants in [`config/analysis.yml`](config/analysis.yml), and
-machine-readable interfaces in [`data/schema/`](data/schema/). The runner is a
-small ordered orchestrator, not a targets/drake graph: a stage is rendered only
-when it is selected in the registry.
-
-The primary endpoints are overall survival (RMST through 182 days),
-longitudinal quality of life (first-order ordinal Markov model), and time alive
-and out of hospital (second-order ordinal Markov model). Posterior draws are
-pooled with equal weight across imputations. The production analysis uses
-MICE `m = 50`, `maxit = 50`; supporting analyses intentionally use imputations
-1:5 only and must not be described as the primary analysis.
-
-## Privacy and data contract
-
-The private preparation environment must export only pseudonymized Parquet
-files conforming to the YAML schemas and locked at `2026-09-05`. See
-[`data/README.md`](data/README.md) for the boundary. Raw extracts, source
-linkage keys, direct identifiers, and free-text reports remain outside this
-repository. The ignored `data/private/` directory is only a local hand-off
-location; it is never a place to commit or archive data.
-
-## Prerequisites
-
-- R 4.6.1, Quarto, and a working Stan toolchain
-- Packages specified by the project lockfile, including `yaml`, `here`,
-  `arrow`, `mice`, `miceadds`, `rmsb`, `rstanarm`, `posterior`, `ggsurvfit`,
-  and `digest`
-- `mostr` (https://github.com/scjohannes/mostr), which provides
-  `blrm_markov()`, `avg_sops()`, and `avg_comparisons()`
-
-Restore the environment with `renv::restore()`. `renv.lock` is a valid skeleton
-for the current R version; it intentionally does not invent package hashes.
-Before a production run, update it and the `mostr` entries in
-[`config/analysis.yml`](config/analysis.yml) with the reviewed package
-version and its exact 40-hex Git SHA. Production preflight rejects the current
-placeholders.
-
-Check the local toolchain with:
-
-```text
-Rscript scripts/check-environment.R
+```
+sap/                 Statistical Analysis Plan (SAP.qmd) and its released PDFs
+config/analysis.yml  shared settings: imputations, posterior draws, MCMC, seeds,
+                     diagnostic thresholds
+R/                   the few helper functions used by several notebooks;
+                     plot-style.R is the one plot style for notebooks and report
+scripts/run-all.R    renders all analysis notebooks in dependency order
+analysis/
+  00-data/                       validation and analysis datasets
+  01-population/                 recruitment, CONSORT flow, baseline table
+  02-overall-survival/           one subfolder per way OS was analysed
+  03-quality-of-life/            analysis decision, preparation, landmark and
+                                 longitudinal models
+  04-taooh/                      time alive and out of hospital
+  05-progression-free-survival/
+  06-best-supportive-care/
+  07-blood-products/
+  08-tissue-biopsy/
+  09-imaging/
+  10-implementation/             invitation, ctDNA sampling, technical validity,
+                                 baseline detection, turnaround, MTB, CHIP,
+                                 actionability
+  90-pending/                    SAP outcomes without analysis code yet
 ```
 
-Use `--strict` only after the clean package provenance has been recorded.
+Each analysis folder holds numbered Quarto notebooks (the numbers give the run
+order) and writes everything it produces to its own `results/` folder.
 
-## Running and resuming stages
+## Data
 
-From the repository root, render all registered stages in order:
+The pseudonymised data exports go in `data/private/`. The whole `data/` folder,
+all `results/` folders and the report in `reports/` are ignored by git and must
+never be committed.
 
-```text
+## Requirements
+
+- R 4.6.1 with Rtools45, Quarto 1.9.37 and CmdStan (via cmdstanr)
+- R packages: tidyverse, here, arrow, yaml, mice, miceadds, rstanarm, brms,
+  rmsb, rms, posterior, marginaleffects, ggsurvfit, ggdist, survival, loo, tinytable,
+  patchwork, and `mostr` (<https://github.com/scjohannes/mostr>)
+
+## Running the analyses
+
+From the repository root, with R 4.6.1:
+
+```bash
 Rscript scripts/run-all.R
 ```
 
-Run a bounded range by one-based index or stage id:
+`--from <path>` starts at the first notebook under a path and `--only <path>`
+renders only the notebooks under it, e.g.
+`Rscript scripts/run-all.R --from analysis/04-taooh`.
 
-```text
-Rscript scripts/run-all.R --from primary_qol_imputation --to primary_qol_estimand
-```
+Imputations and model fits are saved per imputation in each analysis's
+`results/` folder and reused on the next run; everything else is recomputed.
+Delete an analysis's `results/` folder to recompute it from scratch, for
+example after the data change.
 
-`--force` (or `LIQPLAT_FORCE=1`) re-creates outputs that already exist.
-Otherwise, expensive imputation and model loops keep completed branch files
-and continue with the first missing branch. A failed stage stops the run.
+The three main analyses (overall survival, the six-month QoL landmark and TAOOH)
+currently use 5 imputations. To use 50, set `imputation: m_main: 50` in
+`config/analysis.yml` and run again from `analysis/02-overall-survival`:
+imputations 6 to 50 are added and imputations 1 to 5 are reused. The QoL
+analysis decision depends on the OS result and is re-evaluated in that run.
 
-Run the no-PHI structural/contract suite and report smoke test with the
-project's pinned R 4.6.1 runtime:
+## Report and SAP
 
-```text
-Rscript tests/testthat.R
-Rscript scripts/synthetic-smoke-test.R
-```
-
-The smoke test renders the artifact-only report to both HTML and Typst without
-fitting Stan models or reading `data/private/`.
-
-## Reports and SAP
-
-The default Quarto project supports the public report and SAP as resources but
-does not implicitly render every notebook. Render either explicitly:
-
-```text
+```bash
 quarto render reports
+```
+
+```bash
 quarto render sap/SAP.qmd
 ```
 
-Generated reports, caches, logs, private data, and model outputs are ignored by
-policy. Public schemas, source QMD/R/YAML/R code, and intentionally compact
-non-confidential Parquet/RDS artifacts remain eligible for version control.
+The report quotes the SAP verbatim; its render stops if a quotation does not
+match `sap/SAP.qmd`.
