@@ -1,83 +1,79 @@
 ---
 title: "Imaging — data and imputation"
 format: html
-execute:
-  echo: true
-  warning: false
-  message: false
 ---
 
-The outcome is the total number of recorded imaging examinations (CT, MRI, and
-PET/PET-CT) during the first 182 days after randomization. Exposure is the
-time each patient was observed during that period, from randomization to
-`follow_up_end_date`, which already includes the 182-day censoring and death.
+- Counts and exposure cover the first 182 days; exposure ends at death or censoring.
 
 ```{r}
 #| label: setup
 
-library(tidyverse)
 library(mice)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
 
-source(here::here("R", "analysis-config.R"))
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
 
-config <- read_analysis_config()
-force <- identical(Sys.getenv("LIQPLAT_FORCE"), "1")
+results_dir <- here("analysis", "09-imaging", "results")
+imputation_path <- file.path(results_dir, "imputation.rds")
+completed_path <- file.path(results_dir, "completed-datasets.rds")
 
-cohort_path <- here::here(
-  "analysis", "00-data", "results", "analysis-cohort.parquet"
-)
-result_dir <- here::here("results", "secondary", "imaging")
-figure_dir <- file.path(result_dir, "figures")
-imputation_path <- file.path(result_dir, "imputation.rds")
-completed_path <- file.path(result_dir, "completed-datasets.rds")
-
-dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 ```
 
 ## Data
 
-The SAP uses ECOG with 0 as reference and 3 for ECOG 3 or higher.
-
 ```{r}
 #| label: imaging-data
 
-cohort <- arrow::read_parquet(cohort_path)
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+)
 
 imaging_data <- cohort |>
   mutate(
-    exposure_days = as.numeric(follow_up_end_date - randomization_date),
+    exposure_days = survival_time_days,
     ecog_group = case_when(
       ecog_fstcnt >= 3 ~ "3+",
       .default = as.character(ecog_fstcnt)
     ),
     ecog_group = factor(
-      ecog_group, levels = c("0", "1", "2", "3+"), ordered = TRUE
+      ecog_group,
+      levels = c("0", "1", "2", "3+"),
+      ordered = TRUE
     )
   ) |>
   select(
-    id, tx,
-    n_imaging_total, n_imaging_ct, n_imaging_mri, n_imaging_pet_ct,
+    id,
+    tx,
+    n_imaging_total,
+    n_imaging_ct,
+    n_imaging_mri,
+    n_imaging_pet_ct,
     exposure_days,
-    age, ecog_group
+    age,
+    ecog_group
   )
 
 stopifnot(!anyNA(imaging_data$n_imaging_total))
 ```
-
-Patients whose follow-up ended on the day of randomization have no time at
-risk and cannot contribute to a rate, so they are excluded.
 
 ```{r}
 #| label: exclude-zero-exposure
 
 n_zero_exposure <- sum(imaging_data$exposure_days == 0)
 
+# Zero follow-up means no time at risk, so no rate: excluded.
 imaging_data <- imaging_data |>
   filter(exposure_days > 0)
 
-arrow::write_parquet(
+write_parquet(
   imaging_data,
-  file.path(result_dir, "analysis-data.parquet"),
+  file.path(results_dir, "analysis-data.parquet"),
   compression = "zstd"
 )
 
@@ -91,7 +87,7 @@ n_zero_exposure
 #| tbl-cap: "Imaging examinations by randomized group"
 
 descriptive_summary <- imaging_data |>
-  mutate(group = if_else(tx == 1, "Invitation group", "External control")) |>
+  mutate(group = if_else(tx == 1, "ctDNA", "Usual care")) |>
   summarise(
     patients = n(),
     patients_imaged = sum(n_imaging_total > 0),
@@ -104,19 +100,16 @@ descriptive_summary <- imaging_data |>
   ) |>
   mutate(n_excluded_zero_exposure = n_zero_exposure)
 
-arrow::write_parquet(
+write_parquet(
   descriptive_summary,
-  file.path(result_dir, "descriptive-summary.parquet"),
+  file.path(results_dir, "descriptive-summary.parquet"),
   compression = "zstd"
 )
 
-descriptive_summary |>
-  knitr::kable()
+kable(descriptive_summary)
 ```
 
 ## Imputation of baseline covariates
-
-Only ECOG is missing.
 
 ```{r}
 #| label: missing-covariates
@@ -125,16 +118,10 @@ imaging_data |>
   summarise(across(c(age, ecog_group), \(x) sum(is.na(x))))
 ```
 
-As for the other supporting analyses, we create the supporting number of MICE
-datasets, with the number of datasets, iterations, and donors taken from the
-shared imputation settings in `config/analysis.yml`. The imputation model
-contains only the variables of the analysis model: ECOG, age, randomized
-group, the outcome, and the log exposure. ECOG uses proportional odds
-imputation.
-
 ```{r}
 #| label: impute-covariates
 
+# Column order sets the mice visit sequence; keep it.
 imputation_data <- imaging_data |>
   mutate(log_exposure = log(exposure_days)) |>
   select(tx, n_imaging_total, log_exposure, age, ecog_group)
@@ -143,14 +130,14 @@ methods <- make.method(imputation_data)
 methods[] <- ""
 methods["ecog_group"] <- "polr"
 
-if (force || !file.exists(imputation_path)) {
+if (!file.exists(imputation_path)) {
   imputation <- mice(
     imputation_data,
     method = methods,
-    m = config$imputation$supporting$m,
-    maxit = config$imputation$supporting$maxit,
-    donors = config$imputation$supporting$donors,
-    seed = analysis_seed(config, "supporting", offset = 2600L),
+    m = config$imputation$m_supporting,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = config$seeds$supporting + 2600L,
     printFlag = FALSE
   )
 
@@ -165,8 +152,10 @@ c(m = imputation$m, iterations = imputation$iteration)
 ```{r}
 #| label: fig-imputation-traces
 #| fig-cap: "MICE trace plots for imputed ECOG"
+#| fig-width: 8
+#| fig-height: 3
 
-plot(imputation)
+plot_mice_traces(mice_chain_stats(imputation))
 ```
 
 ## Completed datasets
