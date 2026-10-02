@@ -1,0 +1,162 @@
+---
+title: "LIQPLAT data quality summary"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here("analysis", "00-data", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+input_paths <- c(
+  consort_ipd = here("data", "private", "consort_ipd.parquet"),
+  recruitment = here(results_dir, "analysis-recruitment.parquet"),
+  cohort_follow_up = here(results_dir, "analysis-cohort.parquet"),
+  qol = here(results_dir, "analysis-qol.parquet"),
+  taooh = here(results_dir, "analysis-taooh.parquet"),
+  ctdna_samples = here(results_dir, "analysis-ctdna-samples.parquet"),
+  ctdna_analyses = here(results_dir, "analysis-ctdna-analyses.parquet"),
+  alterations = here(results_dir, "analysis-alterations.parquet")
+)
+
+if (!all(file.exists(input_paths))) {
+  stop("Run 00-data/01-build-analysis-datasets.qmd first.")
+}
+```
+
+```{r}
+#| label: read
+
+datasets <- map(input_paths, \(path) read_parquet(path) |> as.data.frame())
+
+schemas <- names(input_paths) |>
+  set_names() |>
+  map(\(domain) read_yaml(here("data", "schema", paste0(domain, ".yml"))))
+```
+
+## Completeness
+
+```{r}
+#| label: completeness
+
+qc_summary <- datasets |>
+  imap(\(data, domain) {
+    columns <- intersect(names(schemas[[domain]]$columns), names(data))
+
+    tibble(
+      domain = domain,
+      column = columns,
+      n_rows = nrow(data),
+      n_missing = map_int(columns, \(column) sum(is.na(data[[column]]))),
+      missing_proportion = if (nrow(data) == 0L) {
+        NA_real_
+      } else {
+        map_dbl(columns, \(column) mean(is.na(data[[column]])))
+      }
+    )
+  }) |>
+  list_rbind()
+```
+
+## Logic checks
+
+```{r}
+#| label: logic
+
+key_checks <- datasets |>
+  imap(\(data, domain) {
+    key <- as.character(schemas[[domain]]$primary_key)
+
+    tibble(
+      domain = domain,
+      check = "primary_key_duplicates",
+      n_violations = if (length(key) > 0) sum(duplicated(data[key])) else 0L
+    )
+  }) |>
+  list_rbind()
+
+cohort <- datasets$cohort_follow_up
+horizon_days <- config$analysis$horizon_days
+
+endpoint_checks <- tibble(
+  domain = "cohort_follow_up",
+  check = c(
+    "primary_follow_up_outside_horizon",
+    "unrestricted_follow_up_shorter_than_primary",
+    "potential_follow_up_shorter_than_unrestricted",
+    "primary_death_inconsistent_with_unrestricted_endpoint"
+  ),
+  n_violations = c(
+    sum(
+      is.na(cohort$survival_time_days) |
+        cohort$survival_time_days < 0 |
+        cohort$survival_time_days > horizon_days
+    ),
+    sum(
+      is.na(cohort$survival_time_days_unrestricted) |
+        cohort$survival_time_days_unrestricted < cohort$survival_time_days
+    ),
+    sum(
+      is.na(cohort$potential_follow_up_days) |
+        cohort$potential_follow_up_days < cohort$survival_time_days_unrestricted
+    ),
+    sum(
+      cohort$event_death == 1L & (
+        is.na(cohort$status_death_unrestricted) |
+          cohort$status_death_unrestricted != 1L |
+          cohort$survival_time_days_unrestricted != cohort$survival_time_days
+      )
+    )
+  )
+)
+
+logic_summary <- bind_rows(key_checks, endpoint_checks) |>
+  mutate(status = if_else(n_violations == 0L, "pass", "fail"))
+```
+
+```{r}
+#| label: write
+
+write_parquet(qc_summary, here(results_dir, "data-qc-summary.parquet"))
+write_parquet(logic_summary, here(results_dir, "data-qc-logic.parquet"))
+
+failed_checks <- logic_summary |>
+  filter(is.na(n_violations) | n_violations != 0L)
+
+if (nrow(failed_checks) > 0) {
+  stop(
+    "Data logic checks failed: ",
+    str_flatten_comma(paste(failed_checks$domain, failed_checks$check))
+  )
+}
+```
+
+```{r}
+#| label: tbl-completeness
+#| tbl-cap: "Non-identifying completeness summary"
+#| echo: false
+
+qc_summary |>
+  filter(!column %in% c("id", "sample_id", "alteration_id", "assessment_id")) |>
+  mutate(missing_proportion = round(missing_proportion, 4)) |>
+  kable()
+```
+
+```{r}
+#| label: tbl-logic
+#| tbl-cap: "Non-identifying logic-check summary"
+#| echo: false
+
+logic_summary |>
+  kable()
+```
