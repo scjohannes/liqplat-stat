@@ -1,0 +1,219 @@
+---
+title: "QoL death-inclusive Markov, unadjusted — model fitting"
+subtitle: "First-order ordinal transition models without baseline covariates, one per completed dataset"
+format: html
+---
+
+- Same completed weekly datasets as the adjusted model.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rms)
+library(rmsb)
+library(mostr)
+library(posterior)
+library(arrow)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "markov.R"))
+
+indices <- seq_len(config$imputation$m_supporting)
+
+imputation_dir <- here(
+  "analysis", "03-quality-of-life", "03-longitudinal-with-death", "results",
+  "imputations"
+)
+results_dir <- here(
+  "analysis", "03-quality-of-life", "05-longitudinal-unadjusted", "results"
+)
+model_dir <- file.path(results_dir, "models")
+
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Model specification
+
+```{r}
+#| label: model-specification
+#| include: false
+
+# 3,000 retained draws in total: per chain, 750 warmup + 750 sampling iterations.
+default_warmup <- as.integer(3000L / config$markov$chains)
+default_iterations <- 2L * default_warmup
+
+retry_iterations <- config$markov$retry_iterations
+retry_warmup <- retry_iterations / 2L
+
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+
+# rms::rcs() stays qualified: mostr recognises the inline term in this form.
+model_formula <- y ~ tx + rms::rcs(week, 4) + yprev + cluster(id)
+```
+
+## Fit the models
+
+```{r}
+#| label: fit-models
+#| include: false
+
+for (index in indices) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  if (file.exists(model_path)) next
+
+  data <- read_parquet(
+    file.path(imputation_dir, sprintf("imputation-%02d.parquet", index))
+  ) |>
+    as.data.frame() |>
+    mutate(
+      y = as.integer(as.character(y)),
+      yprev = factor(yprev, levels = 1:7)
+    )
+
+  stopifnot(
+    "Completed dataset is not valid for Markov model fitting" =
+      !anyNA(data[all.vars(model_formula)]) &&
+        !anyNA(data$id) &&
+        !anyDuplicated(data[c("id", "week")]) &&
+        all(data$y %in% 1:8)
+  )
+
+  dd <- datadist(data)
+  options(datadist = "dd")
+
+  # The +650 offset keeps the seeds apart from the adjusted fits (+500).
+  fit_seed <- config$seeds$supporting + (index - 1) * 1000 + 650
+  fit_attempts <- list()
+  failure_reason <- NULL
+
+  for (attempt in 1:2) {
+    iterations <- if (attempt == 1L) default_iterations else retry_iterations
+    warmup <- if (attempt == 1L) default_warmup else retry_warmup
+    refit_reason <- if (attempt == 1L) {
+      "Initial fit"
+    } else {
+      paste0("Initial fit failed diagnostics: ", failure_reason)
+    }
+
+    model <- blrm_markov(
+      formula = model_formula,
+      pcontrast = pcontrast_tx,
+      ppo = ~week,
+      cppo = function(y) as.numeric(as.character(y)),
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = iterations,
+      warmup = warmup,
+      refresh = 0L,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = if (attempt == 1L) fit_seed else fit_seed + 500000,
+        parallel_chains = config$markov$chains
+      )
+    )
+
+    diagnostics <- markov_diagnostics(model, config$diagnostics)
+
+    # Record why the attempt failed, in words, for the audit log.
+    thresholds <- config$diagnostics
+    rhat <- keep(diagnostics$summary$rhat, is.finite)
+    ess_bulk <- keep(diagnostics$summary$ess_bulk, is.finite)
+    ess_tail <- keep(diagnostics$summary$ess_tail, is.finite)
+
+    failure_reasons <- c(
+      if (length(rhat) == 0L) {
+        "R-hat was unavailable"
+      } else if (max(rhat) > thresholds$max_rhat) {
+        sprintf(
+          "maximum R-hat %.4f exceeded %.4f",
+          max(rhat),
+          thresholds$max_rhat
+        )
+      },
+      if (length(ess_bulk) == 0L) {
+        "bulk ESS was unavailable"
+      } else if (min(ess_bulk) < thresholds$min_ess_bulk) {
+        sprintf(
+          "minimum bulk ESS %.1f was below %.1f",
+          min(ess_bulk),
+          thresholds$min_ess_bulk
+        )
+      },
+      if (length(ess_tail) == 0L) {
+        "tail ESS was unavailable"
+      } else if (min(ess_tail) < thresholds$min_ess_tail) {
+        sprintf(
+          "minimum tail ESS %.1f was below %.1f",
+          min(ess_tail),
+          thresholds$min_ess_tail
+        )
+      },
+      if (diagnostics$divergent_transitions >
+        thresholds$max_divergent_transitions) {
+        paste(diagnostics$divergent_transitions, "divergent transitions")
+      },
+      if (diagnostics$treedepth_exceeded > thresholds$max_treedepth_exceeded) {
+        paste(diagnostics$treedepth_exceeded, "treedepth exceedances")
+      },
+      if (is.finite(diagnostics$min_bfmi) &&
+        diagnostics$min_bfmi < thresholds$min_bfmi) {
+        sprintf(
+          "minimum E-BFMI %.3f was below %.3f",
+          diagnostics$min_bfmi,
+          thresholds$min_bfmi
+        )
+      }
+    )
+    failure_reason <- if (length(failure_reasons) == 0L) {
+      "None"
+    } else {
+      str_flatten(failure_reasons, "; ")
+    }
+
+    fit_attempts[[attempt]] <- tibble(
+      imputation = index,
+      attempt = attempt,
+      iterations_per_chain = as.integer(iterations),
+      warmup_per_chain = as.integer(warmup),
+      retained_draws_per_chain = as.integer(iterations - warmup),
+      refit_reason = refit_reason,
+      diagnostics_passed = isTRUE(diagnostics$passed),
+      diagnostic_failure_reason = failure_reason,
+      r_version = as.character(getRversion()),
+      mostr_version = as.character(packageVersion("mostr")),
+      fit_wrapper = attr(model, "markov_fit_wrapper") %||% NA_character_,
+      starting_profile_metadata_stored =
+        !is.null(attr(model, "markov_starting_profile_metadata"))
+    )
+
+    # The log is written after every attempt, before the final check, so that
+    # a failed or interrupted run is documented.
+    write_parquet(
+      list_rbind(fit_attempts),
+      file.path(model_dir, sprintf("fit-attempts-%02d.parquet", index)),
+      compression = "zstd"
+    )
+
+    if (isTRUE(diagnostics$passed)) break
+  }
+
+  assert_markov_diagnostics(diagnostics)
+
+  saveRDS(model, model_path, compress = "xz")
+}
+
+options(datadist = NULL)
+```

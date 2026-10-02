@@ -1,0 +1,180 @@
+---
+title: "Tissue biopsy — model fitting"
+format: html
+---
+
+```{r}
+#| label: setup
+
+library(brms)
+library(posterior)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here("analysis", "08-tissue-biopsy", "results")
+adjusted_model_path <- file.path(results_dir, "model-adjusted.rds")
+unadjusted_model_path <- file.path(results_dir, "model-unadjusted.rds")
+
+biopsy_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
+completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
+```
+
+## Prior
+
+```{r}
+#| label: prior
+
+coefficient_prior <- c(
+  prior(normal(0, 2.5), class = "b"),
+  # Exponential tail: the brms default shape prior lets a chain drift to the
+  # Poisson limit (shape -> infinity). Same shape prior as the blood products.
+  prior(gamma(0.01, 0.01), class = "shape")
+)
+```
+
+## Convergence rule
+
+```{r}
+#| label: convergence-rule
+
+thresholds <- config$diagnostics
+
+fit_diagnostics <- function(fit) {
+  draw_summary <- summarise_draws(fit, "rhat", "ess_bulk", "ess_tail")
+  nuts <- nuts_params(fit)
+  max_treedepth <- control_params(fit)$max_treedepth
+
+  tibble(
+    iterations = fit$fit@sim$iter,
+    max_rhat = max(draw_summary$rhat),
+    min_ess_bulk = min(draw_summary$ess_bulk),
+    min_ess_tail = min(draw_summary$ess_tail),
+    divergences = sum(nuts$Value[nuts$Parameter == "divergent__"]),
+    treedepth_hits = sum(
+      nuts$Value[nuts$Parameter == "treedepth__"] >= max_treedepth
+    ),
+    min_bfmi = min(rstan::get_bfmi(fit$fit))
+  )
+}
+
+passes_thresholds <- function(diagnostics) {
+  with(diagnostics, coalesce(
+    max_rhat <= thresholds$max_rhat &
+      min_ess_bulk >= thresholds$min_ess_bulk &
+      min_ess_tail >= thresholds$min_ess_tail &
+      divergences <= thresholds$max_divergent_transitions &
+      treedepth_hits <= thresholds$max_treedepth_exceeded &
+      min_bfmi >= thresholds$min_bfmi,
+    FALSE
+  ))
+}
+
+refit_unconverged <- function(fits, seed) {
+  imap(fits, \(fit, index) {
+    if (passes_thresholds(fit_diagnostics(fit))) {
+      return(fit)
+    }
+    update(fit, iter = 4000L, seed = seed + 500000L + index, refresh = 0L)
+  })
+}
+```
+
+## Adjusted model
+
+```{r}
+#| label: fit-adjusted
+
+if (!file.exists(adjusted_model_path)) {
+  # brm_multiple() seeds only compilation; seed R's RNG for the Stan seeds.
+  set.seed(config$seeds$supporting + 2701L)
+
+  adjusted_fits <- brm_multiple(
+    bf(unique_biopsy_days ~ tx + age + ecog_group + offset(log(exposure_days))),
+    data = completed_datasets,
+    family = negbinomial(),
+    prior = coefficient_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    init = 0,
+    seed = config$seeds$supporting + 2701L,
+    combine = FALSE,
+    refresh = 0L
+  )
+
+  adjusted_fits <- refit_unconverged(
+    adjusted_fits,
+    seed = config$seeds$supporting + 2701L
+  )
+
+  saveRDS(adjusted_fits, adjusted_model_path, compress = "xz")
+}
+
+adjusted_fits <- readRDS(adjusted_model_path)
+```
+
+## Unadjusted model
+
+```{r}
+#| label: fit-unadjusted
+
+if (!file.exists(unadjusted_model_path)) {
+  unadjusted_fits <- list(brm(
+    bf(unique_biopsy_days ~ tx + offset(log(exposure_days))),
+    data = biopsy_data,
+    family = negbinomial(),
+    prior = coefficient_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    init = 0,
+    seed = config$seeds$supporting + 2702L,
+    refresh = 0L
+  ))
+
+  unadjusted_fits <- refit_unconverged(
+    unadjusted_fits,
+    seed = config$seeds$supporting + 2702L
+  )
+
+  saveRDS(unadjusted_fits, unadjusted_model_path, compress = "xz")
+}
+
+unadjusted_fits <- readRDS(unadjusted_model_path)
+```
+
+## Diagnostics
+
+```{r}
+#| label: model-diagnostics
+
+model_diagnostics <- bind_rows(
+  adjusted = list_rbind(map(adjusted_fits, fit_diagnostics), names_to = "imputation"),
+  unadjusted = list_rbind(map(unadjusted_fits, fit_diagnostics), names_to = "imputation"),
+  .id = "adjustment"
+) |>
+  mutate(passed = passes_thresholds(pick(everything())))
+```
+
+```{r}
+#| label: tbl-model-diagnostics
+#| tbl-cap: "Convergence diagnostics per model and imputation"
+
+kable(model_diagnostics, digits = 3)
+```
+
+- Fits passing every threshold: `r sum(model_diagnostics$passed)` of `r nrow(model_diagnostics)`
+
+```{r}
+#| label: tbl-adjusted-coefficients
+#| tbl-cap: "Posterior coefficients of the adjusted biopsy model (first imputation)"
+
+adjusted_fits[[1]] |>
+  fixef() |>
+  kable(digits = 3)
+```

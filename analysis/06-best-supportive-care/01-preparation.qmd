@@ -1,0 +1,130 @@
+---
+title: "Best supportive care — endpoint preparation"
+format: html
+---
+
+- Time starts at randomization; follow-up runs to the data lock, no 182-day cap
+- Cause-specific BSC hazard: death before BSC is censoring
+- Composite: first of BSC or death; same-day BSC and death count as BSC
+
+```{r}
+#| label: setup
+#| include: false
+library(here)
+library(arrow)
+library(yaml)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+results_dir <- here("analysis", "06-best-supportive-care", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- read_parquet(here("analysis", "00-data", "results", "analysis-cohort.parquet"))
+```
+
+## Endpoint derivation
+
+```{r}
+#| label: derive-endpoint
+#| include: false
+endpoint <- derive_dated_event_endpoints(
+  cohort,
+  event_date_col = "bsc_date",
+  event_indicator_col = "bsc",
+  event_label = "BSC",
+  data_lock = config$analysis$data_lock
+) |>
+  rename(
+    bsc_origin_date = origin_date,
+    bsc_follow_up_limit = follow_up_limit,
+    bsc_extends_recorded_follow_up = extends_recorded_follow_up,
+    bsc_after_follow_up_limit = after_follow_up_limit,
+    bsc_event_or_censor_date = event_or_censor_date,
+    event_bsc = event_first,
+    event_death_before_bsc = event_death_before_first,
+    event_bsc_or_death = event_composite,
+    bsc_censor_reason = censor_reason,
+    time_to_bsc_days = time_days,
+    bsc_exclusion_reason = exclusion_reason,
+    bsc_in_analysis = in_analysis
+  ) |>
+  mutate(
+    bsc_censor_reason = replace_values(
+      bsc_censor_reason,
+      "event_observed" ~ "bsc_observed",
+      "death_before_event" ~ "death_before_bsc"
+    ),
+    bsc_exclusion_reason = replace_values(
+      bsc_exclusion_reason,
+      "event_before_randomization" ~ "bsc_before_randomization"
+    )
+  )
+
+stopifnot(
+  all(endpoint$bsc_exclusion_reason %in% c(
+    "included", "bsc_before_randomization", "no_positive_follow_up"
+  )),
+  all(endpoint$event_bsc_or_death ==
+        endpoint$event_bsc + endpoint$event_death_before_bsc),
+  all(endpoint$event_bsc_or_death >= endpoint$event_bsc),
+  # The follow-up limit carries the data lock on the shifted date scale.
+  all(endpoint$bsc_event_or_censor_date <= endpoint$bsc_follow_up_limit),
+  all(endpoint$time_to_bsc_days <= endpoint$potential_follow_up_days),
+  all(endpoint$data_lock == config$analysis$data_lock)
+)
+```
+
+## Analysis dataset
+
+```{r}
+#| label: prepare-analysis-data
+#| include: false
+prepared <- endpoint |>
+  filter(bsc_in_analysis) |>
+  # The column order sets the MICE visit sequence; diagnosis is joined later.
+  select(
+    id, tx, time_to_bsc_days, event_bsc, event_death_before_bsc,
+    event_bsc_or_death, ecog_fstcnt, stage_binary, lung, age, gender,
+    albumin, bilirubin, c_reactive_protein, lactate_dehydrogenase
+  )
+
+stopifnot(
+  nrow(prepared) > 0L,
+  all(prepared$time_to_bsc_days > 0)
+)
+
+endpoint_audit <- endpoint |>
+  count(tx, bsc_exclusion_reason, name = "participants")
+
+event_counts <- prepared |>
+  summarise(
+    participants = n(),
+    bsc_events = sum(event_bsc),
+    death_before_bsc = sum(event_death_before_bsc),
+    composite_events = sum(event_bsc_or_death),
+    censored_without_either = sum(event_bsc_or_death == 0),
+    .by = tx
+  )
+
+write_parquet(endpoint, file.path(results_dir, "endpoint.parquet"))
+write_parquet(prepared, file.path(results_dir, "prepared.parquet"))
+write_parquet(endpoint_audit, file.path(results_dir, "endpoint-audit.parquet"))
+write_parquet(event_counts, file.path(results_dir, "event-counts.parquet"))
+```
+
+```{r}
+#| label: tbl-bsc-endpoint-audit
+#| tbl-cap: "BSC analysis population and exclusions"
+#| echo: false
+kable(endpoint_audit)
+```
+
+```{r}
+#| label: tbl-bsc-event-counts
+#| tbl-cap: "Observed BSC and competing death events by randomized group"
+#| echo: false
+kable(event_counts)
+```

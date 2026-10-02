@@ -1,0 +1,211 @@
+---
+title: "Progression-free survival — covariate imputation"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(mice)
+library(miceadds)
+library(here)
+library(arrow)
+library(yaml)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "05-progression-free-survival", "results")
+imputation_dir <- file.path(results_dir, "imputations")
+figure_dir <- file.path(results_dir, "figures")
+dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+m <- config$imputation$m_supporting
+
+prepared <- read_parquet(file.path(results_dir, "prepared.parquet")) |>
+  mutate(diagnosis = factor(diagnosis), gender = factor(gender))
+
+prepared <- prepared |>
+  mutate(na_pfs = nelsonaalen(prepared, pfs_time_days, event_pfs))
+```
+
+## Adjusted (fixed): lung indicator
+
+```{r}
+#| label: setup-fixed
+#| include: false
+fixed_data <- prepared |>
+  select(-diagnosis) |>
+  mutate(ecog_fstcnt = ordered(ecog_fstcnt))
+
+fixed_incomplete <- names(which(colSums(is.na(fixed_data)) > 0))
+
+fixed_methods <- make.method(fixed_data)
+fixed_methods[] <- ""
+fixed_methods[fixed_incomplete] <- "pmm"
+fixed_methods["ecog_fstcnt"] <- "polr"
+
+fixed_predictors <- make.predictorMatrix(fixed_data)
+fixed_predictors[, c("id", "pfs_time_days")] <- 0
+fixed_predictors[!nzchar(fixed_methods), ] <- 0
+```
+
+## Adjusted (hierarchical): diagnosis random intercept
+
+```{r}
+#| label: setup-hierarchical
+#| include: false
+diagnosis_data <- prepared |>
+  mutate(diagnosis_id = as.integer(diagnosis)) |>
+  select(-diagnosis, -lung)
+
+diagnosis_incomplete <- names(which(colSums(is.na(diagnosis_data)) > 0))
+
+diagnosis_methods <- make.method(diagnosis_data)
+diagnosis_methods[] <- ""
+# ECOG is imputed as numeric, with the observed integer categories as donors.
+diagnosis_methods[diagnosis_incomplete] <- "2l.pmm"
+
+diagnosis_predictors <- make.predictorMatrix(diagnosis_data)
+diagnosis_predictors[, c("id", "pfs_time_days")] <- 0
+diagnosis_predictors[!nzchar(diagnosis_methods), ] <- 0
+# -2 marks diagnosis_id as the cluster variable.
+diagnosis_predictors[diagnosis_incomplete, "diagnosis_id"] <- -2
+```
+
+## Imputation
+
+```{r}
+#| label: impute
+#| include: false
+branches <- list(
+  os_adjusted = list(
+    data = fixed_data,
+    methods = fixed_methods,
+    predictors = fixed_predictors,
+    seed = config$seeds$supporting + 2200
+  ),
+  diagnosis = list(
+    data = diagnosis_data,
+    methods = diagnosis_methods,
+    predictors = diagnosis_predictors,
+    seed = config$seeds$supporting + 2201
+  )
+)
+
+imputations <- imap(branches, function(branch, adjustment) {
+  imputation_path <- file.path(imputation_dir, paste0(adjustment, ".rds"))
+
+  if (!file.exists(imputation_path)) {
+    imputation <- mice(
+      branch$data,
+      method = branch$methods,
+      predictorMatrix = branch$predictors,
+      m = m,
+      maxit = config$imputation$maxit,
+      donors = config$imputation$donors,
+      printFlag = FALSE,
+      seed = branch$seed
+    )
+    saveRDS(imputation, imputation_path, compress = "xz")
+  }
+
+  readRDS(imputation_path)
+})
+
+stopifnot(
+  all(imputations$diagnosis$predictorMatrix[diagnosis_incomplete, "diagnosis_id"] == -2)
+)
+```
+
+## Completed datasets
+
+```{r}
+#| label: complete
+#| include: false
+completed <- map(imputations, function(imputation) {
+  map(seq_len(m), function(index) {
+    data <- complete(imputation, index) |>
+      mutate(
+        diagnosis = prepared$diagnosis,
+        ecog_binary = derive_ecog_binary(ecog_fstcnt),
+        mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2)
+      )
+
+    stopifnot(
+      !anyNA(data),
+      imputation$m == m,
+      all(as.numeric(as.character(data$ecog_fstcnt)) %in% 0:4),
+      all(as.integer(as.character(data$ecog_binary)) ==
+            derive_ecog_binary(data$ecog_fstcnt)),
+      all(as.integer(as.character(data$mgps)) ==
+            derive_mgps(data$albumin, data$c_reactive_protein)),
+      identical(data$pfs_time_days, prepared$pfs_time_days),
+      identical(data$event_pfs, prepared$event_pfs)
+    )
+
+    data
+  })
+})
+
+iwalk(completed, function(datasets, adjustment) {
+  saveRDS(datasets, file.path(imputation_dir, paste0("completed-", adjustment, ".rds")))
+})
+```
+
+```{r}
+#| label: save-imputation-figures
+#| include: false
+laboratory_variables <- c(
+  Albumin = "albumin",
+  Bilirubin = "bilirubin",
+  "C-reactive protein" = "c_reactive_protein",
+  "Lactate dehydrogenase" = "lactate_dehydrogenase"
+)
+
+iwalk(imputations, function(imputation, adjustment) {
+  chain_stats <- mice_chain_stats(imputation)
+  save_figure(
+    plot_mice_traces(chain_stats),
+    file.path(figure_dir, paste0("imputation-traces-", adjustment, ".png")),
+    height = 1.5 * n_distinct(chain_stats$variable) + 1
+  )
+
+  laboratory_values <- imputed_values(imputation, laboratory_variables)
+  save_figure(
+    plot_imputed_densities(laboratory_values$observed, laboratory_values$imputed),
+    file.path(figure_dir, paste0("imputation-distributions-", adjustment, ".png")),
+    height = 5
+  )
+})
+```
+
+```{r}
+#| label: fig-pfs-imputation-checks
+#| fig-cap: "Imputation traces and laboratory distributions: Adjusted (fixed) followed by Adjusted (hierarchical)"
+#| fig-alt: "Means and standard deviations across MICE iterations, and observed-versus-imputed laboratory densities, for each of the two five-imputation analyses."
+include_graphics(file.path(figure_dir, c(
+  "imputation-traces-os_adjusted.png",
+  "imputation-distributions-os_adjusted.png",
+  "imputation-traces-diagnosis.png",
+  "imputation-distributions-diagnosis.png"
+)))
+```
+
+```{r}
+#| label: tbl-pfs-imputation-events
+imputations |>
+  imap(function(imputation, adjustment) {
+    if (is.null(imputation$loggedEvents)) return(tibble())
+
+    imputation$loggedEvents |>
+      count(dep, meth, out) |>
+      mutate(adjustment = adjustment)
+  }) |>
+  list_rbind() |>
+  kable()
+```

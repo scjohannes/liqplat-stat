@@ -1,0 +1,25 @@
+project:
+  type: default
+  output-dir: _site
+  # Analysis notebooks are rendered one by one by scripts/run-all.R. The
+  # report in reports/ is a separate Quarto book project.
+  render:
+    - analysis/**/*.qmd
+    - sap/SAP.qmd
+  resources:
+    - sap/SAP.qmd
+    - sap
+
+execute:
+  freeze: auto
+  echo: false
+  message: false
+
+format:
+  html:
+    toc: true
+    number-sections: true
+    html-math-method: katex
+
+bibliography: references.bib
+csl: chicago-author-date-16th-edition.csl

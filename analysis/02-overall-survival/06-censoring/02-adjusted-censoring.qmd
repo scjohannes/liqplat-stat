@@ -1,0 +1,644 @@
+---
+title: "Overall survival — adjusted censoring analysis"
+subtitle: "Observed and assumed administrative-only censoring"
+format: html
+---
+
+- Exploratory: censoring is the event; deaths are censored.
+- Administrative-only (assumed): no recorded death means alive, censored at end of potential follow-up.
+- Missing binary ECOG and mGPS replaced by pooled modes; uncertainty not propagated.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(posterior)
+library(ggsurvfit)
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+source(here("R", "survival.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "06-censoring", "results",
+  "adjusted-censoring"
+)
+pattern_dirs <- list(
+  observed = file.path(results_dir, "observed"),
+  administrative = file.path(results_dir, "administrative")
+)
+for (pattern_dir in pattern_dirs) {
+  dir.create(
+    file.path(pattern_dir, "models"),
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+  dir.create(
+    file.path(pattern_dir, "figures"),
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+}
+```
+
+## Censoring data and modal replacement
+
+```{r}
+#| label: prepare-data
+#| include: false
+
+cohort <- read_parquet(
+  here("data", "private", "cohort_follow_up.parquet")
+)
+
+stopifnot(
+  all(
+    c(
+      "id", "tx", "survival_time_days_unrestricted",
+      "status_death_unrestricted", "potential_follow_up_days", "ecog_fstcnt",
+      "stage_binary", "diagnosis", "albumin", "c_reactive_protein"
+    ) %in% names(cohort)
+  ),
+  !anyDuplicated(cohort$id),
+  !anyNA(cohort[c(
+    "id", "tx", "survival_time_days_unrestricted",
+    "status_death_unrestricted", "potential_follow_up_days", "stage_binary",
+    "diagnosis"
+  )]),
+  all(cohort$tx %in% 0:1),
+  all(cohort$status_death_unrestricted %in% 0:1),
+  all(cohort$stage_binary %in% 0:1),
+  all(is.finite(cohort$survival_time_days_unrestricted)),
+  all(cohort$survival_time_days_unrestricted >= 0),
+  all(is.finite(cohort$potential_follow_up_days)),
+  all(
+    cohort$potential_follow_up_days >= cohort$survival_time_days_unrestricted
+  ),
+  all(na.omit(cohort$ecog_fstcnt) %in% 0:4)
+)
+
+# A plain data.frame (not a tibble), as used by the original fits and by
+# rstanarm's prediction code.
+censoring_data <- cohort |>
+  transmute(
+    id,
+    tx,
+    follow_up_days = survival_time_days_unrestricted,
+    censoring_event = as.integer(1L - status_death_unrestricted),
+    ecog_binary = derive_ecog_binary(ecog_fstcnt),
+    stage_binary,
+    diagnosis = factor(diagnosis),
+    mgps = derive_mgps(albumin, c_reactive_protein)
+  ) |>
+  as.data.frame()
+
+# table() orders the numeric categories, so ties select the lowest category.
+modal_replacements <- map(c("ecog_binary", "mgps"), \(variable) {
+  frequencies <- table(censoring_data[[variable]])
+  stopifnot(length(frequencies) > 0)
+
+  tibble(
+    variable = variable,
+    missing = sum(is.na(censoring_data[[variable]])),
+    replacement = as.numeric(names(frequencies)[which.max(frequencies)])
+  )
+}) |>
+  list_rbind()
+
+ecog_mode <- modal_replacements$replacement[1]
+mgps_mode <- modal_replacements$replacement[2]
+
+censoring_data <- censoring_data |>
+  mutate(
+    ecog_binary = if_else(is.na(ecog_binary), ecog_mode, ecog_binary),
+    mgps = factor(if_else(is.na(mgps), mgps_mode, mgps), levels = 0:2)
+  )
+
+stopifnot(!anyNA(censoring_data))
+
+write_parquet(
+  modal_replacements,
+  file.path(results_dir, "modal-replacements.parquet")
+)
+```
+
+```{r}
+#| label: censoring-patterns
+#| include: false
+
+# Only follow-up time changes; the censoring indicator stays as is.
+administrative_data <- censoring_data |>
+  mutate(
+    follow_up_days = if_else(
+      cohort$status_death_unrestricted == 1L,
+      cohort$survival_time_days_unrestricted,
+      cohort$potential_follow_up_days
+    )
+  )
+
+patterns <- list(
+  observed = censoring_data,
+  administrative = administrative_data
+)
+
+# The participant censored at day zero contributes no positive-time
+# likelihood, but stays in the curves and the standardization population.
+fitting_data <- map(patterns, \(data) filter(data, follow_up_days > 0))
+
+max_follow_up <- max(cohort$potential_follow_up_days)
+```
+
+```{r}
+#| label: tbl-modal-replacements
+#| tbl-cap: "Pooled modal replacement of missing binary ECOG and mGPS"
+#| echo: false
+
+kable(modal_replacements)
+```
+
+## Fitting
+
+```{r}
+#| label: fit-models
+#| include: false
+
+models <- imap(fitting_data, \(data, pattern) {
+  stopifnot(
+    all(
+      levels(patterns[[pattern]]$diagnosis) %in% as.character(data$diagnosis)
+    )
+  )
+
+  model_path <- file.path(pattern_dirs[[pattern]], "models", "model-01.rds")
+
+  if (!file.exists(model_path)) {
+    model <- stan_surv(
+      Surv(follow_up_days, censoring_event) ~
+        tx + ecog_binary + stage_binary + mgps + (1 | diagnosis),
+      data = data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      # Deliberately broad treatment prior, autoscaling off.
+      prior = normal(
+        location = rep(0, 5),
+        scale = c(5, rep(2.5, 4)),
+        autoscale = FALSE
+      ),
+      prior_intercept = normal(0, 20, autoscale = FALSE),
+      prior_aux = dirichlet(1),
+      prior_covariance = decov(),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      adapt_delta = 0.99,
+      seed = 4401L,
+      refresh = 100L
+    )
+
+    saveRDS(model, model_path, compress = "xz")
+  }
+
+  readRDS(model_path)
+})
+```
+
+## Sampling diagnostics
+
+```{r}
+#| label: diagnostics
+#| include: false
+
+parameters <- map(models, \(model) {
+  summarise_draws(as_draws_array(model)) |>
+    as.data.frame()
+})
+
+diagnostics <- imap(models, \(model, pattern) {
+  sampler <- rstan::get_sampler_params(model$stanfit, inc_warmup = FALSE)
+
+  tibble(
+    fits = 1L,
+    multiple_imputations = 0L,
+    mice_maxit = NA_integer_,
+    randomized = nrow(patterns[[pattern]]),
+    fitted = nrow(fitting_data[[pattern]]),
+    max_rhat = max(parameters[[pattern]]$rhat, na.rm = TRUE),
+    min_ess_bulk = min(parameters[[pattern]]$ess_bulk, na.rm = TRUE),
+    min_ess_tail = min(parameters[[pattern]]$ess_tail, na.rm = TRUE),
+    divergences = sum(map_dbl(sampler, \(x) sum(x[, "divergent__"]))),
+    treedepth_hits = sum(map_dbl(sampler, \(x) sum(x[, "treedepth__"] >= 10))),
+    min_bfmi = min(map_dbl(sampler, \(x) {
+      mean(diff(x[, "energy__"])^2) / var(x[, "energy__"])
+    })),
+    chains = model$stanfit@sim$chains,
+    iterations = model$stanfit@sim$iter,
+    warmup = model$stanfit@sim$warmup
+  )
+})
+
+iwalk(diagnostics, \(pattern_diagnostics, pattern) {
+  write_parquet(
+    pattern_diagnostics,
+    file.path(pattern_dirs[[pattern]], "adjusted-diagnostics.parquet")
+  )
+  write_parquet(
+    parameters[[pattern]],
+    file.path(pattern_dirs[[pattern]], "adjusted-parameter-summary.parquet")
+  )
+
+  stopifnot(
+    pattern_diagnostics$max_rhat <= 1.01,
+    pattern_diagnostics$min_ess_bulk >= 400,
+    pattern_diagnostics$min_ess_tail >= 400,
+    pattern_diagnostics$divergences == 0,
+    pattern_diagnostics$treedepth_hits == 0,
+    pattern_diagnostics$min_bfmi >= 0.3
+  )
+})
+```
+
+## Censoring hazard ratio and cohort summary
+
+- HR above 1: faster censoring with ctDNA.
+
+```{r}
+#| label: hazard-ratio
+#| include: false
+
+adjusted_summaries <- map(models, \(model) {
+  hr <- exp(as.matrix(model, pars = "tx"))[, 1]
+
+  tibble(
+    median = median(hr),
+    lower_95 = quantile(hr, 0.025),
+    upper_95 = quantile(hr, 0.975),
+    probability_higher_censoring = mean(hr > 1)
+  )
+})
+
+cohort_summaries <- map(patterns, \(data) {
+  data |>
+    summarise(
+      participants = n(),
+      censoring_events = sum(censoring_event),
+      deaths = sum(1L - censoring_event),
+      zero_follow_up = sum(follow_up_days == 0),
+      .by = tx
+    )
+})
+
+iwalk(adjusted_summaries, \(summary, pattern) {
+  write_parquet(
+    summary,
+    file.path(
+      pattern_dirs[[pattern]],
+      "adjusted-hazard-ratio-summary.parquet"
+    )
+  )
+  write_parquet(
+    cohort_summaries[[pattern]],
+    file.path(pattern_dirs[[pattern]], "adjusted-cohort-summary.parquet")
+  )
+})
+```
+
+## Standardized censoring curves
+
+```{r}
+#| label: censoring-curves
+#| include: false
+
+curve_summaries <- imap(models, \(model, pattern) {
+  curves <- posterior_standardized_survival_draws(
+    model,
+    patterns[[pattern]],
+    horizon = max_follow_up,
+    n_points = 200L,
+    n_draws = 1000L,
+    seed = 4402L
+  )
+
+  # Probabilities in [0, 1] and non-increasing within each draw.
+  monotone <- curves |>
+    group_by(tx, draw) |>
+    summarise(ok = all(diff(survival) <= 1e-10), .groups = "drop") |>
+    pull(ok)
+  stopifnot(all(curves$survival >= 0 & curves$survival <= 1), all(monotone))
+
+  curves |>
+    summarise(
+      median = median(survival),
+      lower = quantile(survival, 0.025),
+      upper = quantile(survival, 0.975),
+      .by = c(tx, time)
+    )
+})
+```
+
+## Prediction checks
+
+```{r}
+#| label: prediction-checks
+#| include: false
+
+checks <- imap(models, \(model, pattern) {
+  newdata <- patterns[[pattern]] |>
+    mutate(tx = 1)
+
+  individual <- posterior_survfit_compatible(
+    model,
+    newdata = newdata,
+    times = 182,
+    extrapolate = FALSE,
+    standardise = FALSE,
+    return_matrix = TRUE,
+    draws = 100L,
+    seed = 4403L
+  )[[1]]
+
+  standardized <- posterior_survfit_compatible(
+    model,
+    newdata = newdata,
+    times = 182,
+    extrapolate = FALSE,
+    standardise = TRUE,
+    return_matrix = TRUE,
+    draws = 100L,
+    seed = 4403L
+  )[[1]]
+
+  # One row per diagnosis, otherwise identical.
+  contrast_data <- newdata[rep(1L, nlevels(newdata$diagnosis)), ]
+  contrast_data$diagnosis <- factor(
+    levels(newdata$diagnosis),
+    levels = levels(newdata$diagnosis)
+  )
+
+  diagnosis_predictions <- posterior_survfit_compatible(
+    model,
+    newdata = contrast_data,
+    times = 182,
+    extrapolate = FALSE,
+    standardise = FALSE,
+    return_matrix = TRUE,
+    draws = 100L,
+    seed = 4403L
+  )[[1]]
+
+  pattern_checks <- tibble(
+    maximum_averaging_error = max(
+      abs(rowMeans(individual) - as.numeric(standardized))
+    ),
+    maximum_diagnosis_contrast = max(
+      apply(diagnosis_predictions, 1, \(x) diff(range(x)))
+    )
+  )
+
+  stopifnot(
+    pattern_checks$maximum_averaging_error < 1e-10,
+    pattern_checks$maximum_diagnosis_contrast > 1e-8
+  )
+
+  pattern_checks
+})
+
+iwalk(curve_summaries, \(curve_summary, pattern) {
+  write_parquet(
+    curve_summary,
+    file.path(pattern_dirs[[pattern]], "adjusted-censoring-curves.parquet")
+  )
+  write_parquet(
+    checks[[pattern]],
+    file.path(pattern_dirs[[pattern]], "adjusted-prediction-checks.parquet")
+  )
+})
+```
+
+## Figures
+
+```{r}
+#| label: build-plots
+#| include: false
+
+reverse_plots <- imap(patterns, \(plot_data, pattern) {
+  km <- survfit2(
+    Surv(follow_up_days, censoring_event) ~ tx_plot,
+    data = mutate(plot_data, tx_plot = group_factor(tx)),
+    conf.type = "log-log"
+  )
+
+  # Reverse Kaplan–Meier (dashed) and adjusted censoring curves (solid).
+  reverse_plot <- plot_km_model(
+    km,
+    curve_summaries[[pattern]],
+    x_max = max_follow_up,
+    y_label = "Probability of remaining uncensored",
+    event_label = "Censoring"
+  )
+
+  save_figure(
+    ggsurvfit_build(reverse_plot),
+    file.path(
+      pattern_dirs[[pattern]],
+      "figures",
+      "adjusted-reverse-kaplan-meier.png"
+    ),
+    height = 6.5
+  )
+
+  reverse_plot
+})
+
+trace_plots <- imap(models, \(model, pattern) {
+  trace_plot <- trace_draws(
+    model,
+    c("tx", "ecog_binary", "stage_binary", "mgps1", "mgps2")
+  ) |>
+    plot_traces(ncol = 2)
+
+  save_figure(
+    trace_plot,
+    file.path(
+      pattern_dirs[[pattern]],
+      "figures",
+      "adjusted-censoring-traces.png"
+    ),
+    height = 4.5
+  )
+
+  trace_plot
+})
+```
+
+## Frequentist Cox models and reverse Kaplan–Meier landmarks
+
+```{r}
+#| label: cox-and-landmarks
+#| include: false
+
+cox_models <- map(patterns, \(data) {
+  coxph(Surv(follow_up_days, censoring_event) ~ tx, data = data)
+})
+
+cox_results <- imap(cox_models, \(cox, pattern) {
+  cox_summary <- summary(cox)
+
+  tibble(
+    pattern,
+    hazard_ratio = cox_summary$conf.int[1, "exp(coef)"],
+    lower_95 = cox_summary$conf.int[1, "lower .95"],
+    upper_95 = cox_summary$conf.int[1, "upper .95"],
+    p_value = cox_summary$coefficients[1, "Pr(>|z|)"],
+    participants = nrow(patterns[[pattern]]),
+    censoring_events = sum(patterns[[pattern]]$censoring_event)
+  )
+}) |>
+  list_rbind()
+
+cox_ph_results <- imap(cox_models, \(cox, pattern) {
+  ph_test <- cox.zph(cox)$table
+
+  tibble(
+    pattern,
+    term = rownames(ph_test),
+    chisq = ph_test[, "chisq"],
+    df = ph_test[, "df"],
+    p_value = ph_test[, "p"]
+  )
+}) |>
+  list_rbind()
+
+landmarks <- imap(patterns, \(data, pattern) {
+  km <- survfit(Surv(follow_up_days, censoring_event) ~ tx, data = data)
+  landmark <- summary(km, times = c(182, 365, 547, 730), extend = TRUE)
+
+  tibble(
+    pattern,
+    tx = as.integer(sub("tx=", "", landmark$strata)),
+    time = landmark$time,
+    estimate = landmark$surv
+  )
+}) |>
+  list_rbind()
+
+hazard_ratios <- imap(adjusted_summaries, \(summary, pattern) {
+  mutate(summary, pattern = pattern, .before = 1)
+}) |>
+  list_rbind()
+
+diagnostics_comparison <- imap(diagnostics, \(pattern_diagnostics, pattern) {
+  mutate(pattern_diagnostics, pattern = pattern, .before = 1)
+}) |>
+  list_rbind()
+
+write_parquet(
+  hazard_ratios,
+  file.path(results_dir, "adjusted-comparison.parquet")
+)
+write_parquet(
+  diagnostics_comparison,
+  file.path(results_dir, "diagnostics-comparison.parquet")
+)
+write_parquet(cox_results, file.path(results_dir, "cox-comparison.parquet"))
+write_parquet(
+  cox_ph_results,
+  file.path(results_dir, "cox-ph-comparison.parquet")
+)
+write_parquet(
+  landmarks,
+  file.path(results_dir, "reverse-km-landmarks.parquet")
+)
+```
+
+## Results
+
+```{r}
+#| label: tbl-adjusted-censoring-cohort
+#| tbl-cap: "Participants, censoring events, deaths and zero follow-up by randomized group (0: usual care; 1: invitation)"
+#| echo: false
+
+imap(cohort_summaries, \(summary, pattern) {
+  mutate(summary, pattern = pattern, .before = 1)
+}) |>
+  list_rbind() |>
+  kable()
+```
+
+```{r}
+#| label: tbl-adjusted-censoring-hr
+#| tbl-cap: "Adjusted censoring hazard ratio: invitation versus usual care"
+#| echo: false
+
+kable(hazard_ratios, digits = 3)
+```
+
+- Similar adjusted curves do not establish non-informative censoring.
+
+```{r}
+#| label: fig-adjusted-reverse-km
+#| fig-cap: "Observed censoring. Dashed: empirical reverse Kaplan–Meier curves. Solid: standardized adjusted censoring curves with 95% credible bands. Marks represent deaths; table events represent censoring."
+#| fig-alt: "Empirical and covariate-adjusted reverse-survival curves for the two randomized groups, with risk counts and cumulative censoring."
+#| echo: false
+
+reverse_plots$observed
+```
+
+```{r}
+#| label: fig-scenarios-administrative-censoring
+#| fig-cap: "Assumed administrative-only censoring: all participants without recorded deaths are assumed alive to the cutoff, including those censored within 14 days. Dashed lines are reverse Kaplan–Meier estimates; solid lines are adjusted predictions with 95% credible bands."
+#| fig-alt: "Reverse Kaplan–Meier and adjusted curves after extending censored patients to the cutoff, with numbers at risk and cumulative censoring."
+#| echo: false
+
+reverse_plots$administrative
+```
+
+```{r}
+#| label: tbl-censoring-cox-comparison
+#| tbl-cap: "Unadjusted Cox models for the censoring hazard, their proportional-hazards tests, and reverse Kaplan–Meier landmarks"
+#| echo: false
+
+kable(cox_results, digits = 3)
+kable(cox_ph_results, digits = 3)
+kable(landmarks, digits = 3)
+```
+
+## Diagnostics and actual sampling settings
+
+```{r}
+#| label: tbl-adjusted-censoring-diagnostics
+#| tbl-cap: "Sampling diagnostics and prediction checks for both adjusted censoring models"
+#| echo: false
+
+kable(diagnostics_comparison, digits = 3)
+
+imap(checks, \(pattern_checks, pattern) {
+  mutate(pattern_checks, pattern = pattern, .before = 1)
+}) |>
+  list_rbind() |>
+  kable(digits = 10)
+```
+
+```{r}
+#| label: fig-adjusted-censoring-traces
+#| fig-cap: "Posterior chains for the fixed effects of the observed-censoring model"
+#| echo: false
+
+trace_plots$observed
+```
+
+```{r}
+#| label: fig-administrative-censoring-traces
+#| fig-cap: "Posterior chains for the fixed effects of the administrative-only censoring model"
+#| echo: false
+
+trace_plots$administrative
+```

@@ -1,0 +1,258 @@
+---
+title: "Multiple Imputation Time Alive and Out of Hospital"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(here)
+library(tidyverse)
+library(mice)
+library(miceadds)
+library(arrow)
+library(data.table)
+```
+
+## Data
+
+```{r}
+data_wide <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_wide.parquet")) |>
+  mutate(
+    diagnosis = fct_lump_n(diagnosis, n = 4),
+    diagnosis = factor(as.integer(diagnosis)),
+    # category is very rare, lump wth category 3
+    ecog_fstcnt = if_else(
+        ecog_fstcnt == "4", "3", ecog_fstcnt
+    ),
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 0:3, ordered = TRUE),
+    lactate_dehydrogenase = log(lactate_dehydrogenase + 1)
+    )
+
+data_wide$na_est <- nelsonaalen(data_wide, timevar = surv_time, statusvar = status_death)
+
+data_wide <- data_wide |>
+    select(id, diagnosis, ecog_fstcnt, albumin, bilirubin, c_reactive_protein, lactate_dehydrogenase, na_est)
+
+
+data_raw <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_long.parquet")) |>
+    mutate(
+        death = if_else(y_taooh == 5, 1, 0),
+        tx = factor(tx),
+        week = ceiling(day / 7),
+        surv_time = ceiling(surv_time / 7),
+    ) |>
+    group_by(id, week) |>
+    mutate(
+        death = factor(max(death)),
+        in_hospital = factor(max(in_hospital)),
+        unplanned_stay = factor(max(unplanned_stay)),
+        er_visit = factor(max(er_visit))) |>
+    ungroup() |>
+    filter(week > -2) |>
+    select(-day, -y_qol, -y_taooh) |>
+    distinct() |>
+    arrange(id, week) |>
+    select(-c(diagnosis, ecog_fstcnt)) |>
+    left_join(data_wide, by = "id")
+```
+
+## Data Preprocessing
+
+### Variable Selection and Transformations
+
+```{r}
+imputation_vars <- c(
+  "id",
+  "tx",
+  "week",
+  "gender",
+  "age",
+  "ecog_fstcnt",
+  "diagnosis",
+  "albumin",
+  "bilirubin",
+  "c_reactive_protein",
+  "lactate_dehydrogenase",
+  "in_hospital",
+  "unplanned_stay",
+  "er_visit",
+  "death",
+  "status_death",
+  "na_est"
+)
+
+df <- data_raw |>
+  select(all_of(imputation_vars))
+
+# Model non-linear time effects using restricted cubic splines with 4 knots
+# Time is never missing, so we can create the spline basis directly
+basis_rcs <- rms::rcs(df$week, 4)
+
+df$week <- as.vector(basis_rcs[, 1])
+df$week_nl1 <- as.vector(basis_rcs[, 2])
+df$week_nl2 <- as.vector(basis_rcs[, 3])
+```
+
+## Multiple Imputation Procedure {#sec-imputation}
+
+### Predictor Matrix Configuration
+
+The predictor matrix is configured to:
+
+- Use `id` as the clustering variable (coded as $-2$)
+- Exclude death-related variables from predictions (we use `na_est` instead)
+- Prevent time variables from predicting static baseline variables
+
+```{r}
+#| output: false
+md.pattern(df)
+
+init <- mice(df, maxit = 0)
+pred_matrix <- init$predictorMatrix
+meth <- init$method
+
+# Use patient ID as clustering variable
+pred_matrix[, "id"] <- -2
+pred_matrix["id", ] <- 0
+
+# Exclude raw survival variables from predictions (we use na_est instead)
+# This avoids aggregation artefacts when collapsing longitudinal data to cluster means
+# status_death = whether some died (we use this in combination with na_est)
+# death == 1 in the week someone died. We don't use this.
+pred_matrix[, "death"] <- 0
+pred_matrix["death", ] <- 0
+
+# week shouldn't predict static baseline variables nor itself (nor na_est)
+baseline_vars <- c("tx", "age", "gender", "diagnosis", "ecog_fstcnt", "albumin", "bilirubin",
+                   "c_reactive_protein", "lactate_dehydrogenase", "na_est", "status_death")
+
+pred_matrix[c(baseline_vars, "week", "week_nl1", "week_nl2"), c("week", "week_nl1", "week_nl2")] <- 0
+
+# treatment, gender, age, and week are never missing
+meth["tx"] <- ""
+meth["gender"] <- ""
+meth["age"] <- ""
+meth["week"] <- ""
+meth["week_nl1"] <- ""
+meth["week_nl2"] <- ""
+
+
+# use mean matching at the cluster level for baseline observations
+# this ensures only one ecog per patient per imputation
+meth["diagnosis"] <- "2lonly.pmm"
+meth["ecog_fstcnt"] <- "2lonly.pmm"
+meth["albumin"] <- "2lonly.pmm"
+meth["bilirubin"] <- "2lonly.pmm"
+meth["c_reactive_protein"] <- "2lonly.pmm"
+meth["lactate_dehydrogenase"] <- "2lonly.pmm"
+
+# Longitudinal variables: multilevel PMM
+meth["in_hospital"] <- "2l.pmm"
+meth["unplanned_stay"] <- "2l.pmm"
+meth["er_visit"] <- "2l.pmm"
+
+
+imputed_data <- mice(df,
+                     m = 5,       # 50 in final analysis
+                     maxit = 50,   # 50 in final analysis
+                     predictorMatrix = pred_matrix,
+                     method = meth,
+                     donors = 5,
+                     seed = 1234)
+```
+
+### Imputation Parameters
+
+For the final trial analysis:
+
+- Number of imputed datasets: $m = 50$
+- Maximum iterations: 50
+- Donor pool size: $k = 5$
+
+## Convergence Diagnostics {#sec-diagnostics}
+
+Convergence is assessed via trace plots of the mean and standard deviation of imputed values across iterations.
+
+```{r trace-plots}
+#| fig-cap: "Trace plots showing the mean and standard deviation of imputed values across iterations for each imputed dataset."
+plot(imputed_data)
+```
+
+## Distribution Diagnostics {#sec-distribution}
+
+We compare the distributions of observed and imputed values to assess plausibility.
+
+```{r}
+#| fig-cap: "Density plots comparing observed (blue) and imputed (red) values for all imputed variables."
+densityplot(imputed_data)
+```
+
+```{r}
+#| fig-cap: "Density plot for ECOG performance status."
+densityplot(imputed_data, ~ecog_fstcnt)
+```
+
+```{r}
+# set.seed(1234)
+# original_data <- imputed_data$data
+# missing_pat_ids <- unique(original_data$pat_id[is.na(original_data$in_hospital)])
+# sample_ids <- sample(missing_pat_ids, 9)
+
+# xyplot(imputed_data,
+#        in_hospital ~ week | factor(pat_id),
+#        subset = pat_id %in% sample_ids,
+#        pch = c(1, 20),
+#        type = c("p"),
+#        lwd = 0,
+#        layout = c(3, 3),
+#        main = "Hospitalisation: Observed vs Imputed")
+
+# xyplot(imputed_data,
+#        unplanned_stay ~ week | factor(pat_id),
+#        subset = pat_id %in% sample_ids,
+#        pch = c(1, 20),
+#        type = c("p"),
+#        lwd = 0,
+#        layout = c(3, 3),
+#        main = "Unplanned Stay: Observed vs Imputed")
+
+# xyplot(imputed_data,
+#        er_visit ~ week | factor(pat_id),
+#        subset = pat_id %in% sample_ids,
+#        pch = c(1, 20),
+#        type = c("p"),
+#        lwd = 0,
+#        layout = c(3, 3),
+#        main = "ER Visit: Observed vs Imputed")
+```
+
+## Export
+
+```{r}
+for(i in 1:imputed_data$m){
+    complete_data <- complete(imputed_data, i)
+
+    # format for QoL analysis
+    complete_data <- complete_data |>
+      mutate(
+      y = case_when(
+        death == 1           ~ 5,
+        unplanned_stay == 1  ~ 4,
+        er_visit == 1        ~ 3,
+        in_hospital == 1     ~ 2,
+        TRUE                 ~ 1
+      )) |>
+      group_by(id) |>
+      mutate(
+      yprev = lag(y, n = 1, order_by = week),
+      ypprev = lag(yprev, n = 1, order_by = week),
+      yprev = factor(yprev, levels = 1:4, ordered = FALSE),
+      ypprev = factor(ypprev, levels = 1:4, ordered = FALSE)) |>
+    ungroup() |>
+    filter(week > 0) |>
+    relocate(id, tx, y, yprev, ypprev, week)
+
+    write_parquet(complete_data, sink = here("0-main-analysis", "TAOOH", "imp-data", paste0("taooh-data-", i, ".parquet")))
+}
+```

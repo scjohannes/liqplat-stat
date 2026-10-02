@@ -1,0 +1,208 @@
+---
+title: "Invitation accepted among offered patients"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+library(here)
+library(yaml)
+library(arrow)
+library(brms)
+library(marginaleffects)
+library(ggdist)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "10-implementation", "results")
+models_dir <- file.path(results_dir, "models")
+figures_dir <- file.path(results_dir, "figures")
+dir.create(models_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+
+model_path <- file.path(models_dir, "invitation-accepted.rds")
+```
+
+## Model data
+
+```{r}
+#| label: model-data
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  as.data.frame()
+
+model_data <- cohort |>
+  filter(invitation_offered == 1) |>
+  select(invitation_accepted, age, gender) |>
+  mutate(gender = factor(gender))
+```
+
+## Model fit
+
+```{r}
+#| label: fit
+
+if (!file.exists(model_path)) {
+  fit <- brm(
+    invitation_accepted ~ age + gender,
+    data = model_data,
+    family = bernoulli("logit"),
+    iter = 2000L,
+    chains = 4L,
+    cores = 1L,
+    seed = config$seeds$supporting + 1L,
+    refresh = 0L
+  )
+  saveRDS(fit, model_path, compress = "xz")
+}
+
+fit <- readRDS(model_path)
+```
+
+## Standardized probability
+
+```{r}
+#| label: standardized-probability
+
+accepted_draws <- avg_predictions(
+  fit,
+  newdata = model_data,
+  type = "response",
+  re_formula = NA
+) |>
+  get_draws() |>
+  select(draw)
+
+accepted_summary <- accepted_draws |>
+  summarise(
+    outcome = "standardized_invitation_accepted_probability",
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    n_model = nrow(model_data),
+    n_offered = sum(
+      cohort$tx == 1 & cohort$invitation_offered == 1,
+      na.rm = TRUE
+    )
+  )
+
+write_parquet(
+  accepted_draws,
+  file.path(results_dir, "invitation-accepted-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  accepted_summary,
+  file.path(results_dir, "invitation-accepted-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: acceptance-summary
+#| tbl-cap: "Posterior standardized probability of invitation acceptance"
+#| echo: false
+
+kable(accepted_summary)
+```
+
+```{r}
+#| label: fig-accepted-posterior
+#| fig-cap: "Posterior standardized probability of invitation acceptance. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "A half-eye density above a posterior dot plot of the age- and sex-standardized probability that offered patients accepted the invitation, in percent, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 5
+
+# No reference line: a probability has no natural reference value.
+accepted_posterior_plot <- plot_posterior(
+  100 * accepted_draws$draw,
+  x_label = "Probability of invitation acceptance, %",
+  reference = NULL
+)
+
+save_figure(
+  accepted_posterior_plot,
+  file.path(figures_dir, "invitation-accepted-posterior.png"),
+  height = 5
+)
+accepted_posterior_plot
+```
+
+## Predictions by gender
+
+- Descriptive: each gender keeps its own observed age distribution.
+
+```{r}
+#| label: accepted-gender-predictions
+
+fit <- set_modeldata(fit, fit$data)
+
+gender_draws <- avg_predictions(
+  fit,
+  by = "gender",
+  type = "response",
+  re_formula = NA
+) |>
+  get_draws() |>
+  select(gender, drawid, draw)
+
+gender_summary <- gender_draws |>
+  group_by(gender) |>
+  summarise(
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    .groups = "drop"
+  )
+
+write_parquet(
+  gender_draws,
+  file.path(results_dir, "invitation-accepted-gender-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  gender_summary,
+  file.path(results_dir, "invitation-accepted-gender-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-accepted-gender-summary
+#| tbl-cap: "Descriptive probability of invitation acceptance by gender"
+#| echo: false
+
+kable(gender_summary)
+```
+
+```{r}
+#| label: fig-accepted-gender-predictions
+#| fig-cap: "Descriptive posterior probability of invitation acceptance by gender. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Posterior half-eye densities and dot plots of the probability that offered patients accepted the invitation, in percent, shown in separate panels for each gender, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 7
+
+gender_predictions_plot <- plot_posterior(
+  gender_draws |> mutate(draw = 100 * draw, panel = gender),
+  x_label = "Probability of invitation acceptance, %",
+  reference = NULL
+)
+
+save_figure(
+  gender_predictions_plot,
+  file.path(figures_dir, "invitation-accepted-gender-predictions.png"),
+  height = 7
+)
+gender_predictions_plot
+```

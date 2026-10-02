@@ -1,0 +1,23 @@
+---
+title: "Pending outcome: physical function"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Physical function
+
+**Status: blocked — instrument and longitudinal estimand are not approved.**
+
+The future schema must specify `id`, `assessment_id`, `assessment_date`,
+`instrument`, `instrument_version`, validated `score`, score direction,
+prespecified baseline, `ecog`/performance-status mapping, missingness reason,
+death date, and the observation window/assessment schedule.  It must also
+state whether the endpoint is a continuous score, ordinal state, change from
+baseline, or a death-inclusive longitudinal process.
+
+The current `physical_function` schema contains optional ECOG, performance
+status, walking-aid, and ADL fields but no instrument/version, score direction,
+schedule, or death-inclusive rule.  Those aggregate fields are insufficient to
+choose an estimand or model and are not substituted.

@@ -1,0 +1,228 @@
+---
+title: "QoL death-inclusive Markov — model diagnostics"
+subtitle: "Posterior sampling quality across completed datasets"
+format:
+  html:
+    toc: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rmsb)
+library(posterior)
+library(knitr)
+library(arrow)
+library(here)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "markov.R"))
+
+n_imputations <- config$imputation$m_supporting
+indices <- seq_len(n_imputations)
+
+results_dir <- here(
+  "analysis", "03-quality-of-life", "03-longitudinal-with-death", "results"
+)
+model_dir <- file.path(results_dir, "models")
+table_dir <- file.path(results_dir, "model-diagnostics")
+stan_dx_dir <- file.path(table_dir, "stan-dx")
+figure_dir <- file.path(results_dir, "figures", "model-diagnostics")
+
+dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Parameter diagnostics and `stanDx()` reports
+
+```{r}
+#| label: compute-diagnostics
+#| include: false
+
+diagnostics <- indices |>
+  map(\(index) {
+    model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+    model_diagnostics <- markov_diagnostics(model, config$diagnostics)
+
+    writeLines(
+      capture.output(stanDx(model)),
+      file.path(stan_dx_dir, sprintf("stan-dx-%02d.txt", index))
+    )
+    # Trace plot of every parameter, including the random-intercept SD.
+    trace_parameters <- c(colnames(model$draws), colnames(model$omega))
+    save_figure(
+      plot_traces(trace_draws(model, trace_parameters), ncol = 3),
+      file.path(stan_dx_dir, sprintf("stan-dx-%02d.png", index)),
+      height = 1.4 * ceiling(length(trace_parameters) / 3)
+    )
+
+    as.data.frame(model_diagnostics$summary) |>
+      mutate(
+        imputation = index,
+        divergent_transitions = model_diagnostics$divergent_transitions,
+        treedepth_exceeded = model_diagnostics$treedepth_exceeded,
+        min_bfmi = model_diagnostics$min_bfmi
+      )
+  }) |>
+  list_rbind()
+
+fit_attempts <- indices |>
+  map(\(index) {
+    read_parquet(
+      file.path(model_dir, sprintf("fit-attempts-%02d.parquet", index))
+    )
+  }) |>
+  list_rbind()
+
+final_fit_attempts <- fit_attempts |>
+  slice_max(attempt, n = 1L, with_ties = FALSE, by = imputation)
+
+stopifnot(
+  "The final fit attempt did not pass for every imputation" =
+    setequal(fit_attempts$imputation, indices) &&
+      all(final_fit_attempts$diagnostics_passed)
+)
+```
+
+```{r}
+#| label: summarise-diagnostics
+#| include: false
+
+finite_min <- function(value) {
+  if (any(is.finite(value))) min(value[is.finite(value)]) else NA_real_
+}
+
+diagnostic_summary <- diagnostics |>
+  summarise(
+    max_rhat = if (any(is.finite(rhat))) {
+      max(rhat[is.finite(rhat)])
+    } else {
+      NA_real_
+    },
+    min_ess_bulk = finite_min(ess_bulk),
+    min_ess_tail = finite_min(ess_tail),
+    divergent_transitions = first(divergent_transitions),
+    treedepth_exceeded = first(treedepth_exceeded),
+    min_bfmi = first(min_bfmi),
+    .by = imputation
+  ) |>
+  mutate(
+    passed =
+      max_rhat <= config$diagnostics$max_rhat &
+        min_ess_bulk >= config$diagnostics$min_ess_bulk &
+        min_ess_tail >= config$diagnostics$min_ess_tail &
+        divergent_transitions <= config$diagnostics$max_divergent_transitions &
+        treedepth_exceeded <= config$diagnostics$max_treedepth_exceeded &
+        (is.na(min_bfmi) | min_bfmi >= config$diagnostics$min_bfmi)
+  )
+
+stopifnot(
+  "At least one longitudinal QoL Markov model failed posterior diagnostics" =
+    nrow(diagnostic_summary) == n_imputations &&
+      all(diagnostic_summary$passed)
+)
+
+write_parquet(
+  diagnostics,
+  file.path(table_dir, "parameter-diagnostics.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  diagnostic_summary,
+  file.path(table_dir, "model-diagnostic-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  fit_attempts,
+  file.path(table_dir, "fit-attempts.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-model-diagnostics
+#| tbl-cap: "Worst posterior sampling diagnostic within each fitted imputation"
+#| echo: false
+
+diagnostic_summary |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  kable()
+```
+
+```{r}
+#| label: tbl-fit-attempts
+#| tbl-cap: "Model fit attempts and recorded reasons for refitting"
+#| echo: false
+
+fit_attempts |>
+  transmute(
+    imputation,
+    attempt,
+    iterations_per_chain,
+    retained_draws_per_chain,
+    diagnostics_passed,
+    reason = refit_reason
+  ) |>
+  kable()
+```
+
+## R-hat and ESS by imputation
+
+```{r}
+#| label: fig-posterior-diagnostics
+#| fig-cap: "Posterior convergence and effective sample size across imputations"
+#| fig-subcap:
+#|   - "Parameter-level R-hat distributions; the dashed line is the configured maximum"
+#|   - "Parameter-level bulk and tail effective sample sizes; the dashed line is the configured minimum"
+#| fig-alt: "Two panels summarize posterior diagnostics for each Markov model. R-hat values remain below the configured threshold and effective sample sizes remain above the configured minimum."
+#| layout-ncol: 1
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+rhat_plot <- diagnostics |>
+  filter(is.finite(rhat)) |>
+  ggplot(aes(x = factor(imputation), y = rhat)) +
+  geom_hline(
+    yintercept = config$diagnostics$max_rhat,
+    linetype = "dashed",
+    colour = reference_line_colour
+  ) +
+  geom_violin(fill = "grey85", colour = "grey45", scale = "width") +
+  geom_boxplot(width = 0.15, outlier.shape = NA) +
+  labs(x = "Imputation", y = "R-hat")
+
+ess_plot <- diagnostics |>
+  select(imputation, ess_bulk, ess_tail) |>
+  pivot_longer(
+    c(ess_bulk, ess_tail),
+    names_to = "metric",
+    values_to = "ess"
+  ) |>
+  filter(is.finite(ess)) |>
+  mutate(
+    metric = recode(metric, ess_bulk = "Bulk ESS", ess_tail = "Tail ESS")
+  ) |>
+  ggplot(aes(x = factor(imputation), y = ess, fill = metric)) +
+  geom_hline(
+    yintercept = config$diagnostics$min_ess_bulk,
+    linetype = "dashed",
+    colour = reference_line_colour
+  ) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    outlier.alpha = 0.25
+  ) +
+  scale_fill_grey(start = 0.85, end = 0.55) +
+  labs(x = "Imputation", y = "Effective sample size", fill = NULL)
+
+save_figure(rhat_plot, file.path(figure_dir, "rhat-by-imputation.png"))
+save_figure(ess_plot, file.path(figure_dir, "ess-by-imputation.png"))
+
+rhat_plot
+ess_plot
+```

@@ -1,0 +1,23 @@
+---
+title: "Pending outcome: trial referral and recruitment"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Trial referral and recruitment
+
+**Status: blocked — referral and recruitment are separate outcomes without an
+approved pathway contract.**
+
+The future schema must contain `id`, unique `referral_id`, `referral_date`,
+controlled `referral_type`, `trial_id` or a pseudonymized trial category,
+`eligible`, `offered`, `accepted`, `recruitment_date`, `enrolled_date`,
+`referral_status`, `decline_reason`, and pathway completeness.  The analysis
+must specify denominators separately for referral, offer, acceptance, and
+recruitment.
+
+The current `trial_referral` interface has MTB and trial-referral flags but no
+offer/acceptance/recruitment dates or eligibility pathway.  A referral flag
+cannot be treated as recruitment or enrolment, so this outcome is not run.

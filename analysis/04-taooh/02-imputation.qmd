@@ -1,0 +1,251 @@
+---
+title: "TAOOH — imputation"
+subtitle: "Patient-level baseline-covariate imputation"
+format: html
+---
+
+- Weekly outcome is not imputed (no intermittent missing states)
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(mice)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+indices <- seq_len(config$imputation$m_main)
+
+results_dir <- here("analysis", "04-taooh", "results")
+imputation_dir <- here(results_dir, "imputations")
+dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Patient-level imputation data
+
+```{r}
+#| label: build-imputation-data
+#| include: false
+
+prepared <- read_parquet(here(results_dir, "prepared.parquet")) |>
+  as.data.frame() |>
+  mutate(
+    diagnosis = factor(diagnosis),
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 0:3, ordered = TRUE)
+  )
+
+history_summaries <- prepared |>
+  group_by(id) |>
+  summarise(
+    n_alive = sum(y %in% 1:4, na.rm = TRUE),
+    no_alive_history = as.integer(n_alive == 0L),
+    prop_planned_admission = if_else(
+      n_alive > 0,
+      sum(y == 2L, na.rm = TRUE) / n_alive,
+      0
+    ),
+    prop_er = if_else(
+      n_alive > 0,
+      sum(y == 3L, na.rm = TRUE) / n_alive,
+      0
+    ),
+    prop_unplanned_admission = if_else(
+      n_alive > 0,
+      sum(y == 4L, na.rm = TRUE) / n_alive,
+      0
+    ),
+    n_from_home = sum(yprev == 1L & y %in% 1:4, na.rm = TRUE),
+    n_acute_from_home = sum(yprev == 1L & y %in% c(3L, 4L), na.rm = TRUE),
+    prop_acute_from_home = if_else(
+      n_from_home > 0,
+      n_acute_from_home / n_from_home,
+      0
+    ),
+    .groups = "drop"
+  )
+
+patient_data <- prepared |>
+  select(
+    id,
+    tx,
+    age,
+    gender,
+    diagnosis,
+    ecog_fstcnt,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    lactate_dehydrogenase,
+    survival_time_days,
+    event_death
+  ) |>
+  distinct() |>
+  left_join(history_summaries, by = "id") |>
+  mutate(
+    tx = factor(tx),
+    gender = factor(gender),
+    event_death = as.integer(event_death)
+  )
+
+patient_data$na_est <- nelsonaalen(
+  patient_data,
+  survival_time_days,
+  event_death
+)
+
+# The column order fixes the mice visit sequence.
+imputation_data <- patient_data |>
+  select(-survival_time_days, -n_acute_from_home, -n_alive)
+```
+
+```{r}
+#| label: imputation-model
+#| include: false
+
+methods <- make.method(imputation_data)
+methods[] <- ""
+methods["ecog_fstcnt"] <- "polr"
+methods[c(
+  "albumin",
+  "bilirubin",
+  "c_reactive_protein",
+  "lactate_dehydrogenase"
+)] <- "pmm"
+
+predictors <- make.predictorMatrix(imputation_data)
+predictors[, "id"] <- 0
+```
+
+## Imputation per index
+
+```{r}
+#| label: impute
+#| include: false
+
+for (index in indices) {
+  imputation_path <- here(
+    imputation_dir,
+    sprintf("imputation-%02d.rds", index)
+  )
+  if (file.exists(imputation_path)) next
+
+  imputation <- mice(
+    data = imputation_data,
+    method = methods,
+    predictorMatrix = predictors,
+    m = 1,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    # The +300 offset keeps seeds distinct from the OS imputations.
+    seed = config$seeds$imputation + (index - 1L) * 1000L + 300L,
+    printFlag = FALSE
+  )
+
+  saveRDS(imputation, imputation_path, compress = "xz")
+}
+
+imputations <- indices |>
+  map(\(index) {
+    readRDS(here(imputation_dir, sprintf("imputation-%02d.rds", index)))
+  })
+```
+
+## Completed weekly datasets
+
+```{r}
+#| label: completed-data
+#| include: false
+
+longitudinal_data <- prepared |>
+  select(id, week, y, yprev, ypprev)
+
+for (index in indices) {
+  completed_baseline <- complete(imputations[[index]], 1) |>
+    select(
+      id,
+      tx,
+      age,
+      gender,
+      diagnosis,
+      ecog_fstcnt,
+      albumin,
+      bilirubin,
+      c_reactive_protein,
+      lactate_dehydrogenase
+    )
+
+  completed <- longitudinal_data |>
+    left_join(completed_baseline, by = "id") |>
+    mutate(
+      yprev = factor(yprev, levels = 1:4),
+      ypprev = factor(ypprev, levels = 1:4),
+      id = factor(id)
+    )
+
+  write_parquet(
+    completed,
+    here(imputation_dir, sprintf("completed-%02d.parquet", index)),
+    compression = "zstd"
+  )
+}
+```
+
+## Convergence and imputed distributions
+
+```{r}
+#| label: combine-imputations
+#| include: false
+
+# One imputed column per imputation index.
+imputation_combined <- Reduce(ibind, imputations)
+
+laboratory_values <- imputed_values(
+  imputation_combined,
+  c(
+    Albumin = "albumin",
+    Bilirubin = "bilirubin",
+    "C-reactive protein" = "c_reactive_protein",
+    "Lactate dehydrogenase" = "lactate_dehydrogenase"
+  )
+)
+
+ecog_proportions <- imputed_category_proportions(
+  imputation_combined,
+  c("ECOG performance status" = "ecog_fstcnt")
+)
+```
+
+```{r}
+#| label: taooh-imputation-convergence
+#| echo: false
+#| fig-cap: "MICE convergence traces for imputed TAOOH baseline covariates."
+#| fig-width: 8
+#| fig-height: 9
+
+plot_mice_traces(mice_chain_stats(imputations))
+```
+
+```{r}
+#| label: taooh-imputation-distributions
+#| echo: false
+#| fig-cap: "Observed and imputed distributions of continuous TAOOH baseline covariates."
+#| fig-width: 8
+#| fig-height: 5
+
+plot_imputed_densities(laboratory_values$observed, laboratory_values$imputed)
+```
+
+```{r}
+#| label: taooh-imputation-categories
+#| echo: false
+#| fig-cap: "Observed and imputed proportions of the ECOG performance status categories."
+#| fig-width: 8
+#| fig-height: 4
+
+plot_imputed_categories(ecog_proportions)
+```

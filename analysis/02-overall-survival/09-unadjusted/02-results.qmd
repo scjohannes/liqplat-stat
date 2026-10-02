@@ -1,0 +1,403 @@
+---
+title: "Overall survival, unadjusted — results"
+subtitle: "Survival curves, 182-day RMST, survival probabilities and hazard ratios"
+format: html
+---
+
+- No RMST for unrestricted follow-up.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(ggsurvfit)
+library(ggdist)
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+source(here("R", "posterior.R"))
+
+results_dir <- here("analysis", "02-overall-survival", "09-unadjusted", "results")
+figure_dir <- file.path(results_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+horizon_days <- config$analysis$horizon_days
+n_draws <- config$posterior_draws$main
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  mutate(tx_plot = group_factor(tx))
+max_follow_up <- max(cohort$survival_time_days_unrestricted)
+
+# Prediction seeds: the fit seeds + 50.
+models <- tribble(
+  ~model, ~label, ~follow_up, ~seed_offset,
+  "ph-182", "Proportional hazards, 182 days", "182", 150,
+  "nph-182", "Time-varying hazard ratio, 182 days", "182", 250,
+  "ph-unrestricted", "Proportional hazards, unrestricted follow-up", "unrestricted", 350,
+  "nph-unrestricted", "Time-varying hazard ratio, unrestricted follow-up", "unrestricted", 450
+) |>
+  mutate(
+    curve_horizon = if_else(follow_up == "182", horizon_days, max_follow_up),
+    seed = config$seeds$survival + seed_offset,
+    fit = map(model, \(model) {
+      readRDS(file.path(results_dir, "models", sprintf("model-%s.rds", model)))
+    })
+  )
+```
+
+## Survival curves
+
+```{r}
+#| label: survival-curves
+#| include: false
+
+# Without covariates, the curve of one patient is the standardized curve.
+# Same seed for both groups, so each draw pairs ctDNA and usual-care curves.
+curves <- models |>
+  select(model, fit, curve_horizon, seed) |>
+  pmap(\(model, fit, curve_horizon, seed) {
+    posterior_standardized_survival_draws(
+      fit,
+      tibble(tx = 0),
+      horizon = curve_horizon,
+      n_points = 200L,
+      n_draws = n_draws,
+      seed = seed
+    ) |>
+      mutate(tx = as.integer(tx), model = model)
+  }) |>
+  list_rbind()
+
+curve_summary <- curves |>
+  summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(model, tx, time)
+  )
+
+walk(models$model, \(model) {
+  write_parquet(
+    curve_summary |>
+      filter(model == !!model) |>
+      select(tx, time, median, lower, upper),
+    file.path(results_dir, sprintf("survival-curves-%s.parquet", model)),
+    compression = "zstd"
+  )
+})
+```
+
+## RMST at 182 days
+
+```{r}
+#| label: rmst
+#| include: false
+
+rmst_draws <- curves |>
+  filter(model %in% c("ph-182", "nph-182")) |>
+  compute_rmst_draws(horizon = horizon_days, group_cols = c("tx", "model")) |>
+  pivot_wider(names_from = tx, values_from = rmst, names_prefix = "rmst_") |>
+  arrange(model, draw) |>
+  mutate(rmst_diff = rmst_1 - rmst_0)
+
+stopifnot(
+  "Treatment and control draws could not be matched." =
+    nrow(rmst_draws) == 2L * n_draws && !anyNA(rmst_draws)
+)
+
+rmst_summary <- rmst_draws |>
+  summarise(
+    summarize_posterior_draws(rmst_diff),
+    probability_benefit = posterior_probability(rmst_diff),
+    # q columns above are type-8 quantiles; the ci_* bounds are type-7.
+    ci_66_low = quantile(rmst_diff, 0.17, names = FALSE),
+    ci_66_high = quantile(rmst_diff, 0.83, names = FALSE),
+    ci_95_low = quantile(rmst_diff, 0.025, names = FALSE),
+    ci_95_high = quantile(rmst_diff, 0.975, names = FALSE),
+    .by = model
+  ) |>
+  mutate(
+    rope_low = -7,
+    rope_high = 7,
+    rope_66_contains = ci_66_low >= rope_low & ci_66_high <= rope_high,
+    horizon_days = horizon_days
+  )
+
+write_parquet(rmst_draws, file.path(results_dir, "rmst-draws.parquet"), compression = "zstd")
+write_parquet(rmst_summary, file.path(results_dir, "rmst-summary.parquet"), compression = "zstd")
+```
+
+```{r}
+#| label: tbl-rmst
+#| tbl-cap: "Unadjusted difference in 182-day RMST (ctDNA − usual care), days"
+#| echo: false
+
+kable(rmst_summary, digits = 3)
+```
+
+## Survival at 182 and 365 days
+
+```{r}
+#| label: survival-rates
+#| include: false
+
+# Survival exactly at each horizon (the unrestricted curve grid need not
+# contain it), with the curve seed so that the draws match the curves.
+survival_draws <- models |>
+  cross_join(tibble(horizon = c(horizon_days, 365L))) |>
+  filter(horizon <= curve_horizon) |>
+  select(model, fit, horizon, seed) |>
+  pmap(\(model, fit, horizon, seed) {
+    posterior_standardized_survival_draws(
+      fit,
+      tibble(tx = 0),
+      horizon = horizon,
+      n_points = 2L,
+      n_draws = n_draws,
+      seed = seed
+    ) |>
+      filter(time == horizon) |>
+      mutate(tx = as.integer(tx), model = model, horizon_days = horizon)
+  }) |>
+  list_rbind() |>
+  pivot_wider(
+    id_cols = c(model, horizon_days, draw),
+    names_from = tx,
+    values_from = survival,
+    names_prefix = "survival_"
+  ) |>
+  mutate(
+    risk_difference = survival_1 - survival_0,
+    risk_ratio = survival_1 / survival_0
+  )
+
+stopifnot(!anyNA(survival_draws))
+
+survival_rates_summary <- survival_draws |>
+  pivot_longer(
+    c(survival_0, survival_1),
+    names_to = "tx",
+    names_prefix = "survival_",
+    names_transform = as.integer,
+    values_to = "survival"
+  ) |>
+  summarise(
+    median = median(survival),
+    lower_95 = quantile(survival, 0.025, names = FALSE),
+    upper_95 = quantile(survival, 0.975, names = FALSE),
+    .by = c(model, horizon_days, tx)
+  )
+
+survival_difference_summary <- survival_draws |>
+  summarise(
+    median = median(risk_difference),
+    lower_66 = quantile(risk_difference, 0.17, names = FALSE),
+    upper_66 = quantile(risk_difference, 0.83, names = FALSE),
+    lower_95 = quantile(risk_difference, 0.025, names = FALSE),
+    upper_95 = quantile(risk_difference, 0.975, names = FALSE),
+    probability_benefit = mean(risk_difference > 0),
+    .by = c(model, horizon_days)
+  )
+
+write_parquet(survival_draws, file.path(results_dir, "survival-draws.parquet"), compression = "zstd")
+write_parquet(
+  survival_rates_summary,
+  file.path(results_dir, "survival-rates-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  survival_difference_summary,
+  file.path(results_dir, "survival-difference-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-survival-difference
+#| tbl-cap: "Unadjusted survival difference (ctDNA − usual care) at 182 and 365 days"
+#| echo: false
+
+kable(survival_difference_summary, digits = 3)
+```
+
+## Hazard ratios
+
+```{r}
+#| label: hazard-ratios
+#| include: false
+
+# Draws subsampled with the prediction seed + 25.
+hazard_ratio_draws <- models |>
+  filter(str_starts(model, "ph")) |>
+  select(model, fit, seed) |>
+  pmap(\(model, fit, seed) {
+    coefficient_draws <- as.matrix(fit, pars = "tx")
+    set.seed(seed + 25)
+    selected_draws <- sample(seq_len(nrow(coefficient_draws)), n_draws)
+
+    tibble(
+      model = model,
+      draw = seq_len(n_draws),
+      log_hazard_ratio = coefficient_draws[selected_draws, 1],
+      hazard_ratio = exp(log_hazard_ratio)
+    )
+  }) |>
+  list_rbind()
+
+hazard_ratio_summary <- hazard_ratio_draws |>
+  summarise(
+    median = median(hazard_ratio),
+    ci_66_low = quantile(hazard_ratio, 0.17, names = FALSE),
+    ci_66_high = quantile(hazard_ratio, 0.83, names = FALSE),
+    ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
+    ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
+    probability_benefit = mean(hazard_ratio < 1),
+    draws = n(),
+    .by = model
+  )
+
+write_parquet(
+  hazard_ratio_draws,
+  file.path(results_dir, "hazard-ratio-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  hazard_ratio_summary,
+  file.path(results_dir, "hazard-ratio-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-hazard-ratios
+#| tbl-cap: "Unadjusted treatment hazard ratio, ctDNA versus usual care"
+#| echo: false
+
+kable(hazard_ratio_summary, digits = 3)
+```
+
+## Figures
+
+```{r}
+#| label: build-plots
+#| include: false
+
+km_fits <- list(
+  "182" = survfit2(
+    Surv(survival_time_days, event_death) ~ tx_plot,
+    data = cohort,
+    conf.type = "log-log"
+  ),
+  unrestricted = survfit2(
+    Surv(survival_time_days_unrestricted, status_death_unrestricted) ~ tx_plot,
+    data = cohort,
+    conf.type = "log-log"
+  )
+)
+
+survival_plots <- models |>
+  select(model, follow_up, curve_horizon) |>
+  pmap(\(model, follow_up, curve_horizon) {
+    plot_km_model(
+      km_fits[[follow_up]],
+      filter(curve_summary, model == !!model),
+      x_max = curve_horizon,
+      risk_every = if (follow_up == "182") 50 else 100
+    )
+  }) |>
+  set_names(models$model)
+
+iwalk(survival_plots, \(plot, model) {
+  save_figure(
+    ggsurvfit_build(plot),
+    file.path(figure_dir, sprintf("kaplan-meier-vs-posterior-model-%s.png", model)),
+    height = 6.5
+  )
+})
+
+model_labels <- set_names(models$label, models$model)
+
+rmst_plot <- rmst_draws |>
+  transmute(draw = rmst_diff, panel = factor(model_labels[model], levels = models$label)) |>
+  plot_posterior(
+    x_label = paste0(
+      "Difference in ", horizon_days,
+      "-day restricted mean survival time (ctDNA − usual care), days"
+    )
+  )
+
+hazard_ratio_plot <- hazard_ratio_draws |>
+  transmute(draw = hazard_ratio, panel = factor(model_labels[model], levels = models$label)) |>
+  plot_posterior(
+    x_label = "Hazard ratio, ctDNA versus usual care",
+    reference = 1,
+    log_scale = TRUE
+  )
+
+save_figure(rmst_plot, file.path(figure_dir, "rmst-difference-posterior.png"), height = 6)
+save_figure(hazard_ratio_plot, file.path(figure_dir, "hazard-ratio-posterior.png"), height = 6)
+
+time_varying_plots <- models |>
+  filter(str_starts(model, "nph")) |>
+  select(model, fit) |>
+  deframe() |>
+  map(plot_time_varying_hr)
+
+iwalk(time_varying_plots, \(plot, model) {
+  save_figure(plot, file.path(figure_dir, sprintf("tve-plot-%s.png", model)))
+})
+```
+
+```{r}
+#| label: fig-os-unadjusted-km-model
+#| fig-cap: "Observed Kaplan–Meier estimates and unadjusted model survival curves; one figure per model, in the order of the tables"
+#| fig-alt: "Four survival plots by randomized group with at-risk and cumulative-event counts. Dashed Kaplan–Meier curves include censoring marks; solid unadjusted model curves include 95 percent credible bands."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+walk(survival_plots, print)
+```
+
+```{r}
+#| label: fig-os-unadjusted-rmst
+#| fig-cap: "Posterior distribution of the unadjusted 182-day RMST difference"
+#| fig-alt: "Two half-eye densities above posterior dot plots of the ctDNA-minus-usual-care difference in 182-day restricted mean survival time, one per model, with a dashed line at zero."
+#| fig-width: 8
+#| fig-height: 6
+#| echo: false
+
+rmst_plot
+```
+
+```{r}
+#| label: fig-os-unadjusted-hazard-ratio
+#| fig-cap: "Posterior distribution of the unadjusted treatment hazard ratio"
+#| fig-alt: "Two half-eye densities above posterior dot plots of the ctDNA-versus-usual-care hazard ratio on a logarithmic axis, one per follow-up, with a dashed line at one."
+#| fig-width: 8
+#| fig-height: 6
+#| echo: false
+
+hazard_ratio_plot
+```
+
+```{r}
+#| label: fig-os-unadjusted-time-varying
+#| fig-cap: "Unadjusted time-varying hazard ratio, 182 days and unrestricted follow-up"
+#| fig-alt: "Two plots of the hazard ratio over follow-up time on a logarithmic axis, with posterior median lines and 95 percent credible bands and a dashed line at one."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+walk(time_varying_plots, print)
+```

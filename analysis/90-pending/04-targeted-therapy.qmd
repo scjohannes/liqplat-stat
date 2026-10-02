@@ -1,0 +1,24 @@
+---
+title: "Pending outcome: targeted therapy"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Targeted therapy
+
+**Status: blocked — qualifying targeted-therapy exposure is not operationally
+defined.**
+
+Before analysis, the future schema must include `id`, `treatment_id`,
+`treatment_line`, `treatment_name`, controlled `targeted_therapy` classification,
+`targeted_class`, `start_date`, `stop_date`, treatment indication/alteration
+linkage, and an exposure-completeness flag.  The protocol must specify whether
+targeted therapy means any targeted agent, an OncoKB-actionable agent, or a
+therapy linked to a qualifying ctDNA alteration.
+
+The current optional `targeted_therapy` flag has no qualifying definition,
+agent class, linkage, or observation window.  It cannot support a valid
+patient-level denominator or comparative model and is not recoded from
+current aggregate fields.

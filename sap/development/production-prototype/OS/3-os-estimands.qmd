@@ -1,0 +1,422 @@
+---
+title: "OS Model Fitting"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(rstanarm)
+library(ggdist)
+library(survminer)
+library(patchwork)
+```
+
+## Load and wrangle data
+
+RMST
+
+```{r}
+post_stack <- data.frame()
+
+f <- dir_ls(here("0-main-analysis", "OS", "results", "rmst"))
+
+for (i in 1:length(f)){
+    post_stack <- post_stack |>
+        bind_rows(read_parquet(f[i]))
+}
+```
+
+Survival curves
+
+```{r}
+g <- dir_ls(here("0-main-analysis", "OS", "results", "survival_curves"))
+
+long_data_0 <- data.frame()
+long_data_1 <- data.frame()
+
+
+for (i in 1:length(g)) {
+    surv_matrix <- read_rds(g[i])
+
+    long_data_i <- surv_matrix$surv_tx0 |>
+    as_tibble(.name_repair = ~ as.character(surv_matrix$time_points)) |>
+    mutate(.draw = 1:n()) |>
+    pivot_longer(
+        cols = !.draw,
+        names_to = "time",
+        values_to = "survival",
+        names_transform = as.numeric
+    ) |>
+    mutate(
+        treatment = "UC",
+        .imp = i)
+
+    long_data_0 <- bind_rows(long_data_0, long_data_i)
+
+    long_data_i <- surv_matrix$surv_tx1 |>
+    as_tibble(.name_repair = ~ as.character(surv_matrix$time_points)) |>
+    mutate(.draw = 1:n()) |>
+    pivot_longer(
+        cols = !.draw,
+        names_to = "time",
+        values_to = "survival",
+        names_transform = as.numeric
+    ) |>
+    mutate(
+        treatment = "SAT",
+        .imp = i)
+
+
+    long_data_1 <- bind_rows(long_data_1, long_data_i)
+}
+
+surv_curv_0 <- long_data_0 |>
+    group_by(time, treatment) |>
+    summarize(
+        median = median(survival),
+        mean = mean(survival),
+        conf.low.95 = quantile(survival, 0.025),
+        conf.high.95 = quantile(survival, 0.975),
+        conf.high.66 = quantile(survival, 0.83),
+        conf.low.66 = quantile(survival, 0.17),
+    ) |>
+    ungroup()
+
+surv_curv_1 <- long_data_1 |>
+    group_by(time, treatment) |>
+    summarize(
+        median = median(survival),
+        mean = mean(survival),
+        conf.low.95 = quantile(survival, 0.025),
+        conf.high.95 = quantile(survival, 0.975),
+        conf.high.66 = quantile(survival, 0.83),
+        conf.low.66 = quantile(survival, 0.17),
+    ) |>
+    ungroup()
+
+surv_curv <- bind_rows(surv_curv_0, surv_curv_1)
+
+risk <- long_data_1 |>
+    bind_rows(long_data_0) |>
+    pivot_wider(
+        id_cols = c(time, .draw, .imp),
+        values_from = "survival",
+        names_from = "treatment",
+        names_prefix = "surv_"
+    ) |>
+    mutate(
+        risk_SAT = 1 - surv_SAT,
+        risk_UC = 1 - surv_UC,
+        RR = risk_SAT / risk_UC,
+        RD = risk_SAT - risk_UC
+    )
+
+conf_width <- risk |>
+    group_by(time) |>
+    summarise(
+        width = quantile(surv_SAT - surv_UC, 0.975) - quantile(surv_SAT - surv_UC, 0.025)
+    )
+
+conf_band <- surv_curv |>
+    select(time, treatment, median) |>
+    pivot_wider(
+        id_cols = time,
+        names_from = treatment,
+        values_from = median
+    ) |>
+    mutate(
+        middle = UC + (SAT - UC)/2
+    ) |>
+    left_join(conf_width, by = "time") |>
+    mutate(
+        band.low = middle - width/4,
+        band.high = middle + width/4)
+```
+
+Kaplan-Meier Curves
+
+```{r}
+analysis_data <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_wide.parquet"))
+
+# Prepare data with treatment labels
+analysis_data <- analysis_data |>
+  mutate(
+    treatment = ifelse(tx == 0, "UC", "SAT")
+  )
+
+km_fit <- survival::survfit(survival::Surv(surv_time, status_death) ~ treatment, data = analysis_data)
+
+# Extract KM data including censoring information
+km_data <- data.frame(
+  time = km_fit$time,
+  survival = km_fit$surv,
+  n.risk = km_fit$n.risk,
+  n.event = km_fit$n.event,
+  n.censor = km_fit$n.censor,
+  strata = rep(names(km_fit$strata), km_fit$strata)
+) |>
+  mutate(
+    treatment = str_remove(strata, "treatment=")
+  )
+
+# Extract censoring times for marks
+censor_data <- analysis_data |>
+  filter(status_death == 0) |>
+  select(surv_time, treatment) |>
+  left_join(
+    km_data |> select(time, survival, treatment),
+    by = c("surv_time" = "time", "treatment")
+  ) |>
+  filter(!is.na(survival))
+
+# Create risk table data
+risk_table_times <- seq(0, 180, by = 20)
+risk_table_data <- map_dfr(risk_table_times, function(t) {
+  summary_fit <- summary(km_fit, times = t, extend = TRUE)
+  data.frame(
+    time = t,
+    n.risk = summary_fit$n.risk,
+    treatment = str_remove(summary_fit$strata, "treatment=")
+  )
+})
+```
+
+## Plot Difference in RMST
+
+```{r}
+plot_rmst_diff <- ggplot(post_stack, (aes(x = rmst_diff))) +
+    ggdist::stat_dots(side = "bottom") +
+    ggdist::stat_halfeye() +
+    labs(
+        title = "",
+        x = "Difference in the restricted mean survival time (SAT - UC) [Days]",
+        y = "Density"
+    )
+
+ggsave(
+    here("0-main-analysis", "img", "os_rmst_difference.svg"),
+    plot = plot_rmst_diff,
+    width = 8,
+    height = 5,
+    dpi = 300
+)
+
+mean(post_stack$rmst_diff > 0)
+
+rmst_tbl <- post_stack |>
+  summarise(
+    UC_mean = mean(rmst_0),
+    UC_sd = sd(rmst_0),
+    UC_median = median(rmst_0),
+    UC_lower = quantile(rmst_0, 0.025),
+    UC_upper = quantile(rmst_0, 0.975),
+
+    SAT_mean = mean(rmst_1),
+    SAT_sd = sd(rmst_1),
+    SAT_median = median(rmst_1),
+    SAT_lower = quantile(rmst_1, 0.025),
+    SAT_upper = quantile(rmst_1, 0.975),
+
+    diff_mean = mean(rmst_diff),
+    diff_sd = sd(rmst_diff),
+    diff_median = median(rmst_diff),
+    diff_lower = quantile(rmst_diff, 0.025),
+    diff_upper = quantile(rmst_diff, 0.975),
+
+    p_benefit = mean(rmst_diff > 0)
+  ) |>
+  mutate(
+    Outcome = "RMST",
+    `UC Mean (SD)` = sprintf("%.1f (%.1f)", UC_mean, UC_sd),
+    `UC Median [95%% CrI]` = sprintf("%.1f [%.1f, %.1f]", UC_median, UC_lower, UC_upper),
+    `SAT Mean (SD)` = sprintf("%.1f (%.1f)", SAT_mean, SAT_sd),
+    `SAT Median [95%% CrI]` = sprintf("%.1f [%.1f, %.1f]", SAT_median, SAT_lower, SAT_upper),
+    `SAT - UC Mean (SD)` = sprintf("%.1f (%.1f)", diff_mean, diff_sd),
+    `SAT - UC Median [95%% CrI]` = sprintf("%.1f [%.1f, %.1f]", diff_median, diff_lower, diff_upper),
+    `Posterior Pr(SAT > UC)` = sprintf("%.1f%%", 100 * p_benefit),
+    .keep = "none"
+  )
+
+rmst_tbl
+
+# save table
+write_parquet(rmst_tbl, here("0-main-analysis", "OS", "results", "rmst_summary.parquet"))
+```
+
+## Survival Curves
+
+With confidence band (i.e., +- half width of the credible interval of the difference in the survival times for each time point, centered at the middle between the two curves). If it intersects one cruve, will intersect the other as well. If the band and the lines do not intercept > 97.5% probability of benefit for the superior treatment.
+
+```{r}
+plot_surv_confband <- ggplot() +
+  geom_ribbon(data = conf_band, aes(x = time, ymin = band.low, ymax = band.high, color = NULL), fill = "grey", alpha = 0.2) +
+#   geom_line(data = conf_band, aes(x = time, y = middle), color = "black", linetype = "dotted") +
+  geom_line(data = surv_curv, aes(y = median, x = time, color = treatment)) +
+  scale_color_brewer(palette = "Dark2") +
+#   geom_step(data = km_data, aes(x = time, y = survival), linetype = "dashed", linewidth = 0.8) +
+  coord_cartesian(ylim = c(0.5, 1), xlim = c(0, 182), expand = FALSE) +
+  scale_x_continuous(breaks = seq(0, 182, by = 20)) +
+  labs(
+    x = "Day",
+    y = "Survival Probability",
+    color = "",
+    fill = ""
+  ) +
+  theme_light() +
+  theme(
+      legend.position = "bottom"
+    #   plot.title = element_text(face = "bold"),
+    #   panel.grid.minor = element_blank()
+      )
+
+plot_surv_confband
+
+ggsave(
+    here("0-main-analysis", "img", "os_survival_curves_confband.svg"),
+    plot = plot_surv_confband,
+    width = 8,
+    height = 5,
+    dpi = 300
+)
+```
+
+With credible bands around each survival curve, not around the difference + KM curves overlaid
+
+```{r}
+plot_surv_credband <- surv_curv |>
+  ggplot(aes(x = time, fill = treatment, color = treatment)) +
+  geom_ribbon(aes(ymin = conf.low.95, ymax = conf.high.95, color = NULL), alpha = 0.1) +
+  geom_line(aes(y = median)) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  geom_step(data = km_data, aes(x = time, y = survival), linetype = "dashed", linewidth = 0.8, alpha = 0.5) +
+  geom_point(data = censor_data, aes(x = surv_time, y = survival),
+             shape = 3, size = 2, stroke = 1.2, alpha = 0.7) +
+  coord_cartesian(ylim = c(0.5, 1), xlim = c(0, 182), expand = FALSE) +
+  scale_x_continuous(breaks = seq(0, 182, by = 20), limits = c(0, 182), expand = c(0, 0.05)) +
+  labs(
+    x = "Day",
+    y = "Survival Probability",
+    color = "",
+    fill = ""
+  ) +
+  theme_light() +
+  theme(
+      legend.position = "bottom",
+      plot.margin = margin(5, 5, 5, 5, "pt")
+      )
+
+# Create risk table plot
+risk_table_plot <- risk_table_data |>
+  mutate(treatment = factor(treatment, levels = c("UC", "SAT"))) |>
+  ggplot(aes(x = time, y = treatment, label = n.risk, color = treatment)) +
+  geom_text(size = 3, fontface = "bold") +
+  scale_color_brewer(palette = "Dark2", direction = -1) + # need to switch if I want SAT to be on top
+  scale_x_continuous(breaks = seq(0, 180, by = 20), limits = c(0, 182), expand = c(0, 0.05)) +
+  coord_cartesian(clip = "off") +
+  labs(x = NULL, y = NULL, title = "Number at Risk") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    legend.position = "",
+    plot.margin = margin(5, 5, 5, 5, "pt")
+  ) +
+    guides(color = "none")
+
+combined_plot <- plot_surv_credband / risk_table_plot +
+ plot_layout(
+    heights = c(6, 1),
+    guides = "collect" # <--- This collects the legend from the plot
+  ) &
+  theme(legend.position = "bottom")
+
+ggsave(
+    here("0-main-analysis", "img", "os_survival_curves_credband.svg"),
+    plot = combined_plot,
+    width = 8,
+    height = 6,
+    dpi = 300
+)
+```
+
+## Risk Difference over Time
+
+```{r}
+plot_risk_diff <- risk |>
+    group_by(time) |>
+    summarise(
+        mean = mean(RD),
+        median = median(RD),
+        conf.low = quantile(RD, 0.025),
+        conf.high = quantile(RD, 0.975)
+    ) |>
+    ggplot(aes(x = time, y = median)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+    scale_x_continuous(breaks = seq(0, 182, by = 20)) +
+    labs(
+    x = "Day",
+    y = "Risk Difference",
+    color = "",
+    fill = ""
+    ) +
+    theme_light() +
+    theme(
+        legend.position = "bottom"
+        #   plot.title = element_text(face = "bold"),
+        #   panel.grid.minor = element_blank()
+        )
+
+ggsave(
+    here("0-main-analysis", "img", "os_risk_difference.svg"),
+    plot = plot_risk_diff,
+    width = 8,
+    height = 5,
+    dpi = 300
+)
+```
+
+## Risk Ratio over Time
+
+```{r}
+plot_risk_ratio <- risk |>
+    filter(time != 0) |>
+    group_by(time) |>
+    summarise(
+        mean = mean(RR),
+        median = median(RR),
+        conf.low = quantile(RR, 0.025),
+        conf.high = quantile(RR, 0.975)
+    ) |>
+    ggplot(aes(x = time, y = median)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+    scale_x_continuous(breaks = seq(0, 182, by = 20)) +
+    labs(
+    x = "Day",
+    y = "Risk Ratio",
+    color = "",
+    fill = ""
+    ) +
+    theme_light() +
+    theme(
+        legend.position = "bottom"
+        #   plot.title = element_text(face = "bold"),
+        #   panel.grid.minor = element_blank()
+        )
+
+ggsave(
+    here("0-main-analysis", "img", "os_risk_ratio.svg"),
+    plot = plot_risk_ratio,
+    width = 8,
+    height = 5,
+    dpi = 300
+)
+```

@@ -1,0 +1,151 @@
+---
+title: "Sensitivity Analysis Including Death - Quality of Life SOPS"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(rmsb)
+library(Hmisc)
+library(data.table)
+library(future.callr)
+```
+
+## Load data
+
+```{r}
+data_path <- here("0-main-analysis", "QOL", "sens-1", "imp-data")
+m <- length(dir_ls(data_path))
+```
+
+## Functions
+
+```{r}
+write_SOP <- function(i, tx, baseline_df, model, path, imp_num){
+
+  row <- baseline_df[i]
+
+  sops <-
+  soprobMarkovOrdm(
+    model,
+    data = list(tx = tx, yprev = row$yprev, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis),
+    times = 1:26,
+    ylevels = 1:8,
+    absorb = 8,
+    tvarname = "week",
+    pvarname = "yprev"
+  )
+
+  # Because of the size of the data, only use the first 2000 MCMC draws
+  sops <- sops[1:2000, , ]
+
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "time", "state", "sop"))
+
+  sops$time <- as.integer(sops$time)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+
+  folder <- file.path(path, glue::glue("imp_{imp_num}"), glue::glue("marginalized_sop_{tx}"), glue::glue("msop_{i}.parquet"))
+
+  # Create the directory if it doesn't exist
+  dir_to_create <- dirname(folder)
+  if (!dir.exists(dir_to_create)) {
+    dir.create(dir_to_create, recursive = TRUE)
+  }
+
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+#### Generate marginalized SOPs
+
+```{r}
+output_dir <- here("0-main-analysis", "QOL", "sens-1", "results", "sops")
+generate_SOPS <- TRUE
+future::plan(future.callr::callr, workers = 6)
+
+# Get all imputed datasets
+imp_files <- dir_ls(data_path)
+
+# Loop over each imputed dataset
+for (imp_idx in seq_along(imp_files)) {
+
+  message(glue::glue("Processing imputation {imp_idx} of {m}"))
+
+  # Extract baseline data
+  baseline_df <- read_parquet(imp_files[imp_idx]) |>
+    # we merged ecog categories 3 and 4
+    mutate(
+      ecog_fstcnt = if_else(ecog_fstcnt == "4", "3", ecog_fstcnt),
+      ecog_fstcnt = factor(ecog_fstcnt)) |>
+    group_by(id) |>
+    arrange(week) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    mutate(
+      week = 1,
+      y = NA
+    ) |>
+    select(-week_nl1, -week_nl2) |>
+    as.data.table()
+
+  n_patients <- nrow(baseline_df)
+
+  # Check if SOPs already exist for this imputation
+  control_dir <- file.path(output_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_0")
+  treatment_dir <- file.path(output_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_1")
+
+  control_exists <- dir.exists(control_dir) && length(dir_ls(control_dir)) == n_patients
+  treatment_exists <- dir.exists(treatment_dir) && length(dir_ls(treatment_dir)) == n_patients
+
+  if (control_exists && treatment_exists) {
+    message(glue::glue("  SOPs already calculated for imputation {imp_idx}, skipping..."))
+    next
+  }
+
+  # Load model for this imputation
+  model <- readRDS(here("0-main-analysis", "QOL", "sens-1", "results", "models", glue::glue("model_imp_{imp_idx}.rds")))
+
+  # Control arm
+  if (generate_SOPS && !control_exists) {
+    message(glue::glue("  Generating control SOPs for imputation {imp_idx}"))
+    furrr::future_walk(
+      1:nrow(baseline_df),
+      \(x) write_SOP(x, 0, baseline_df, model, output_dir, imp_idx),
+      .progress = TRUE,
+      .options = furrr::furrr_options(
+        seed = TRUE,
+        packages = c("rmsb", "Hmisc", "data.table", "arrow", "glue")
+      )
+    )
+  }
+
+  # Treatment arm
+  if (generate_SOPS && !treatment_exists) {
+    message(glue::glue("  Generating treatment SOPs for imputation {imp_idx}"))
+    furrr::future_walk(
+      1:nrow(baseline_df),
+      \(x) write_SOP(x, 1, baseline_df, model, output_dir, imp_idx),
+      .progress = TRUE,
+      .options = furrr::furrr_options(
+        seed = TRUE,
+        packages = c("rmsb", "Hmisc", "data.table", "arrow", "glue")
+      )
+    )
+  }
+}
+```

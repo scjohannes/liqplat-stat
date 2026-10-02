@@ -1,0 +1,141 @@
+---
+title: "Overall survival: survival rates"
+subtitle: "Survival probabilities and risk differences at 182 and 365 days"
+format: html
+---
+
+- Day 182 from the main OS models; day 365 from the unrestricted-follow-up PH models.
+- Risk difference $S^1(t)-S^0(t)$; positive favours ctDNA.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(ggdist)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "08-survival-rates", "results"
+)
+figure_dir <- file.path(results_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Survival at each horizon
+
+```{r}
+#| label: survival-draws
+#| include: false
+
+main_curves <- read_parquet(here(
+  "analysis", "02-overall-survival", "01-main", "results",
+  "survival-curves.parquet"
+))
+
+unrestricted_curves <- seq_len(config$imputation$m_supporting) |>
+  map(\(index) {
+    read_parquet(here(
+      "analysis", "02-overall-survival", "04-unrestricted-follow-up",
+      "results", "ph", "survival-curves",
+      sprintf("survival-365-%02d.parquet", index)
+    ))
+  }) |>
+  list_rbind()
+
+rate_draws <- bind_rows(
+  survival_risk_draws(main_curves, horizon = 182) |>
+    mutate(horizon_days = 182L, model = "Primary adjusted OS"),
+  survival_risk_draws(unrestricted_curves, horizon = 365) |>
+    mutate(horizon_days = 365L, model = "Unrestricted adjusted PH OS")
+)
+
+# Both arms present, and every imputation contributes equally many draws.
+stopifnot("imputation" %in% names(rate_draws), setequal(rate_draws$tx, 0:1))
+equal_draw_counts <- rate_draws |>
+  count(horizon_days, imputation, tx) |>
+  summarise(equal = n_distinct(n) == 1L, .by = horizon_days) |>
+  pull(equal)
+stopifnot(all(equal_draw_counts))
+```
+
+## Risk differences and summaries
+
+```{r}
+#| label: summaries
+#| include: false
+
+contrast_draws <- rate_draws |>
+  pivot_wider(
+    names_from = tx,
+    values_from = survival,
+    names_prefix = "survival_"
+  ) |>
+  mutate(risk_difference = survival_1 - survival_0)
+
+stopifnot(!anyNA(contrast_draws))
+
+rate_summary <- rate_draws |>
+  summarise(
+    median = median(survival),
+    lower_95 = quantile(survival, 0.025, names = FALSE),
+    upper_95 = quantile(survival, 0.975, names = FALSE),
+    .by = c(horizon_days, model, tx)
+  )
+
+contrast_summary <- contrast_draws |>
+  summarise(
+    median = median(risk_difference),
+    lower_66 = quantile(risk_difference, 0.17, names = FALSE),
+    upper_66 = quantile(risk_difference, 0.83, names = FALSE),
+    lower_95 = quantile(risk_difference, 0.025, names = FALSE),
+    upper_95 = quantile(risk_difference, 0.975, names = FALSE),
+    probability_benefit = mean(risk_difference > 0),
+    imputations = n_distinct(imputation),
+    draws_per_imputation = n() / n_distinct(imputation),
+    .by = c(horizon_days, model)
+  )
+
+write_parquet(rate_summary, file.path(results_dir, "rates-summary.parquet"))
+write_parquet(contrast_summary, file.path(results_dir, "summary.parquet"))
+write_parquet(contrast_draws, file.path(results_dir, "estimand-draws.parquet"))
+```
+
+```{r}
+#| label: fig-survival-risk-difference-posterior
+#| fig-cap: "Posterior survival risk differences at 182 and 365 days. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Posterior half-eye densities and dot plots of ctDNA-minus-usual-care survival differences at two horizons, with a zero reference line. Positive differences favour invitation."
+#| fig-width: 8
+#| fig-height: 7
+#| echo: false
+
+risk_difference_plot <- contrast_draws |>
+  transmute(
+    draw = 100 * risk_difference,
+    panel = factor(
+      horizon_days,
+      levels = c(182, 365),
+      labels = c(
+        "Day 182: primary adjusted OS",
+        "Day 365: unrestricted adjusted PH OS"
+      )
+    )
+  ) |>
+  plot_posterior(
+    x_label = "Survival risk difference (ctDNA − usual care), percentage points"
+  )
+
+save_figure(
+  risk_difference_plot,
+  file.path(figure_dir, "survival-risk-difference-posterior.png"),
+  height = 7
+)
+
+risk_difference_plot
+```

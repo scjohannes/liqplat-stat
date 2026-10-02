@@ -1,0 +1,146 @@
+---
+title: "Progression-free survival — unadjusted and adjusted models"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(rstanarm)
+library(survival)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+
+results_dir <- here("analysis", "05-progression-free-survival", "results")
+imputation_dir <- file.path(results_dir, "imputations")
+model_dir <- file.path(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+m <- config$imputation$m_supporting
+```
+
+## Unadjusted
+
+```{r}
+#| label: fit-unadjusted
+#| include: false
+unadjusted_data <- read_parquet(file.path(results_dir, "prepared.parquet")) |>
+  select(id, tx, pfs_time_days, event_pfs)
+
+stopifnot(!anyNA(unadjusted_data), all(unadjusted_data$pfs_time_days > 0))
+
+model_path <- file.path(model_dir, "unadjusted-01.rds")
+
+if (!file.exists(model_path)) {
+  model <- stan_surv(
+    Surv(pfs_time_days, event_pfs) ~ tx,
+    data = unadjusted_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = normal(location = 0, scale = 0.55),
+    prior_intercept = normal(0, 20),
+    prior_aux = dirichlet(1),
+    prior_covariance = decov(),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    adapt_delta = 0.99,
+    refresh = 0L,
+    seed = config$seeds$supporting + 2300
+  )
+  saveRDS(model, model_path, compress = "xz")
+}
+```
+
+## Adjusted (fixed)
+
+```{r}
+#| label: fit-fixed
+#| include: false
+fixed_datasets <- readRDS(file.path(imputation_dir, "completed-os_adjusted.rds"))
+
+for (index in seq_len(m)) {
+  fitting_data <- fixed_datasets[[index]]
+
+  stopifnot(
+    !anyNA(fitting_data),
+    all(fitting_data$pfs_time_days > 0),
+    all(as.integer(as.character(fitting_data$ecog_binary)) ==
+          derive_ecog_binary(fitting_data$ecog_fstcnt)),
+    all(as.integer(as.character(fitting_data$mgps)) ==
+          derive_mgps(fitting_data$albumin, fitting_data$c_reactive_protein))
+  )
+
+  model_path <- file.path(model_dir, sprintf("os_adjusted-%02d.rds", index))
+  if (file.exists(model_path)) next
+
+  model <- stan_surv(
+    Surv(pfs_time_days, event_pfs) ~ tx + ecog_binary + stage_binary + lung + mgps,
+    data = fitting_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = normal(location = rep(0, 6), scale = c(0.55, rep(2.5, 5))),
+    prior_intercept = normal(0, 20),
+    prior_aux = dirichlet(1),
+    prior_covariance = decov(),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    adapt_delta = 0.99,
+    refresh = 0L,
+    seed = config$seeds$supporting + (index - 1) * 1000 + 2400
+  )
+  saveRDS(model, model_path, compress = "xz")
+}
+```
+
+## Adjusted (hierarchical)
+
+```{r}
+#| label: fit-hierarchical
+#| include: false
+diagnosis_datasets <- readRDS(file.path(imputation_dir, "completed-diagnosis.rds"))
+
+for (index in seq_len(m)) {
+  fitting_data <- diagnosis_datasets[[index]]
+
+  stopifnot(
+    !anyNA(fitting_data),
+    all(fitting_data$pfs_time_days > 0),
+    all(as.integer(as.character(fitting_data$ecog_binary)) ==
+          derive_ecog_binary(fitting_data$ecog_fstcnt)),
+    all(as.integer(as.character(fitting_data$mgps)) ==
+          derive_mgps(fitting_data$albumin, fitting_data$c_reactive_protein))
+  )
+
+  model_path <- file.path(model_dir, sprintf("diagnosis-%02d.rds", index))
+  if (file.exists(model_path)) next
+
+  model <- stan_surv(
+    Surv(pfs_time_days, event_pfs) ~
+      tx + ecog_binary + stage_binary + mgps + (1 | diagnosis),
+    data = fitting_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = normal(location = rep(0, 5), scale = c(0.55, rep(2.5, 4))),
+    prior_intercept = normal(0, 20),
+    prior_aux = dirichlet(1),
+    prior_covariance = decov(),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    adapt_delta = 0.99,
+    refresh = 0L,
+    seed = config$seeds$supporting + (index - 1) * 1000 + 2500
+  )
+  saveRDS(model, model_path, compress = "xz")
+}
+```

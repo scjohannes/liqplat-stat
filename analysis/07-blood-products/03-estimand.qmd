@@ -1,0 +1,225 @@
+---
+title: "Blood products — marginal rates, rate ratio, and rate difference"
+format: html
+---
+
+```{r}
+#| label: setup
+
+library(marginaleffects)
+library(ggdist)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "07-blood-products", "results")
+figure_dir <- file.path(results_dir, "figures")
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+blood_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
+completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
+
+blood_fits <- expand_grid(
+  outcome = c("blood_products", "erythrocytes", "thrombocytes"),
+  adjustment = c("adjusted", "unadjusted")
+) |>
+  mutate(fits = map2(outcome, adjustment, \(outcome, adjustment) {
+    readRDS(file.path(
+      results_dir,
+      paste0("model-", outcome, "-", adjustment, ".rds")
+    ))
+  }))
+
+rate_days <- 30
+
+outcome_labels <- c(
+  blood_products = "All blood products (prespecified)",
+  erythrocytes = "Erythrocyte concentrates",
+  thrombocytes = "Thrombocyte concentrates"
+)
+```
+
+## Marginal rates
+
+```{r}
+#| label: marginal-rates
+
+rate_draws <- blood_fits |>
+  mutate(draws = map2(fits, adjustment, \(fits, adjustment) {
+    prediction_data <- if (adjustment == "adjusted") {
+      completed_datasets
+    } else {
+      list(blood_data)
+    }
+
+    map2(fits, prediction_data, \(fit, data) {
+      fit <- set_modeldata(fit, data)
+
+      counterfactual_data <- bind_rows(
+        data |> mutate(tx = 0),
+        data |> mutate(tx = 1)
+      ) |>
+        mutate(exposure_days = rate_days)
+
+      avg_predictions(
+        fit,
+        newdata = counterfactual_data,
+        by = "tx",
+        type = "response"
+      ) |>
+        get_draws() |>
+        mutate(drawid = as.integer(as.character(drawid))) |>
+        # brms orders draws by chain, so this keeps the first chain's draws.
+        filter(drawid <= config$posterior_draws$supporting) |>
+        select(tx, drawid, draw)
+    }) |>
+      list_rbind(names_to = "imputation")
+  })) |>
+  select(outcome, adjustment, draws) |>
+  unnest(draws)
+```
+
+```{r}
+#| label: contrasts
+
+blood_draws <- rate_draws |>
+  pivot_wider(names_from = tx, values_from = draw, names_prefix = "rate_tx") |>
+  mutate(
+    rate_ratio = rate_tx1 / rate_tx0,
+    rate_difference = rate_tx1 - rate_tx0
+  )
+
+write_parquet(
+  blood_draws,
+  file.path(results_dir, "draws.parquet"),
+  compression = "zstd"
+)
+```
+
+## Summary
+
+- Adjusted rates and differences have extreme right tails (tiny shape); the rate ratio does not.
+
+```{r}
+#| label: tbl-blood-summary
+#| tbl-cap: "Posterior marginal rates per 30 days, rate ratio, and rate difference (ctDNA - usual care)"
+
+blood_summary <- blood_draws |>
+  pivot_longer(
+    c(rate_tx0, rate_tx1, rate_ratio, rate_difference),
+    names_to = "quantity",
+    values_to = "draw"
+  ) |>
+  summarise(
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    probability_lower_rate = case_when(
+      quantity[1] == "rate_ratio" ~ mean(draw < 1),
+      quantity[1] == "rate_difference" ~ mean(draw < 0)
+    ),
+    .by = c(outcome, adjustment, quantity)
+  )
+
+write_parquet(
+  blood_summary,
+  file.path(results_dir, "summary.parquet"),
+  compression = "zstd"
+)
+
+kable(blood_summary, digits = 3)
+```
+
+## Figures
+
+```{r}
+#| label: plot-setup
+
+plot_draws <- blood_draws |>
+  mutate(
+    outcome = factor(outcome_labels[outcome], levels = outcome_labels),
+    adjustment = factor(
+      str_to_sentence(adjustment),
+      levels = c("Adjusted", "Unadjusted")
+    )
+  )
+```
+
+```{r}
+#| label: fig-blood-rate-ratio
+#| fig-cap: "Posterior marginal rate ratio (ctDNA / usual care), adjusted and unadjusted, for all blood products and for erythrocyte and thrombocyte concentrates separately. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Six panels, one row per outcome (all blood products, erythrocyte concentrates, thrombocyte concentrates) and one column per model (adjusted, unadjusted), each with a half-eye density above a posterior dot plot of the marginal rate ratio, ctDNA over usual care, on a log scale, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at a ratio of one."
+#| fig-width: 8
+#| fig-height: 9
+
+rate_ratio_plot <- plot_posterior(
+  plot_draws |> mutate(draw = rate_ratio),
+  x_label = "Rate ratio (ctDNA / usual care)",
+  reference = 1,
+  log_scale = TRUE
+) +
+  facet_wrap(vars(outcome, adjustment), ncol = 2)
+
+save_figure(
+  rate_ratio_plot,
+  file.path(figure_dir, "blood-products-rate-ratio.png"),
+  height = 9
+)
+
+rate_ratio_plot
+```
+
+```{r}
+#| label: fig-blood-rate-difference
+#| fig-cap: "Posterior marginal difference in products per 30 days (ctDNA − usual care), adjusted and unadjusted, for all blood products and for erythrocyte and thrombocyte concentrates separately. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Six panels, one row per outcome (all blood products, erythrocyte concentrates, thrombocyte concentrates) and one column per model (adjusted, unadjusted), each with its own horizontal axis and a half-eye density above a posterior dot plot of the marginal difference in products per 30 days, ctDNA minus usual care, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at zero."
+#| fig-width: 8
+#| fig-height: 9
+
+rate_difference_plot <- plot_posterior(
+  plot_draws |> mutate(draw = rate_difference),
+  x_label = "Difference in products per 30 days (ctDNA − usual care)",
+  normalize = "panels"
+) +
+  facet_wrap(vars(outcome, adjustment), ncol = 2, scales = "free_x")
+
+save_figure(
+  rate_difference_plot,
+  file.path(figure_dir, "blood-products-rate-difference.png"),
+  height = 9
+)
+
+rate_difference_plot
+```
+
+```{r}
+#| label: fig-blood-marginal-rates
+#| fig-cap: "Posterior marginal rate per 30 days by randomized group from the adjusted models. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Six panels, one row per outcome (all blood products, erythrocyte concentrates, thrombocyte concentrates) and one column per randomized group (ctDNA, usual care), each with its own horizontal axis and a half-eye density above a posterior dot plot of the marginal number of products per 30 days from the adjusted model, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 9
+
+# No reference line: a rate has no natural reference value.
+marginal_rates_plot <- rate_draws |>
+  filter(adjustment == "adjusted") |>
+  mutate(
+    outcome = factor(outcome_labels[outcome], levels = outcome_labels),
+    group = group_factor(tx)
+  ) |>
+  plot_posterior(x_label = "Products per 30 days", reference = NULL, normalize = "panels") +
+  facet_wrap(vars(outcome, group), ncol = 2, scales = "free_x")
+
+save_figure(
+  marginal_rates_plot,
+  file.path(figure_dir, "blood-products-marginal-rates.png"),
+  height = 9
+)
+
+marginal_rates_plot
+```

@@ -1,0 +1,443 @@
+---
+title: "Quality of Life SOPS"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(furrr)
+library(arrow)
+library(rmsb)
+library(Hmisc)
+library(data.table)
+library(markov.misc)
+```
+
+## Load data
+
+```{r}
+data_path <- here("0-main-analysis", "TAOOH", "imp-data")
+m <- length(dir_ls(data_path))
+```
+
+## Functions
+
+```{r}
+predict_blrm_manual <- function(fit, newdata, include_re = FALSE) {
+  # --- 0) Prerequisite Checks ---
+  if (!is.data.frame(newdata)) {
+    stop("`newdata` must be a data frame.")
+  }
+  if (include_re && !"id" %in% colnames(newdata)) {
+    stop("`newdata` must contain a 'id' column when include_re=TRUE")
+  }
+
+  N_new <- nrow(newdata)
+
+  # --- 1) Get the design matrices for the new data ---
+  X <- rms::predictrms(fit, newdata = newdata, type = 'x')
+
+  # --- 2) Extract posterior draws and model information ---
+  draws <- fit$draws
+  ndraws <- nrow(draws)
+  ns <- fit$non.slopes
+  K <- ns + 1
+  pppo <- fit$pppo
+
+  intercept_draws <- draws[, 1:ns, drop = FALSE]
+
+  # Extract beta coefficients (excluding intercepts and tau parameters)
+  cn <- colnames(draws)
+  tauinfo <- fit$tauInfo
+  betanam <- setdiff(cn, c(cn[1:ns], tauinfo$name))
+  beta_draws <- draws[, betanam, drop = FALSE]
+
+  # Extract non-proportional odds parameters if they exist
+  has_npo <- pppo > 0
+  if (has_npo) {
+    Z <- rms::predictrms(fit, newdata = newdata, type = 'x', second = TRUE)
+    tau_draws <- draws[, tauinfo$name, drop = FALSE]
+    cppo <- fit$cppo
+    ylevels <- fit$ylevels
+    cppos <- sapply(ylevels[-1], cppo)  # Evaluate cppo for each threshold
+  }
+
+  # --- 3) Calculate the fixed-effect linear predictor (eta_fixed) ---
+  xb <- beta_draws %*% t(X)
+
+  # --- 4) Calculate non-proportional odds linear predictor if applicable ---
+  if (has_npo) {
+    zt <- tau_draws %*% t(Z)
+  }
+
+  # --- 5) Get the random effect draws (u_draws) if requested ---
+  u_draws <- matrix(0, nrow = ndraws, ncol = N_new)
+
+  if (include_re) {
+    if (length(unique(newdata$id)) > 1) {
+      stop("`newdata` contains multiple unique patient IDs. This version is restricted to one at a time.")
+    }
+    if (!requireNamespace("posterior", quietly = TRUE)) {
+      stop("The 'posterior' package is required to extract random effect draws.")
+    }
+    sf <- rmsb::stanGet(fit)
+    all_gamma_draws <- posterior::as_draws_matrix(sf$draws(variables = "gamma"))
+    patient_ids <- newdata$id
+    u_draws <- all_gamma_draws[, patient_ids, drop = FALSE]
+  }
+
+  # --- 6) Calculate probabilities for each observation and each draw ---
+  p_cat_draws_list <- vector("list", N_new)
+
+  for (i in 1:N_new) {
+    # Compute cumulative probabilities P(Y >= k) for each threshold k
+    cum_probs <- matrix(NA_real_, nrow = ndraws, ncol = ns)
+
+    for (k in 1:ns) {
+      # Linear predictor for threshold k: alpha[k] + X*beta + cppo(ylevels[k+1])*Z*tau + u
+      ep <- intercept_draws[, k] + xb[, i] + u_draws[, i]
+
+      # Add non-proportional odds effect (scaled by cppo value) for this threshold
+      if (has_npo) {
+        ep <- ep + cppos[k] * zt[, i]
+      }
+
+      cum_probs[, k] <- plogis(ep)
+    }
+
+    # Convert cumulative probabilities to category probabilities
+    p_cat_draws <- matrix(NA_real_, nrow = ndraws, ncol = K)
+    p_cat_draws[, 1] <- 1 - cum_probs[, 1]
+    if (K > 2) {
+      for (kk in 2:(K - 1)) {
+        p_cat_draws[, kk] <- cum_probs[, kk - 1] - cum_probs[, kk]
+      }
+    }
+    p_cat_draws[, K] <- cum_probs[, K - 1]
+    colnames(p_cat_draws) <- paste0("y=", 1:K)
+
+    p_cat_draws_list[[i]] <- p_cat_draws
+  }
+
+  # --- 7) Reshape draws into a single 3D array ---
+  draws_array <- array(
+    data = NA_real_,
+    dim = c(ndraws, N_new, K)
+  )
+
+  for (i in 1:N_new) {
+    draws_array[, i, ] <- p_cat_draws_list[[i]]
+  }
+
+  dimnames(draws_array) <- list(
+    NULL,
+    rownames(newdata),
+    colnames(p_cat_draws_list[[1]])
+  )
+
+  return(draws_array)
+}
+```
+
+```{r}
+#' Calculate Second-Order State Occupation Probabilities
+#'
+#' This function calculates the unconditional state occupation probabilities for a
+#' second-order Markov model.
+#'
+#' @param model_fit The fitted model object (rmsb or brms)
+#' @param baseline_data A single-row data frame containing the initial states and
+#'   all baseline predictor values required by the model.
+#' @param col_yprev A string with the column name for the state at t-1 (e.g., "yprev").
+#' @param col_ypprev A string with the column name for the state at t-2 (e.g., "ypprev").
+#' @param col_time A string with the column name that represents time in the model (e.g., "week").
+#' @param times A numeric vector specifying the time points for calculation (e.g., `1:26`).
+#' @param n_states An integer for the number of levels in the ordinal outcome.
+#' @param absorbing_states A numeric vector listing the absorbing states.
+#'
+#' @return A list containing two arrays:
+#'   \item{unconditional}{A 3D array `(draws, states, time)` with the unconditional state probabilities.}
+#' @export
+
+sop_markov_second_order <- function(model_fit,
+                                    baseline_data,
+                                    col_yprev,
+                                    col_ypprev,
+                                    col_time,
+                                    times,
+                                    n_states,
+                                    absorbing_states,
+                                    include_re = FALSE) {
+
+  # --- Detect model type and get number of draws ---
+  if (inherits(model_fit, "brmsfit")) {
+    detected_type <- "brms"
+    if (!requireNamespace("marginaleffects", quietly = TRUE) || !requireNamespace("posterior", quietly = TRUE)) {
+      stop("Packages 'marginaleffects' and 'posterior' are required for brms models.")
+    }
+    n_draws <- posterior::ndraws(model_fit)
+  } else if (inherits(model_fit, "blrm")) {
+    detected_type <- "rmsb"
+    n_draws <- nrow(model_fit$draws)
+  } else {
+    stop("Unsupported model object class. Please provide a model from 'brms' (class 'brmsfit') or 'rmsb' (class 'blrm').")
+  }
+
+  # --- Parameters ---
+  M <- n_states
+  T_horizon <- max(times)
+
+  # --- Initial Conditions ---
+  initial_state_t_minus_1 <- as.numeric(baseline_data[[col_ypprev]])
+  initial_state_t_0 <- as.numeric(baseline_data[[col_yprev]])
+
+  # --- Data Structures to Store Results ---
+  P_joint_bayes <- array(0, dim = c(n_draws, M, M, T_horizon + 1),
+                         dimnames = list(paste0("draw_", 1:n_draws),
+                                         paste0("t-1=", 1:M),
+                                         paste0("t=", 1:M),
+                                         paste0("time=", 0:T_horizon)))
+
+  P_uncond_bayes <- array(0, dim = c(n_draws, M, T_horizon + 1),
+                          dimnames = list(paste0("draw_", 1:n_draws),
+                                          paste0("State_", 1:M),
+                                          paste0("t=", 0:T_horizon)))
+
+  # Set the known probability at t=0
+  P_joint_bayes[, initial_state_t_minus_1, initial_state_t_0, 1] <- 1.0
+  P_uncond_bayes[, initial_state_t_0, 1] <- 1.0
+
+  # --- Create the static grid for batch predictions ---
+  history_grid <- expand.grid(
+    h = factor(1:M, levels = 1:M), # X_{t-2}
+    j = factor(1:M, levels = 1:M)  # X_{t-1}
+  )
+  names(history_grid) <- c(col_ypprev, col_yprev)
+
+  # --- Dynamically create the full prediction dataset ---
+  # Identify static covariates by excluding time-varying/history columns
+  cols_to_exclude <- c(col_yprev, col_ypprev, col_time)
+  static_covariate_names <- setdiff(names(baseline_data), cols_to_exclude)
+  static_covariates <- baseline_data[, static_covariate_names, drop = FALSE]
+
+  # Combine static covariates with the grid of all possible histories
+  prediction_data <- cbind(static_covariates, history_grid)
+
+  # --- Main Iteration Loop ---
+  for (t in times) {
+    # Identify predictable histories
+    predictable_idx <- which(
+      !(prediction_data[[col_ypprev]] %in% absorbing_states) &
+      !(prediction_data[[col_yprev]] %in% absorbing_states)
+    )
+    n_predictable <- length(predictable_idx)
+
+    # Subset the data for prediction and set the current time
+    prediction_data_subset <- prediction_data[predictable_idx, ]
+    prediction_data_subset[[col_time]] <- t
+
+
+    pred_array_3d <- NULL
+
+    if (detected_type == "brms") {
+      # refactor previous states to remove absorbing states
+      prediction_data_subset[[col_yprev]] <- factor(prediction_data_subset[[col_yprev]], levels = c(1:M)[-absorbing_states])
+      prediction_data_subset[[col_ypprev]] <- factor(prediction_data_subset[[col_ypprev]], levels = c(1:M)[-absorbing_states])
+      re_arg <- if (include_re) NULL else NA
+      brms_pred_long <- marginaleffects::predictions(model_fit,
+                                                     newdata = prediction_data_subset,
+                                                     type = "response",
+                                                     re_formula = re_arg) |>
+                        marginaleffects::posterior_draws()
+
+      pred_array_3d <- array(0, dim = c(n_draws, n_predictable, M))
+      indices <- cbind(brms_pred_long$drawid,
+                       brms_pred_long$rowid,
+                       as.numeric(brms_pred_long$group))
+      pred_array_3d[indices] <- brms_pred_long$draw
+
+    } else { # detected_type == "rmsb"
+    # dimension 1 = 4000 draws
+    # dimension 2 = X_{t-1} and X_{t-2} combinations (rows from prediction_data_subset)
+    # dimension 3 = cumulative probabilities (e.g., 4 columns for 5 states)
+      pred_array_3d <- predict_blrm_manual(model_fit, prediction_data_subset, include_re = include_re)
+    }
+
+    state_probs_all_draws <- do.call(rbind, lapply(1:dim(pred_array_3d)[1], function(d) pred_array_3d[d, , ]))
+
+    # --- Assemble transition probabilities for each draw ---
+    # Create a 4D array to hold all transition probabilities: P(X_t=l | X_{t-2}=h, X_{t-1}=j)
+    # Dims: (draw, h, j, l)
+    # So [, 1, 1, 1] give all draws for P(l = 1 | h = 1, j = 1)
+    # [, 1, 1, ] for all draws for P(l | h = 1, j = 1) (rows must sum to 1)
+    cond_probs_4d_array <- array(0, dim = c(n_draws, M, M, M))
+
+    for (d in 1:n_draws) {
+      # Create a placeholder matrix for this specific draw
+      # each row is combination of (h, j), each column is l (rows must sum to 1)
+      # this is for one draw only
+      cond_probs_matrix_d <- matrix(0, nrow = M * M, ncol = M)
+
+      # Handle absorbing states (P(j->j) = 1 if j is absorbing)
+      absorbing_idx <- which(prediction_data[[col_yprev]] %in% absorbing_states)
+      if (length(absorbing_idx) > 0) {
+        absorbing_state <- as.numeric(as.character(prediction_data[[col_yprev]][absorbing_idx]))
+        rows_and_cols <- cbind(absorbing_idx, absorbing_state)
+        cond_probs_matrix_d[rows_and_cols] <- 1.0
+      }
+
+      # Get state probabilities for the current draw
+      start_row <- (d - 1) * n_predictable + 1
+      end_row <- d * n_predictable
+      draw_d_probs <- state_probs_all_draws[start_row:end_row, ]
+
+      # Place them into the correct rows
+      cond_probs_matrix_d[predictable_idx, ] <- draw_d_probs
+
+      # Reshape and store in the final 4D array
+      cond_probs_4d_array[d, , , ] <- array(cond_probs_matrix_d, dim = c(M, M, M))
+    }
+
+    # --- Update Probabilities ---
+    # Get joint probabilities from the previous step for all draws: P(X_{t-2}, X_{t-1})
+    prev_P_joint_all_draws <- P_joint_bayes[, , , t]
+    current_P_joint_all_draws <- array(0, dim = c(n_draws, M, M))
+
+    for (d in 1:n_draws) {
+      # This is P(X_{t-2}=h, X_{t-1}=j) for draw d
+      prev_P_joint_d <- prev_P_joint_all_draws[d, , ]
+      # P(X_t = l | X_{t-1} = j, X_{t-2} = h) for this draw
+      cond_probs_d <- cond_probs_4d_array[d, , , ]
+
+      # Law of Total Probability: P(X_t=l|h,j) * P(h,j)
+      # weighted_probs <- cond_probs_d * array(prev_P_joint_d, dim = dim(cond_probs_d))
+      weighted_probs <- sweep(cond_probs_d, c(1, 2), prev_P_joint_d, "*")
+      # Marginalize over the t-2 state (h) to get P(X_{t-1}, X_t)
+      # = Summation over h (the state at t-2), resulting in P(X_{t-1}=j, X_t=l)
+      current_P_joint_d <- apply(weighted_probs, c(2, 3), sum)
+
+      current_P_joint_all_draws[d, , ] <- current_P_joint_d
+
+      # Marginalize over the t-1 state (j) to get P(X_t)
+      uncond_probs_t <- colSums(current_P_joint_d)
+      # Consider normalizing  to prevent floating point error accumulation (not doing this for now)
+      P_uncond_bayes[d, , t + 1] <- uncond_probs_t
+      # P_uncond_bayes[d, , t + 1] <- uncond_probs_t / sum(uncond_probs_t)
+    }
+
+    P_joint_bayes[, , , t + 1] <- current_P_joint_all_draws
+  }
+
+  return(P_uncond_bayes)
+}
+```
+
+```{r}
+write_SOP <- function(i, tx, baseline_df, path, model, imp_num){
+
+  row <- baseline_df[i, ]
+
+  sops <-
+  sop_markov_second_order(
+    model_fit = model,
+    baseline_data = data.frame(id = row$id, tx = tx, ecog_fstcnt = row$ecog_fstcnt, diagnosis = row$diagnosis, albumin = row$albumin,  c_reactive_protein = row$c_reactive_protein, yprev = row$yprev, ypprev = row$ypprev),
+    col_yprev = "yprev",
+    col_ypprev = "ypprev",
+    col_time = "week",
+    times = 1:26,
+    n_states = 5,
+    absorbing_states = c(5),
+    include_re = TRUE
+  )
+
+  sops <- reshape2::melt(sops,
+                   varnames = c("draw", "state", "time"),
+                   value.name = "probability")
+  sops <- sops |>
+    mutate(
+        time  = as.integer(sub("t=", "", time)),
+        draw  = as.integer(sub("draw_", "", draw)),
+        state = as.factor(sub("State_", "", state)),
+        tx    = tx,
+        i     = i ) |>
+    filter(time > 0)
+
+  folder <- file.path(path, glue::glue("imp_{imp_num}"), glue::glue("marginalized_sop_{tx}"), glue::glue("msop_{i}.parquet"))
+
+  # Create the directory if it doesn't exist
+  dir_to_create <- dirname(folder)
+  if (!dir.exists(dir_to_create)) {
+    dir.create(dir_to_create, recursive = TRUE)
+  }
+
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+## Generate SOPs
+
+```{r}
+output_dir <- here("0-main-analysis", "TAOOH", "results", "sops")
+generate_SOPS <- TRUE
+future::plan(future::multisession, workers = 6)
+
+# Get all imputed datasets
+imp_files <- dir_ls(data_path)
+
+# Loop over each imputed dataset
+for (imp_idx in seq_along(imp_files)) {
+
+  message(glue::glue("Processing imputation {imp_idx} of {m}"))
+
+  # Extract baseline data
+  baseline_df <- read_parquet(imp_files[imp_idx]) |>
+    group_by(id) |>
+    arrange(week) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    mutate(
+      week = 1,
+      y = NA
+    ) |>
+    as.data.table()
+
+  n_patients <- nrow(baseline_df)
+
+  # Check if SOPs already exist for this imputation
+  control_dir <- file.path(output_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_0")
+  treatment_dir <- file.path(output_dir, glue::glue("imp_{imp_idx}"), "marginalized_sop_1")
+
+  control_exists <- dir.exists(control_dir) && length(dir_ls(control_dir)) == n_patients
+  treatment_exists <- dir.exists(treatment_dir) && length(dir_ls(treatment_dir)) == n_patients
+
+  if (control_exists && treatment_exists) {
+    message(glue::glue("  SOPs already calculated for imputation {imp_idx}, skipping..."))
+    next
+  }
+
+  # Load model for this imputation
+  model <- readRDS(here("0-main-analysis", "TAOOH", "results", "models", glue::glue("model_imp_{imp_idx}.rds")))
+
+  # Control arm
+  if (generate_SOPS && !control_exists) {
+      message(glue::glue("  Generating control SOPs for imputation {imp_idx}"))
+      furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df, output_dir, model = model, imp_idx),
+                        .progress=TRUE,
+                        .options = furrr_options(seed=TRUE))
+  }
+  # Treatment
+  if (generate_SOPS && !treatment_exists) {
+      message(glue::glue("  Generating treatment SOPs for imputation {imp_idx}"))
+      furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df, output_dir, model = model, imp_idx),
+                        .progress=TRUE,
+                        .options = furrr_options(seed=TRUE))
+  }
+}
+```

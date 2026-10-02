@@ -1,0 +1,216 @@
+---
+title: "LIQPLAT baseline population table"
+format: html
+---
+
+- ITT population by assignment, regardless of invitation acceptance.
+
+```{r}
+#| label: setup
+#| message: false
+
+library(arrow)
+library(here)
+library(table1)
+library(tidyverse)
+
+source(here("R", "covariates.R"))
+
+private_dir <- here("data", "private")
+results_dir <- here("analysis", "01-population", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: read
+
+cohort <- read_parquet(here(private_dir, "cohort_follow_up.parquet")) |>
+  as.data.frame()
+
+qol <- read_parquet(here(private_dir, "qol.parquet")) |>
+  as.data.frame()
+
+# The first-contact date is exported as date_visit (legacy name visit_date).
+visit_field <- intersect(c("date_visit", "visit_date"), names(cohort))
+
+stopifnot(
+  length(visit_field) == 1L,
+  c(
+    "id", "tx", "gender", "age", "ecog_fstcnt", "baseline_q29",
+    "baseline_q30", "diagnosis", "albumin", "c_reactive_protein", "stage_binary"
+  ) %in% names(cohort),
+  c("id", "assessment_id", "questionnaire_date", "q29", "q30") %in% names(qol),
+  !anyDuplicated(cohort$id),
+  cohort$tx %in% 0:1,
+  is.na(cohort$gender) | cohort$gender %in% c("female", "male"),
+  is.na(cohort$ecog_fstcnt) | cohort$ecog_fstcnt %in% 0:4,
+  is.na(cohort$stage_binary) | cohort$stage_binary %in% 0:1
+)
+```
+
+## Baseline QoL items
+
+```{r}
+#| label: baseline-items
+
+visits <- tibble(
+  id = cohort$id,
+  date_visit = as.Date(cohort[[visit_field]])
+)
+
+closest_items <- qol |>
+  select(id, assessment_id, questionnaire_date, q29, q30) |>
+  pivot_longer(
+    c(q29, q30),
+    names_to = "item",
+    names_transform = \(item) factor(item, levels = c("q29", "q30")),
+    values_to = "value"
+  ) |>
+  filter(!is.na(value), !is.na(questionnaire_date)) |>
+  inner_join(visits, by = "id") |>
+  mutate(
+    distance_days = abs(as.integer(as.Date(questionnaire_date) - date_visit))
+  ) |>
+  filter(!is.na(distance_days), distance_days <= 14L) |>
+  arrange(id, item, distance_days, questionnaire_date, assessment_id) |>
+  distinct(id, item, .keep_all = TRUE) |>
+  select(id, item, value) |>
+  # names_expand keeps both closest_ columns even if one item has no candidate.
+  pivot_wider(
+    names_from = item,
+    values_from = value,
+    names_prefix = "closest_",
+    names_expand = TRUE
+  )
+
+cohort <- cohort |>
+  left_join(closest_items, by = "id") |>
+  mutate(
+    baseline_q29 = coalesce(baseline_q29, closest_q29),
+    baseline_q30 = coalesce(baseline_q30, closest_q30)
+  ) |>
+  select(-closest_q29, -closest_q30)
+```
+
+## QL2 score
+
+- Scored per the [EORTC QLQ-C30 manual](https://qol.eortc.org/app/uploads/sites/2/2018/02/SCmanual.pdf).
+
+```{r}
+#| label: ql2
+
+stopifnot(
+  "Baseline QoL items must be integers from 1 to 7 or missing." =
+    (is.na(cohort$baseline_q29) | cohort$baseline_q29 %in% 1:7) &
+      (is.na(cohort$baseline_q30) | cohort$baseline_q30 %in% 1:7)
+)
+
+cohort <- cohort |>
+  mutate(
+    # Items run 1 (best) to 7 (worst), so reverse them (8 - item) first.
+    ql2 = (rowMeans(cbind(8 - baseline_q29, 8 - baseline_q30), na.rm = TRUE) - 1) /
+      6 * 100,
+    # rowMeans() of two missing items is NaN.
+    ql2 = if_else(is.nan(ql2), NA_real_, ql2)
+  )
+
+stopifnot(
+  "QL2 must lie within [0, 100]." =
+    is.na(cohort$ql2) | between(cohort$ql2, 0, 100)
+)
+```
+
+## Table variables
+
+```{r}
+#| label: table-variables
+
+cohort <- cohort |>
+  mutate(
+    group = factor(
+      tx,
+      levels = c(1, 0),
+      labels = c("ctDNA", "Usual care")
+    ),
+    gender = factor(gender, levels = c("female", "male"), labels = c("Female", "Male")),
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 0:4),
+    diagnosis = snomed_to_diagnosis(as.character(diagnosis)),
+    mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2),
+    stage_binary = factor(
+      stage_binary,
+      levels = 0:1,
+      labels = c("Locally advanced", "Metastasised")
+    )
+  )
+
+if (any(str_detect(cohort$diagnosis, "^SNM_"))) {
+  stop("Add labels for unmapped diagnosis codes.")
+}
+
+cohort <- cohort |>
+  mutate(diagnosis = factor(diagnosis))
+
+label(cohort$gender) <- "Gender"
+label(cohort$age) <- "Age (years)"
+label(cohort$ecog_fstcnt) <- "ECOG at first contact"
+label(cohort$ql2) <- "Global health status / QoL (QL2, 0–100)"
+label(cohort$diagnosis) <- "Diagnosis"
+label(cohort$mgps) <- "Modified Glasgow Prognostic Score (mGPS)"
+label(cohort$stage_binary) <- "Disease stage"
+```
+
+## Table 1
+
+```{r}
+#| label: baseline-table
+
+footnote <- paste(
+  "PROMs are considered up to 14 days after first contact.",
+  "QL2: higher scores indicate better QoL.",
+  "Per EORTC scoring, one available item is sufficient; both missing gives a missing score.",
+  "mGPS uses baseline CRP and albumin; missing either gives a missing score.",
+  "Percentages include missing observations in the denominator."
+)
+
+baseline_table <- table1(
+  ~ gender + age + ecog_fstcnt + ql2 + diagnosis + mgps + stage_binary | group,
+  data = cohort,
+  overall = "Overall",
+  render.continuous = c(. = "Median [Q1, Q3]"),
+  render.categorical = "FREQ (PCT%)",
+  topclass = "Rtable1-zebra",
+  footnote = footnote
+)
+
+saveRDS(baseline_table, here(results_dir, "baseline-table1.rds"))
+
+# Aggregate display cells only, never participant-level records.
+write_parquet(
+  as.data.frame(baseline_table),
+  here(results_dir, "baseline-characteristics.parquet")
+)
+```
+
+```{r}
+#| label: tbl-baseline-table1
+#| echo: false
+#| tbl-cap: "Baseline characteristics by randomized invitation assignment."
+
+baseline_table
+```
+
+```{r}
+#| label: ql2-item-availability
+#| echo: false
+#| results: asis
+
+n_both_items <- sum(!is.na(cohort$baseline_q29) & !is.na(cohort$baseline_q30))
+n_one_item <- sum(xor(is.na(cohort$baseline_q29), is.na(cohort$baseline_q30)))
+n_no_item <- sum(is.na(cohort$baseline_q29) & is.na(cohort$baseline_q30))
+
+str_glue(
+  "QL2 uses both baseline items for {n_both_items} participants and one item ",
+  "for {n_one_item}; {n_no_item} have neither item.\n"
+) |>
+  cat()
+```

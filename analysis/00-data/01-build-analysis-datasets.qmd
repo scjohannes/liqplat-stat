@@ -1,0 +1,421 @@
+---
+title: "LIQPLAT analysis datasets"
+format: html
+---
+
+
+```{r}
+#| label: setup
+#| message: false
+
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "taooh.R"))
+
+private_dir <- here("data", "private")
+results_dir <- here("analysis", "00-data", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+domains <- c(
+  "consort_ipd",
+  "recruitment",
+  "cohort_follow_up",
+  "qol",
+  "taooh",
+  "ctdna_samples",
+  "ctdna_analyses",
+  "alterations"
+)
+```
+
+## Data lock and file set
+
+```{r}
+#| label: manifest
+
+manifest <- read_yaml(here(private_dir, "manifest.yml"))
+
+stopifnot(
+  "The manifest data lock differs from config/analysis.yml." =
+    identical(as.character(manifest$data_lock), config$analysis$data_lock),
+  "The manifest must describe exactly the eight analysis datasets." =
+    setequal(names(manifest$domains), domains),
+  "The manifest marks a dataset as unavailable." =
+    all(map_lgl(manifest$domains, \(record) isTRUE(record$available)))
+)
+
+observed_files <- list.files(
+  private_dir,
+  pattern = "\\.parquet$",
+  ignore.case = TRUE
+)
+
+if (!setequal(observed_files, paste0(domains, ".parquet"))) {
+  stop(
+    "data/private must contain exactly: ",
+    str_flatten_comma(paste0(domains, ".parquet")),
+    ". Found: ",
+    str_flatten_comma(observed_files)
+  )
+}
+```
+
+## Read the private datasets
+
+```{r}
+#| label: read
+
+private <- domains |>
+  set_names() |>
+  map(\(domain) {
+    read_parquet(here(private_dir, paste0(domain, ".parquet"))) |>
+      as.data.frame()
+  })
+
+schemas <- domains |>
+  set_names() |>
+  map(\(domain) read_yaml(here("data", "schema", paste0(domain, ".yml"))))
+```
+
+## Column, key and identifier checks
+
+```{r}
+#| label: structure-checks
+
+# Columns used in this notebook that the schemas do not mark as required.
+build_columns <- list(
+  recruitment = c("informed_consent_date", "randomization_date", "group_assignment"),
+  cohort_follow_up = c(
+    "id", "randomization_date", "tx", "diagnosis", "death_date",
+    "follow_up_end_date", "status_death", "survival_time_days_unrestricted",
+    "status_death_unrestricted", "potential_follow_up_days",
+    "invitation_offered", "invitation_accepted", "enrolled_date",
+    "last_known_alive_date", "mtb_date_first", "mtb_n_reports",
+    "n_blood_products", "n_erythrocyte_concentrates",
+    "n_thrombocyte_concentrates"
+  ),
+  qol = c("id", "assessment_id", "day", "q30", "baseline_q30"),
+  taooh = c("id", "week", "y_taooh"),
+  ctdna_samples = c("sample_id", "id", "sample_date", "valid_ctdna_result"),
+  ctdna_analyses = c(
+    "analysis_id", "sample_id", "id", "analysis_date", "lod_q1", "lod_q3",
+    "valid_ctdna_result", "n_mut"
+  ),
+  alterations = c(
+    "alteration_id", "analysis_id", "sample_id", "id",
+    "found_in_solid_biopsy", "found_in_buffy_coat"
+  )
+)
+
+walk(domains, \(domain) {
+  data <- private[[domain]]
+  schema <- schemas[[domain]]
+
+  required <- schema$columns |>
+    keep(\(column) isTRUE(column$required)) |>
+    names() |>
+    union(build_columns[[domain]])
+  missing_columns <- setdiff(required, names(data))
+  if (length(missing_columns) > 0) {
+    stop(domain, " is missing: ", str_flatten_comma(missing_columns))
+  }
+
+  if (isTRUE(schema$exact_columns) && !setequal(names(data), names(schema$columns))) {
+    stop(domain, " must contain exactly the schema columns.")
+  }
+
+  key <- as.character(schema$primary_key)
+  if (length(key) > 0 &&
+      (!all(complete.cases(data[key])) || anyDuplicated(data[key]) > 0)) {
+    stop(domain, " has a missing or duplicated primary key.")
+  }
+})
+
+recruitment <- private$recruitment
+cohort <- private$cohort_follow_up
+qol <- private$qol
+taooh <- private$taooh
+ctdna_samples <- private$ctdna_samples
+ctdna_analyses <- private$ctdna_analyses
+alterations <- private$alterations
+```
+
+## Content checks
+
+
+```{r}
+#| label: content-checks
+
+stopifnot(
+  "Recruitment group_assignment must be 0/1 or missing." =
+    is.na(recruitment$group_assignment) | recruitment$group_assignment %in% 0:1
+)
+
+validate_taooh_follow_up(taooh, cohort)
+
+stopifnot(
+  "QoL export extends beyond the analysis horizon." =
+    !any(qol$day > config$analysis$horizon_days, na.rm = TRUE)
+)
+
+blood_fields <- c(
+  "n_blood_products",
+  "n_erythrocyte_concentrates",
+  "n_thrombocyte_concentrates"
+)
+blood_complete <- cohort[complete.cases(cohort[blood_fields]), ]
+
+stopifnot(
+  "Blood-product counts must be nonnegative integers or missing." =
+    map_lgl(cohort[blood_fields], \(x) {
+      is.numeric(x) && all(is.na(x) | (is.finite(x) & x >= 0 & x == floor(x)))
+    }),
+  "Combined blood-product counts differ from the sum of components." =
+    blood_complete$n_blood_products ==
+      blood_complete$n_erythrocyte_concentrates +
+      blood_complete$n_thrombocyte_concentrates
+)
+```
+
+## Cohort
+
+```{r}
+#| label: cohort
+
+cohort_dates <- c(
+  "randomization_date",
+  "death_date",
+  "enrolled_date",
+  "last_known_alive_date",
+  "mtb_date_first",
+  "follow_up_end_date"
+)
+
+stopifnot(
+  "Cohort date columns must be Date." =
+    map_lgl(cohort[cohort_dates], \(x) inherits(x, "Date")),
+  "randomization_date contains missing dates." =
+    !anyNA(cohort$randomization_date),
+  "follow_up_end_date contains missing dates." =
+    !anyNA(cohort$follow_up_end_date),
+  "tx must be coded 0/1 without missing values." =
+    cohort$tx %in% 0:1,
+  "status_death must be coded 0/1 without missing values." =
+    cohort$status_death %in% 0:1
+)
+
+cohort <- cohort |>
+  mutate(
+    tx = as.numeric(tx),
+    survival_time_days = pmin(
+      survival_time_days_unrestricted,
+      config$analysis$horizon_days
+    ),
+    event_death = as.numeric(
+      status_death_unrestricted == 1 &
+        survival_time_days_unrestricted <= config$analysis$horizon_days
+    )
+  )
+
+exported_follow_up <- as.numeric(
+  cohort$follow_up_end_date - cohort$randomization_date
+)
+
+stopifnot(
+  "The derived and exported 182-day deaths differ." =
+    cohort$event_death == cohort$status_death,
+  "The derived 182-day follow-up is shorter than the exported one." =
+    cohort$survival_time_days >= exported_follow_up
+)
+```
+
+- 182-day endpoint truncates unrestricted follow-up; the export censored
+  `r sum(cohort$survival_time_days > exported_follow_up)` of these participants earlier.
+
+## Invitation
+
+- Offered = answer recorded; the exported `invitation_offered` disagrees and is replaced.
+
+```{r}
+#| label: invitation
+
+stopifnot(
+  "Usual-care patients cannot have an invitation answer." =
+    all(is.na(cohort$invitation_accepted[cohort$tx == 0]))
+)
+
+cohort <- cohort |>
+  mutate(
+    invitation_offered = if_else(
+      tx == 1,
+      as.integer(!is.na(invitation_accepted)),
+      NA_integer_
+    )
+  )
+```
+
+## ctDNA analyses
+
+```{r}
+#| label: ctdna-analyses
+
+stopifnot(
+  "ctDNA sample and analysis dates must be Date." =
+    inherits(ctdna_samples$sample_date, "Date") &&
+      inherits(ctdna_analyses$analysis_date, "Date")
+)
+
+ctdna_analyses <- merge(
+  ctdna_analyses,
+  ctdna_samples |> select(sample_id, sample_date),
+  by = "sample_id",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+stopifnot(
+  "Every ctDNA analysis must refer to a sample with a recorded sample date." =
+    !anyNA(ctdna_analyses$sample_date)
+)
+
+ctdna_analyses <- ctdna_analyses |>
+  mutate(
+    attempted_sample = !is.na(sample_date),
+    ctdna_error_derived = as.integer(
+      attempted_sample & is.na(lod_q1) & is.na(lod_q3)
+    ),
+    valid_ctdna_result_derived = attempted_sample & ctdna_error_derived == 0L
+  )
+
+stopifnot(
+  "Exported and LOD-derived ctDNA analysis validity flags disagree." =
+    ctdna_analyses$valid_ctdna_result == ctdna_analyses$valid_ctdna_result_derived
+)
+```
+
+## ctDNA samples
+
+```{r}
+#| label: ctdna-samples
+
+analysis_by_sample <- ctdna_analyses |>
+  group_by(sample_id) |>
+  summarise(
+    analysis_date = if (all(is.na(analysis_date))) {
+      as.Date(NA)
+    } else {
+      min(analysis_date, na.rm = TRUE)
+    },
+    n_mut = sum(n_mut[valid_ctdna_result_derived], na.rm = TRUE),
+    analysis_attempted = any(attempted_sample),
+    analysis_valid = any(valid_ctdna_result_derived),
+    ctdna_error_qc = if (length(unique(ctdna_error[!is.na(ctdna_error)])) == 1L) {
+      as.integer(unique(ctdna_error[!is.na(ctdna_error)]))
+    } else {
+      NA_integer_
+    },
+    .groups = "drop"
+  )
+
+ctdna_samples <- ctdna_samples |>
+  left_join(analysis_by_sample, by = "sample_id")
+
+stopifnot(
+  "Every ctDNA sample must have at least one analysis." =
+    !anyNA(ctdna_samples$analysis_valid),
+  "Exported and analysis-derived sample validity flags disagree." =
+    ctdna_samples$valid_ctdna_result == ctdna_samples$analysis_valid
+)
+
+ctdna_samples <- ctdna_samples |>
+  mutate(
+    attempted_sample = !is.na(sample_date),
+    valid_ctdna_result = analysis_valid,
+    ctdna_error_derived = as.integer(attempted_sample & !valid_ctdna_result)
+  ) |>
+  select(-analysis_attempted, -analysis_valid)
+```
+
+## Alterations
+
+```{r}
+#| label: alterations
+
+alterations <- merge(
+  alterations,
+  ctdna_analyses |>
+    select(analysis_id, sample_id, id, valid_ctdna_result_derived),
+  by = "analysis_id",
+  all.x = TRUE,
+  suffixes = c("", "_analysis"),
+  sort = FALSE
+)
+
+stopifnot(
+  "Every alteration must refer to a ctDNA analysis in ctdna_analyses.parquet." =
+    !anyNA(alterations$valid_ctdna_result_derived),
+  "Alteration sample/patient links disagree with ctdna_analyses." =
+    alterations$sample_id == alterations$sample_id_analysis &
+      alterations$id == alterations$id_analysis,
+  "Exported alteration and analysis validity flags disagree." =
+    alterations$valid_ctdna_result == alterations$valid_ctdna_result_derived,
+  "Every alteration must refer to a ctDNA sample in ctdna_samples.parquet." =
+    alterations$sample_id %in% ctdna_samples$sample_id
+)
+
+alterations <- alterations |>
+  mutate(valid_ctdna_result = valid_ctdna_result_derived) |>
+  select(-sample_id_analysis, -id_analysis, -valid_ctdna_result_derived)
+
+# merge() sorts by sample_id here (ties keep the order above).
+alterations <- merge(
+  alterations,
+  ctdna_samples |> select(sample_id, ctdna_detected_from_sample = ctdna_detected),
+  by = "sample_id",
+  all.x = TRUE
+) |>
+  mutate(ctdna_detected = ctdna_detected_from_sample) |>
+  select(-ctdna_detected_from_sample)
+```
+
+## Write
+
+```{r}
+#| label: write
+
+analysis_datasets <- list(
+  "analysis-recruitment" = recruitment,
+  "analysis-cohort" = cohort,
+  "analysis-qol" = qol,
+  "analysis-taooh" = taooh,
+  "analysis-ctdna-samples" = ctdna_samples,
+  "analysis-ctdna-analyses" = ctdna_analyses,
+  "analysis-alterations" = alterations
+)
+
+iwalk(analysis_datasets, \(data, name) {
+  write_parquet(
+    data,
+    here(results_dir, paste0(name, ".parquet")),
+    compression = "zstd"
+  )
+})
+```
+
+```{r}
+#| label: tbl-datasets
+#| tbl-cap: "Analysis datasets"
+#| echo: false
+
+tibble(
+  dataset = names(analysis_datasets),
+  n_rows = map_int(analysis_datasets, nrow),
+  n_columns = map_int(analysis_datasets, ncol)
+) |>
+  kable()
+```

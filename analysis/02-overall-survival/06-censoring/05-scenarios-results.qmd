@@ -1,0 +1,259 @@
+---
+title: "Overall survival censoring scenarios — results"
+subtitle: "Unadjusted survival curves and treatment hazard ratios"
+format: html
+---
+
+- Scenarios for survival outcomes, not bounds on the treatment hazard ratio.
+- Credible intervals are conditional on each assumed endpoint.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(ggsurvfit)
+library(ggdist)
+library(knitr)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+scenario_dir <- here(
+  "analysis", "02-overall-survival", "06-censoring", "results", "scenarios"
+)
+draw_dir <- file.path(scenario_dir, "posterior-draws")
+figure_dir <- file.path(scenario_dir, "figures")
+dir.create(draw_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+n_draws <- 1000L
+scenario_names <- c("best-case", "worst-case")
+scenario_labels <- c("Best case", "Worst case")
+
+scenarios <- read_parquet(file.path(scenario_dir, "scenarios.parquet")) |>
+  mutate(tx_plot = group_factor(tx))
+scenario_counts <- read_parquet(
+  file.path(scenario_dir, "scenario-counts.parquet")
+)
+
+models <- map(scenario_names, \(scenario_name) {
+  readRDS(
+    file.path(scenario_dir, "models", paste0(scenario_name, "-model.rds"))
+  )
+})
+```
+
+## Survival curves, hazard ratios and sampling diagnostics
+
+```{r}
+#| label: posterior-summaries
+#| include: false
+
+curves <- map(seq_along(scenario_names), \(index) {
+  scenario_data <- scenarios |>
+    filter(scenario == scenario_names[[index]])
+
+  posterior_standardized_survival_draws(
+    models[[index]],
+    # Treatment is the only predictor, so one row gives the standardized curve.
+    data = models[[index]]$data[1L, , drop = FALSE],
+    horizon = max(scenario_data$survival_time_days),
+    n_points = 200L,
+    n_draws = n_draws,
+    seed = config$seeds$supporting + (index - 1) * 1000 + 1500
+  ) |>
+    mutate(scenario = scenario_names[[index]])
+}) |>
+  list_rbind()
+
+hr_draws <- map2(models, scenario_names, \(model, scenario_name) {
+  coefficient_draws <- as.matrix(model, pars = "tx")
+
+  tibble(
+    scenario = scenario_name,
+    draw = seq_len(nrow(coefficient_draws)),
+    log_hazard_ratio = coefficient_draws[, 1L],
+    hazard_ratio = exp(log_hazard_ratio)
+  )
+}) |>
+  list_rbind()
+
+# R-hat and n_eff come from rstanarm's stored stan_summary.
+sampling_summary <- map2(models, scenario_names, \(model, scenario_name) {
+  sampler <- rstan::get_sampler_params(model$stanfit, inc_warmup = FALSE)
+
+  tibble(
+    scenario = scenario_name,
+    participants_fitted = nrow(model$data),
+    chains = model$stanfit@sim$chains,
+    iterations = model$stanfit@sim$iter,
+    warmup = model$stanfit@sim$warmup,
+    posterior_draws = nrow(as.matrix(model, pars = "tx")),
+    max_rhat = max(model$stan_summary[, "Rhat"], na.rm = TRUE),
+    min_ess = min(model$stan_summary[, "n_eff"], na.rm = TRUE),
+    divergences = sum(map_dbl(sampler, \(x) sum(x[, "divergent__"])))
+  )
+}) |>
+  list_rbind()
+
+curve_summary <- curves |>
+  summarise(
+    median = median(survival),
+    lower = quantile(survival, 0.025, names = FALSE),
+    upper = quantile(survival, 0.975, names = FALSE),
+    .by = c(scenario, tx, time)
+  )
+
+hr_summary <- hr_draws |>
+  summarise(
+    median = median(hazard_ratio),
+    ci_66_low = quantile(hazard_ratio, 0.17, names = FALSE),
+    ci_66_high = quantile(hazard_ratio, 0.83, names = FALSE),
+    ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
+    ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
+    probability_benefit = mean(hazard_ratio < 1),
+    posterior_draws = n(),
+    .by = scenario
+  )
+
+write_parquet(
+  curves,
+  file.path(draw_dir, "scenario-curves.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  hr_draws,
+  file.path(draw_dir, "scenario-hazard-ratios.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  curve_summary,
+  file.path(scenario_dir, "scenario-survival-curve-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  hr_summary,
+  file.path(scenario_dir, "scenario-hazard-ratio-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  sampling_summary,
+  file.path(scenario_dir, "scenario-sampling-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+## Figures
+
+```{r}
+#| label: build-plots
+#| include: false
+
+max_follow_up <- max(scenarios$survival_time_days)
+
+survival_plots <- map(seq_along(scenario_names), \(index) {
+  scenario_data <- scenarios |>
+    filter(scenario == scenario_names[[index]])
+  plot_curves <- curve_summary |>
+    filter(scenario == scenario_names[[index]])
+
+  km_fit <- survfit2(
+    Surv(survival_time_days, event_death) ~ tx_plot,
+    data = scenario_data,
+    conf.type = "log-log"
+  )
+
+  survival_plot <- plot_km_model(km_fit, plot_curves, x_max = max_follow_up)
+
+  save_figure(
+    ggsurvfit_build(survival_plot),
+    file.path(figure_dir, paste0(scenario_names[[index]], "-survival.png")),
+    height = 6.5
+  )
+
+  survival_plot
+})
+
+hr_plot <- hr_draws |>
+  transmute(
+    draw = hazard_ratio,
+    panel = factor(scenario, levels = scenario_names, labels = scenario_labels)
+  ) |>
+  plot_posterior(
+    x_label = "Unadjusted hazard ratio, ctDNA versus usual care",
+    reference = 1,
+    log_scale = TRUE
+  )
+
+save_figure(
+  hr_plot,
+  file.path(figure_dir, "scenario-hazard-ratio.png"),
+  height = 6
+)
+```
+
+## Results
+
+```{r}
+#| label: tbl-supporting-os-censoring-scenarios-results-counts
+#| tbl-cap: "Participants, observed deaths, and scenario assumptions (0: usual care; 1: ctDNA)"
+#| echo: false
+
+kable(scenario_counts)
+```
+
+```{r}
+#| label: tbl-supporting-os-censoring-scenarios-hr
+#| tbl-cap: "Unadjusted posterior treatment hazard ratios by scenario; probability of benefit is Pr(HR < 1)"
+#| echo: false
+
+kable(hr_summary, digits = 3)
+```
+
+```{r}
+#| label: fig-supporting-os-censoring-scenarios-best-case
+#| fig-cap: "Best case: participants censored more than 14 days before the cutoff are assumed alive to the cutoff"
+#| fig-alt: "Dashed Kaplan–Meier and solid unadjusted model curves by randomized group, with 95 percent credible bands, censoring marks, and at-risk and event counts."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plots[[1L]]
+```
+
+```{r}
+#| label: fig-supporting-os-censoring-scenarios-worst-case
+#| fig-cap: "Worst case: censoring more than 14 days before the cutoff becomes death"
+#| fig-alt: "Dashed Kaplan–Meier and solid unadjusted model curves by randomized group, with 95 percent credible bands. Event counts include deaths assigned on censoring days."
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+survival_plots[[2L]]
+```
+
+```{r}
+#| label: fig-supporting-os-censoring-scenarios-hr
+#| fig-cap: "Unadjusted posterior treatment hazard ratios under the two censoring scenarios"
+#| fig-alt: "Separate half-eye distributions and dot plots for the best- and worst-case ctDNA-versus-usual-care hazard ratios, with medians, 66 and 95 percent credible intervals, and a reference line at one."
+#| fig-width: 8
+#| fig-height: 6
+#| echo: false
+
+hr_plot
+```
+
+```{r}
+#| label: tbl-supporting-os-censoring-scenarios-sampling
+#| tbl-cap: "Saved model sampling settings and diagnostics by scenario"
+#| echo: false
+
+kable(sampling_summary, digits = 3)
+```

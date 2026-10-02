@@ -1,0 +1,287 @@
+---
+title: "QoL six-month landmark: proportional-odds check"
+subtitle: "Common and threshold-specific treatment odds ratios, adjusted and unadjusted"
+format: html
+---
+
+- Frequentist graphical check only; not a replacement for the Bayesian estimands.
+- Positive log odds ratios mean greater odds of a worse outcome under ctDNA.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rms)
+library(knitr)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+landmark_dir <- here(
+  "analysis", "03-quality-of-life", "02-six-month-landmark", "results"
+)
+results_dir <- file.path(landmark_dir, "proportional-odds-check")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+completed_datasets <- map(seq_len(config$imputation$m_main), \(index) {
+  readRDS(file.path(
+    landmark_dir, "imputations", sprintf("completed-%02d.rds", index)
+  ))
+})
+```
+
+## Per-imputation estimates
+
+```{r}
+#| label: fit-threshold-models
+#| include: false
+
+models <- tibble(
+  model = c("adjusted", "unadjusted"),
+  covariates = list(c("tx", "rcs(baseline_q30, 4)"), "tx"),
+  m = c(config$imputation$m_main, config$imputation$m_supporting)
+)
+
+estimates <- models |>
+  pmap(\(model, covariates, m) {
+    seq_len(m) |>
+      map(\(index) {
+        data <- completed_datasets[[index]] |>
+          mutate(y_landmark = ordered(y_landmark, levels = 1:8))
+
+        common_fit <- lrm(
+          reformulate(covariates, response = "y_landmark"),
+          data = data,
+          x = TRUE,
+          y = TRUE
+        )
+
+        binary_estimates <- 1:7 |>
+          map(\(threshold) {
+            binary_data <- data |>
+              mutate(binary_worse = as.integer(as.integer(y_landmark) > threshold))
+            binary_fit <- lrm(
+              reformulate(covariates, response = "binary_worse"),
+              data = binary_data,
+              x = TRUE,
+              y = TRUE
+            )
+
+            tibble(
+              threshold = threshold,
+              comparison = paste0("Y > ", threshold),
+              estimate = unname(coef(binary_fit)["tx"]),
+              variance = unname(vcov(binary_fit)["tx", "tx"])
+            )
+          }) |>
+          list_rbind()
+
+        tibble(
+          threshold = NA_integer_,
+          comparison = "Common proportional-odds effect",
+          estimate = unname(coef(common_fit)["tx"]),
+          variance = unname(vcov(common_fit)["tx", "tx"])
+        ) |>
+          bind_rows(binary_estimates) |>
+          mutate(model = model, imputation = index, .before = 1)
+      }) |>
+      list_rbind()
+  }) |>
+  list_rbind()
+
+write_parquet(estimates, file.path(results_dir, "imputation-estimates.parquet"))
+```
+
+## Pooling with Rubin's rules
+
+```{r}
+#| label: pool-estimates
+#| include: false
+
+pooled <- estimates |>
+  group_by(model, comparison) |>
+  summarise(
+    threshold = first(threshold),
+    imputations = n(),
+    q_bar = mean(estimate),
+    u_bar = mean(variance),
+    between = var(estimate),
+    .groups = "drop"
+  ) |>
+  mutate(
+    total = u_bar + (1 + 1 / imputations) * between,
+    degrees_freedom = if_else(
+      is.finite(between) & between > 0,
+      (imputations - 1) * (1 + u_bar / ((1 + 1 / imputations) * between))^2,
+      Inf
+    ),
+    critical_value = if_else(
+      is.finite(degrees_freedom),
+      qt(0.975, df = degrees_freedom),
+      qnorm(0.975)
+    ),
+    log_odds_ratio = q_bar,
+    standard_error = sqrt(total),
+    conf_low = q_bar - critical_value * standard_error,
+    conf_high = q_bar + critical_value * standard_error,
+    odds_ratio = exp(q_bar),
+    odds_ratio_low = exp(conf_low),
+    odds_ratio_high = exp(conf_high),
+    order = coalesce(threshold, 0L)
+  ) |>
+  arrange(model, order) |>
+  select(
+    model, comparison, threshold, log_odds_ratio, standard_error,
+    conf_low, conf_high, odds_ratio, odds_ratio_low, odds_ratio_high,
+    imputations, order
+  )
+
+write_parquet(pooled, file.path(results_dir, "pooled-estimates.parquet"))
+```
+
+```{r}
+#| label: tbl-adjusted-proportional-odds-check
+#| tbl-cap: "Adjusted model: pooled common and threshold-specific treatment odds ratios for a worse six-month outcome"
+#| echo: false
+
+pooled |>
+  filter(model == "adjusted") |>
+  select(
+    comparison, odds_ratio, odds_ratio_low, odds_ratio_high,
+    log_odds_ratio, conf_low, conf_high
+  ) |>
+  kable()
+```
+
+```{r}
+#| label: tbl-unadjusted-proportional-odds-check
+#| tbl-cap: "Unadjusted model: pooled common and threshold-specific treatment odds ratios for a worse six-month outcome"
+#| echo: false
+
+pooled |>
+  filter(model == "unadjusted") |>
+  select(
+    comparison, odds_ratio, odds_ratio_low, odds_ratio_high,
+    log_odds_ratio, conf_low, conf_high
+  ) |>
+  kable()
+```
+
+## Figures
+
+- Black: threshold-specific effects. Grey: common effect, repeated per threshold.
+- Dashed line: zero (adjusted), common estimate (unadjusted).
+
+```{r}
+#| label: threshold-plots
+#| include: false
+
+# Called once per model (adjusted and unadjusted).
+threshold_plot <- function(model_name, reference_line, x_label) {
+  model_pooled <- pooled |>
+    filter(model == model_name)
+
+  binary_pooled <- model_pooled |>
+    filter(!is.na(threshold)) |>
+    mutate(comparison = factor(comparison, levels = rev(comparison)))
+  common_pooled <- model_pooled |>
+    filter(is.na(threshold))
+  common_repeated <- binary_pooled |>
+    mutate(
+      log_odds_ratio = common_pooled$log_odds_ratio,
+      conf_low = common_pooled$conf_low,
+      conf_high = common_pooled$conf_high
+    )
+
+  ggplot() +
+    geom_vline(
+      xintercept = reference_line,
+      linetype = "dashed",
+      colour = reference_line_colour
+    ) +
+    geom_errorbar(
+      data = binary_pooled,
+      aes(y = comparison, xmin = conf_low, xmax = conf_high),
+      width = 0.12,
+      orientation = "y",
+      position = position_nudge(y = 0.08),
+      colour = "black"
+    ) +
+    geom_point(
+      data = binary_pooled,
+      aes(x = log_odds_ratio, y = comparison),
+      position = position_nudge(y = 0.08),
+      size = 2.5,
+      colour = "black"
+    ) +
+    geom_errorbar(
+      data = common_repeated,
+      aes(y = comparison, xmin = conf_low, xmax = conf_high),
+      width = 0.12,
+      orientation = "y",
+      position = position_nudge(y = -0.08),
+      colour = "grey55"
+    ) +
+    geom_point(
+      data = common_repeated,
+      aes(x = log_odds_ratio, y = comparison),
+      position = position_nudge(y = -0.08),
+      size = 2.5,
+      colour = "grey55"
+    ) +
+    labs(x = x_label, y = "Binary threshold") +
+    theme(panel.grid.major.y = element_blank())
+}
+
+unadjusted_common <- pooled |>
+  filter(model == "unadjusted", is.na(threshold)) |>
+  pull(log_odds_ratio)
+
+adjusted_plot <- threshold_plot(
+  "adjusted",
+  reference_line = 0,
+  x_label = "Treatment log odds ratio for a worse outcome"
+)
+unadjusted_plot <- threshold_plot(
+  "unadjusted",
+  reference_line = unadjusted_common,
+  x_label = "Unadjusted treatment log odds ratio for a worse outcome"
+)
+
+save_figure(
+  adjusted_plot,
+  file.path(results_dir, "adjusted-common-vs-binary-log-odds-ratios.png"),
+  height = 5.5
+)
+save_figure(
+  unadjusted_plot,
+  file.path(results_dir, "unadjusted-common-vs-binary-log-odds-ratios.png"),
+  height = 5.5
+)
+```
+
+```{r}
+#| label: fig-adjusted-proportional-odds-check
+#| fig-cap: "Adjusted model: common and threshold-specific treatment log odds ratios pooled across completed datasets"
+#| fig-alt: "A horizontal dot-and-interval plot compares the common proportional-odds treatment coefficient with seven binary logistic treatment coefficients for progressively worse QoL thresholds."
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+adjusted_plot
+```
+
+```{r}
+#| label: fig-unadjusted-proportional-odds-check
+#| fig-cap: "Unadjusted model: common and threshold-specific treatment log odds ratios pooled across completed datasets"
+#| fig-alt: "A horizontal dot-and-interval plot compares the common unadjusted proportional-odds treatment coefficient with seven binary logistic treatment coefficients for progressively worse QoL thresholds."
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+unadjusted_plot
+```

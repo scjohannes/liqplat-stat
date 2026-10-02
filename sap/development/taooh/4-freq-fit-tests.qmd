@@ -1,0 +1,265 @@
+---
+title: Model Fit on Historical Data
+format:
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
+---
+
+Examining first vs. second order markov model and interactnig yprev with time or not.
+
+## Setup
+
+```{r}
+#| output: false
+library(here)
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rms)
+library(rmsb)
+library(furrr)
+library(VGAM)
+library(Hmisc)
+library(ordinal)
+library(marginaleffects)
+```
+
+## Load data
+
+```{r}
+df <- read_parquet(here("data", "hosp_long_weeks.parquet")) |>
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE)
+    ) |>
+      select(pat_id, tx, y, yprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+df_ypprev <- read_parquet(here("data", "hosp_long_weeks_two_lags.parquet")) |>
+    mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        y = ordered(y)
+    ) |>
+      select(pat_id, tx, y, yprev, ypprev, week, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+
+df_daily <- read_parquet(here("data", "hosp_long_daily.parquet")) |>
+  mutate(
+        tx = factor(tx),
+        ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE),
+        y = case_when(
+          y == 4 ~ 3,
+          y == 5 ~ 4,
+          TRUE ~ y),
+        yprev = case_when(
+          yprev == "4" ~ "3",
+          TRUE ~ yprev),
+        ypprev = case_when(
+          ypprev == "4" ~ "3",
+          TRUE ~ ypprev)
+    ) |>
+      select(pat_id, tx, y, yprev, ypprev, day, ecog_fstcnt, diagnosis, age, gender, albumin, c_reactive_protein)
+```
+
+## Weekly States
+
+### VGAM constrained
+
+```{r}
+d <- as.data.table(df_ypprev)
+week_spl_m <- rcs(d$week, 4)
+
+d$week_linear <- week_spl_m[, 1]
+d$week_nonlinear_1 <- week_spl_m[, 2]
+d$week_nonlinear_2 <- week_spl_m[, 3]
+
+M <- 4
+
+cons <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+# PO model, first order -------------------------------------------------------------------
+fit_po <- vglm(
+  y ~ tx + yprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = TRUE, reverse = TRUE),
+  data = d,
+  constraints = NULL
+)
+
+# pPO for linear time, first order ---------------------------------------------------------
+fit_non_po <- vglm(
+  y ~ tx + yprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons
+)
+
+# Doesn't converge well even with constraints
+AIC(fit_po); AIC(fit_non_po)
+
+# --- non-PO with interaction of yprev and linear time ---
+# constraints when we add interaction
+cons_lin_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+  "yprev:week_linear"  = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_non_po_lin_int <- vglm(
+  y ~ tx + yprev * week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_lin_int
+)
+
+fit_po_lin_int <- vglm(
+  y ~ tx + yprev * week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = TRUE, reverse = TRUE),
+  data = d
+)
+
+
+
+# interaction of yprev with time improves fit by a lot
+# non proportional effect of time does not --> we can likely drop this
+AIC(fit_non_po); AIC(fit_po_lin_int); AIC(fit_non_po_lin_int)
+
+
+# --- Second order, full PO vs partial PO ---
+
+# constraints when we add interaction
+cons_second <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "ypprev"            = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+# Doesn't converge well even with constraints
+fit_second_non_po <- vglm(
+  y ~ tx + yprev + ypprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second
+)
+
+fit_second_po <- vglm(
+  y ~ tx + yprev + ypprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = TRUE, reverse = TRUE),
+  data = d
+)
+
+# second order fit is substantially better
+AIC(fit_po); AIC(fit_second_po)
+
+# second order with interaction of yprev and linear time -------------------------------------------
+cons_second_lin_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "ypprev"            = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+  "yprev:week_linear"  = cbind(PO_effect = 1),
+  "ypprev:week_linear" = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_second_non_po_lin_int <- vglm(
+  y ~ tx + (yprev + ypprev) * week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second_lin_int
+)
+
+fit_second_po_lin_int <- vglm(
+  y ~ tx + (yprev + ypprev) * week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = TRUE, reverse = TRUE),
+  data = d
+)
+
+# strong improvement with interaction of yprev and ypprev with time
+# non-proportional effect of time still doesn't improve fit much
+AIC(fit_second_po); AIC(fit_second_po_lin_int); AIC(fit_second_non_po_lin_int)
+
+# second order model, no interaction with time, but interaction between yprev and ypprev ----------------------
+cons_second_yprev_int <- list(
+  # Intercepts of course have separate parameters
+  "(Intercept)"     = diag(M),
+
+  # Proportional odds terms now get "column of ones" matrix
+  "tx"                = cbind(PO_effect = 1),
+  "yprev"             = cbind(PO_effect = 1),
+  "ypprev"            = cbind(PO_effect = 1),
+  "yprev:ypprev"      = cbind(PO_effect = 1),
+  "week_nonlinear_1"   = cbind(PO_effect = 1),
+  "week_nonlinear_2"   = cbind(PO_effect = 1),
+
+  # The linear component of the spline gets the special constraint
+  "week_linear" = cbind(
+    baseline_effect = 1,
+    linear_trend    = 0:(M - 1)
+  )
+)
+
+fit_second_non_po_yprev_int <- vglm(
+  y ~ tx + yprev * ypprev + week_linear + week_nonlinear_1 + week_nonlinear_2,
+  family = cumulative(parallel = FALSE ~ week_linear, reverse = TRUE),
+  data = d,
+  constraints = cons_second_yprev_int
+)
+# Results in intersecting linear predictors
+```
+
+
+Second order fit seems to be better than first order fit, interaction of yprev and ypprev with previous time improves fit by a lot. Non-linear modelling of time doesn't improve fit much.  --> stick to full PO model with interaction of yprev and ypprev with linear time component.

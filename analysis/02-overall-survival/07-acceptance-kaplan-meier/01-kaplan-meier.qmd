@@ -1,0 +1,114 @@
+---
+title: "Overall survival with unrestricted follow-up — invitation-acceptance comparisons"
+subtitle: "Descriptive Kaplan–Meier curves"
+format: html
+---
+
+- Descriptive only: uptake is post-randomization, so uptake comparisons are not causal.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(survival)
+library(ggsurvfit)
+library(here)
+library(arrow)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "07-acceptance-kaplan-meier", "results"
+)
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Comparison groups
+
+```{r}
+#| label: comparison-groups
+#| include: false
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  mutate(
+    tx_plot = group_factor(tx),
+    uptake = case_when(
+      tx == 0 ~ "Usual care",
+      invitation_accepted == 1 ~ "ctDNA, accepted",
+      invitation_accepted == 0 ~ "ctDNA, declined",
+      is.na(invitation_accepted) ~ "ctDNA, not offered"
+    ),
+    uptake = factor(
+      uptake,
+      levels = c("Usual care", "ctDNA, accepted", "ctDNA, declined", "ctDNA, not offered")
+    )
+  )
+
+max_follow_up <- max(cohort$survival_time_days_unrestricted, na.rm = TRUE)
+risk_times <- seq(0, max_follow_up, by = 100)
+
+comparison_groups <- c("randomized-groups" = "tx_plot", "uptake-groups" = "uptake")
+```
+
+## Kaplan–Meier curves
+
+```{r}
+#| label: build-plots
+#| include: false
+
+km_plots <- imap(comparison_groups, \(grouping, group) {
+  km_fit <- survfit2(
+    Surv(survival_time_days_unrestricted, status_death_unrestricted) ~ group,
+    data = cohort |> mutate(group = .data[[grouping]]),
+    conf.type = "log-log"
+  )
+
+  # Kaplan–Meier only, so solid lines; theme = NULL uses the report theme.
+  km_plot <- ggsurvfit(km_fit, linewidth = 0.55, theme = NULL) +
+    add_censor_mark(size = 1.8) +
+    (if (grouping == "uptake") scale_colour_uptake() else scale_colour_group()) +
+    scale_x_continuous(breaks = risk_times) +
+    coord_cartesian(xlim = c(0, max_follow_up), ylim = c(0, 1)) +
+    labs(
+      x = "Days since random selection",
+      y = "Survival probability",
+      colour = NULL,
+      fill = NULL
+    ) +
+    add_risktable(
+      times = risk_times,
+      risktable_stats = c("n.risk", "cum.event"),
+      stats_label = list(n.risk = "At risk", cum.event = "Events")
+    )
+
+  save_figure(
+    ggsurvfit_build(km_plot),
+    file.path(results_dir, paste0("kaplan-meier-", group, ".png")),
+    height = if (grouping == "uptake") 7.5 else 6.5
+  )
+
+  km_plot
+})
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-randomized-km
+#| fig-cap: "Kaplan–Meier estimates using unrestricted follow-up in the randomized groups"
+#| fig-width: 8
+#| fig-height: 6.5
+#| echo: false
+
+km_plots[["randomized-groups"]]
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-uptake-km
+#| fig-cap: "Kaplan–Meier estimates using unrestricted follow-up for usual care and the uptake groups of the ctDNA group"
+#| fig-width: 8
+#| fig-height: 7.5
+#| echo: false
+
+km_plots[["uptake-groups"]]
+```

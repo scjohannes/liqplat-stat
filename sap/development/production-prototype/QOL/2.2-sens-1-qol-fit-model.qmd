@@ -1,0 +1,123 @@
+---
+title: "Sensitivity Analysis Including Death - Fit Model"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(fs)
+library(here)
+library(tidyverse)
+library(arrow)
+library(rmsb)
+```
+
+## Load data
+
+```{r}
+data_path <- here("0-main-analysis", "QOL", "sens-1", "imp-data")
+m <- length(dir_ls(data_path))
+# m <- 20
+```
+
+## Create output directory
+
+```{r}
+output_dir <- here("0-main-analysis", "QOL", "sens-1", "results")
+dir_create(output_dir)
+dir_create(path(output_dir, "models"))
+dir_create(path(output_dir, "sops"))
+dir_create(path(output_dir, "diagnostics"))
+```
+
+## Fit models and calculate estimand
+
+```{r}
+for(i in 1:m) {
+  posterior_file <- path(output_dir, "diagnostics", paste0("posterior_imp_", i, ".png"))
+  model_file <- path(output_dir, "models", paste0("model_imp_", i, ".rds"))
+
+  if (file_exists(posterior_file)) {
+    cat("Skipping imputation", i, "- posterior already saved:", posterior_file, "\n")
+    next
+  }
+
+  cat("Processing imputation", i, "of", m, "\n")
+
+  # If model exists, load it and regenerate diagnostics only
+  if (file_exists(model_file)) {
+    cat("Found existing model for imputation", i, "- regenerating diagnostics\n")
+    model <- readRDS(model_file)
+
+    # ensure environment/options expected by diagnostic functions
+    stanDx(model)
+
+    trace_plot <- stanDxplot(model)
+    ggsave(path(output_dir, "diagnostics", paste0("trace_imp_", i, ".png")),
+      plot = trace_plot,
+      width = 20, height = 16, dpi = 300)
+
+    dens_plot <- plot(model)
+    ggsave(posterior_file,
+      plot = dens_plot,
+      width = 10, height = 8, dpi = 300)
+
+    next
+  }
+
+
+  data <- read_parquet(here("0-main-analysis", "QOL", "sens-1", "imp-data", paste0("qol-data-", i, ".parquet")))
+
+  # merge the one ecog_fstcnt from group 4 into group 3, for convergence
+  data <- data |>
+    mutate(
+      ecog_fstcnt = if_else(ecog_fstcnt == "4", "3", ecog_fstcnt),
+      ecog_fstcnt = factor(ecog_fstcnt))
+
+  # Calculate mGPS
+  dd <- datadist(data)
+
+  # Set the global option so that rms/rmsb functions know to use 'dd'
+  options(datadist = 'dd')
+  options(mc.cores = 4)
+
+  pcontrast_arg <- list(
+    c1 = list(tx = 1),
+    c2 = list(tx = 0),
+    contrast = expression(c1 - c2),
+    mu = 0,
+    sd = 0.5
+  )
+
+  Sys.setenv(RSTUDIO = 1)
+
+  model <- blrm(
+    formula = y ~ tx + rcs(week, 4) + yprev + ecog_fstcnt + diagnosis,
+    pcontrast = pcontrast_arg,
+    data = data,
+    ppo = ~week,
+    cppo = function(y) y,
+    backend = "cmdstan",
+    iter = 2000, chains = 4, seed = 68818,
+    refresh = 50
+  )
+
+  Sys.setenv(RSTUDIO = 0)
+  stanDx(model)
+
+  # Save model object
+  saveRDS(model, file = path(output_dir, "models", paste0("model_imp_", i, ".rds")))
+
+  # Generate diagnostic plots
+  trace_plot <- stanDxplot(model)
+  ggsave(path(output_dir, "diagnostics", paste0("trace_imp_", i, ".png")),
+    plot = trace_plot,
+    width = 20, height = 16, dpi = 300)
+
+  dens_plot <- plot(model)
+  ggsave(path(output_dir, "diagnostics", paste0("posterior_imp_", i, ".png")),
+    plot = dens_plot,
+    width = 10, height = 8, dpi = 300)
+}
+```

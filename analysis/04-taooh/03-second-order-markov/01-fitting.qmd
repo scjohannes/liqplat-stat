@@ -1,0 +1,128 @@
+---
+title: "TAOOH second-order Markov model — fitting"
+subtitle: "Full proportional-odds second-order models, one per imputation"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rms)
+library(rmsb)
+library(mostr)
+library(posterior)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "markov.R"))
+
+indices <- seq_len(config$imputation$m_main)
+
+imputation_dir <- here("analysis", "04-taooh", "results", "imputations")
+results_dir <- here("analysis", "04-taooh", "03-second-order-markov", "results")
+model_dir <- here(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+# A small number of divergences is retained for review rather than causing an
+# automatic full refit. Twenty or more divergences still trigger the retry.
+taooh_diagnostic_thresholds <- config$diagnostics
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
+
+treatment_prior <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.541
+)
+```
+
+```{r}
+#| label: fit-models
+#| include: false
+
+for (index in indices) {
+  model_path <- here(model_dir, sprintf("model-%02d.rds", index))
+  if (file.exists(model_path)) next
+
+  data <- read_parquet(
+    here(imputation_dir, sprintf("completed-%02d.parquet", index))
+  ) |>
+    as.data.frame() |>
+    mutate(ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE))
+
+  # mostr's default first follow-up time (week 1) must be in the model data.
+  stopifnot(min(data$week) == 1L)
+
+  dd <- datadist(data)
+  options(datadist = "dd")
+
+  model_formula <- y ~ tx + rms::rcs(week, 4) + yprev + ypprev +
+    week %ia% yprev + week %ia% ypprev +
+    ecog_fstcnt + diagnosis + rms::rcs(albumin, 3) +
+    rms::rcs(c_reactive_protein, 3) + cluster(id)
+  fit_seed <- config$seeds$taooh + (index - 1L) * 1000L
+
+  fit <- tryCatch(
+    blrm_markov(
+      formula = model_formula,
+      pcontrast = treatment_prior,
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$iterations,
+      warmup = config$markov$warmup,
+      refresh = 1,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed,
+        parallel_chains = config$markov$chains
+      )
+    ),
+    error = identity
+  )
+
+  diagnostics <- if (inherits(fit, "error")) {
+    NULL
+  } else {
+    tryCatch(
+      markov_diagnostics(fit, taooh_diagnostic_thresholds),
+      error = function(error) NULL
+    )
+  }
+
+  if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
+    fit <- blrm_markov(
+      formula = model_formula,
+      pcontrast = treatment_prior,
+      data = data,
+      id_var = "id",
+      time_var = "week",
+      chains = config$markov$chains,
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      refresh = 0L,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = fit_seed + 500000L,
+        parallel_chains = config$markov$chains
+      )
+    )
+    diagnostics <- markov_diagnostics(fit, taooh_diagnostic_thresholds)
+  }
+
+  if (!isTRUE(fit$pppo == 0L) || !is.null(fit$cppo)) {
+    stop("The second-order TAOOH model must be a full proportional-odds model.")
+  }
+  assert_markov_diagnostics(diagnostics)
+
+  saveRDS(fit, model_path, compress = "xz")
+}
+```

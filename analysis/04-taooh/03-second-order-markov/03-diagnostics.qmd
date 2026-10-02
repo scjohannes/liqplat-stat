@@ -1,0 +1,309 @@
+---
+title: "TAOOH second-order Markov model — diagnostics"
+subtitle: "Convergence and graphical checks of the second-order models"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rms)
+library(rmsb)
+library(mostr)
+library(posterior)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "taooh.R"))
+source(here("R", "markov.R"))
+source(here("R", "plot-style.R"))
+
+indices <- seq_len(config$imputation$m_main)
+
+horizon_days <- config$analysis$horizon_days
+stopifnot(horizon_days %% 7 == 0)
+horizon_weeks <- as.integer(horizon_days / 7)
+
+results_dir <- here("analysis", "04-taooh", "03-second-order-markov", "results")
+model_dir <- here(results_dir, "models")
+stan_dx_dir <- here(results_dir, "stan-dx")
+figure_dir <- here(results_dir, "figures")
+dir.create(stan_dx_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Same thresholds as in fitting: up to 19 divergent transitions are accepted.
+taooh_diagnostic_thresholds <- config$diagnostics
+taooh_diagnostic_thresholds$max_divergent_transitions <- 19L
+```
+
+## Convergence summaries
+
+```{r}
+#| label: convergence-summaries
+#| include: false
+
+diagnostics_table <- indices |>
+  map(\(index) {
+    model <- readRDS(here(model_dir, sprintf("model-%02d.rds", index)))
+    diagnostics <- markov_diagnostics(model, taooh_diagnostic_thresholds)
+    assert_markov_diagnostics(diagnostics)
+
+    as.data.frame(diagnostics$summary) |>
+      mutate(
+        imputation = index,
+        divergent_transitions = diagnostics$divergent_transitions,
+        treedepth_exceeded = diagnostics$treedepth_exceeded,
+        min_bfmi = diagnostics$min_bfmi
+      )
+  }) |>
+  list_rbind()
+
+write_parquet(
+  diagnostics_table,
+  here(results_dir, "diagnostics.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: stan-diagnostics
+#| include: false
+
+for (index in indices) {
+  model <- readRDS(here(model_dir, sprintf("model-%02d.rds", index)))
+
+  writeLines(
+    capture.output(stanDx(model)),
+    here(stan_dx_dir, sprintf("stan-dx-%02d.txt", index))
+  )
+
+  # All coefficients and the random-intercept SD (sigmag).
+  trace_parameters <- c(colnames(model$draws), colnames(model$omega))
+  save_figure(
+    plot_traces(trace_draws(model, trace_parameters), ncol = 4),
+    here(stan_dx_dir, sprintf("stan-dx-%02d.png", index)),
+    height = 1.3 * ceiling(length(trace_parameters) / 4) + 1
+  )
+}
+```
+
+## Graphical checks
+
+```{r}
+#| label: empirical-data
+#| include: false
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  as.data.frame()
+
+empirical_data <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-taooh.parquet")
+) |>
+  as.data.frame() |>
+  taooh_carry_death_forward(horizon_days) |>
+  left_join(cohort |> select(id, tx), by = "id") |>
+  arrange(id, week) |>
+  group_by(id) |>
+  mutate(
+    y = as.integer(y_taooh),
+    yprev = lag(y)
+  ) |>
+  ungroup() |>
+  filter(between(week, 1L, horizon_weeks)) |>
+  mutate(
+    y = factor(y, levels = 1:5, ordered = TRUE),
+    yprev = factor(yprev, levels = 1:5),
+    tx = group_factor(tx)
+  )
+
+model <- readRDS(here(model_dir, "model-01.rds"))
+
+diagnostic_times <- unique(
+  as.integer(round(seq(1, horizon_weeks, length.out = 9)))
+)
+diagnostic_seed <- config$seeds$diagnostics
+```
+
+```{r}
+#| label: graphical-checks
+#| include: false
+
+# mostr adds theme_bw() to its diagnostic plots: use the report theme and keep
+# the heatmap settings.
+heatmap_theme <- theme(
+  panel.grid.major = element_blank(),
+  axis.ticks = element_blank(),
+  aspect.ratio = 1
+)
+transition_style <- list(
+  labs(x = "Previous state", y = "Current state"),
+  theme_liqplat(),
+  heatmap_theme
+)
+correlation_style <- list(
+  labs(
+    x = "Week after random selection",
+    y = "Week after random selection",
+    fill = "Correlation"
+  ),
+  theme_liqplat(),
+  heatmap_theme
+)
+variogram_style <- list(
+  labs(x = "Time difference, weeks", y = "Correlation"),
+  theme_liqplat()
+)
+
+empirical_sop_plot <- plot_sops(
+  empirical_data,
+  time_var = "week",
+  y_var = "y",
+  facet_var = NULL,
+  linetype_var = "tx",
+  geom = "line"
+) +
+  scale_colour_state() +
+  scale_fill_state() +
+  scale_linetype_group() +
+  labs(
+    x = "Week after random selection",
+    y = "State occupancy probability",
+    colour = "TAOOH state",
+    linetype = NULL,
+    title = NULL
+  )
+
+# White value labels on the transition heatmaps.
+empirical_transition_plot <- plot_transitions(
+  empirical_data,
+  times = diagnostic_times,
+  time_var = "week",
+  y_var = "y",
+  p_var = "yprev",
+  y_levels = 1:5,
+  show_values = TRUE
+) +
+  transition_style
+empirical_transition_plot$layers[[2]]$aes_params$colour <- "white"
+
+model_transition_plot <- plot_transitions(
+  model,
+  times = diagnostic_times,
+  y_levels = 1:5,
+  absorb = 5L,
+  time_var = "week",
+  p_var = "yprev",
+  p2_var = "ypprev",
+  id_var = "id",
+  seed = diagnostic_seed,
+  n_draws = 200L,
+  show_values = TRUE
+) +
+  transition_style
+model_transition_plot$layers[[2]]$aes_params$colour <- "white"
+
+empirical_correlation_plot <- plot_correlation(
+  empirical_data,
+  times = seq_len(horizon_weeks),
+  y_levels = 1:5,
+  id_var = "id",
+  time_var = "week",
+  y_var = "y",
+  show_values = TRUE
+) +
+  correlation_style
+
+model_correlation_plot <- plot_correlation(
+  model,
+  times = seq_len(horizon_weeks),
+  y_levels = 1:5,
+  absorb = 5L,
+  id_var = "id",
+  time_var = "week",
+  p_var = "yprev",
+  p2_var = "ypprev",
+  seed = diagnostic_seed,
+  n_draws = 50L,
+  show_values = TRUE
+) +
+  correlation_style
+
+empirical_variogram_plot <- plot_variogram(
+  empirical_data,
+  times = seq_len(horizon_weeks),
+  y_levels = 1:5,
+  id_var = "id",
+  time_var = "week",
+  y_var = "y"
+) +
+  variogram_style
+
+model_variogram_plot <- plot_variogram(
+  model,
+  times = seq_len(horizon_weeks),
+  y_levels = 1:5,
+  absorb = 5L,
+  id_var = "id",
+  time_var = "week",
+  p_var = "yprev",
+  p2_var = "ypprev",
+  seed = diagnostic_seed,
+  n_draws = 50L
+) +
+  variogram_style
+
+diagnostic_plots <- list(
+  "empirical-sops.png" = empirical_sop_plot,
+  "empirical-transitions.png" = empirical_transition_plot,
+  "model-transitions.png" = model_transition_plot,
+  "empirical-correlation.png" = empirical_correlation_plot,
+  "model-correlation.png" = model_correlation_plot,
+  "empirical-variogram.png" = empirical_variogram_plot,
+  "model-variogram.png" = model_variogram_plot
+)
+
+iwalk(diagnostic_plots, \(plot, filename) {
+  save_figure(
+    plot,
+    here(figure_dir, filename),
+    height = case_when(
+      str_detect(filename, "transition") ~ 9,
+      str_detect(filename, "correlation") ~ 8,
+      .default = 5.5
+    )
+  )
+})
+```
+
+```{r}
+#| label: fig-taooh-sop-check
+#| fig-cap: "Empirical TAOOH state occupancy probabilities (death carried forward)"
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+empirical_sop_plot
+```
+
+- Correlation shown: dense weekly data make it estimable
+
+```{r}
+#| label: fig-taooh-correlation-check
+#| fig-cap: "Empirical and second-order model-derived TAOOH correlation structures in the first imputation"
+#| fig-subcap:
+#|   - "Empirical correlations"
+#|   - "Model-derived correlations"
+#| layout-ncol: 2
+#| fig-width: 8
+#| fig-height: 8
+#| echo: false
+
+empirical_correlation_plot
+model_correlation_plot
+```

@@ -1,0 +1,219 @@
+---
+title: "Best supportive care — unadjusted and adjusted model fitting"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(mice)
+library(rstanarm)
+library(survival)
+library(posterior)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+
+# Return the fit if it meets every diagnostic threshold, otherwise refit it
+# once with twice the iterations and a new seed.
+refit_if_unconverged <- function(model, seed) {
+  thresholds <- config$diagnostics
+  parameters <- summarise_draws(as_draws_array(model))
+  sampler <- rstan::get_sampler_params(model$stanfit, inc_warmup = FALSE)
+
+  bfmi <- map_dbl(
+    sampler,
+    \(chain) mean(diff(chain[, "energy__"])^2) / var(chain[, "energy__"])
+  )
+  divergences <- sum(map_dbl(sampler, \(chain) sum(chain[, "divergent__"])))
+  treedepth_hits <- sum(map_dbl(sampler, \(chain) sum(chain[, "treedepth__"] >= 10)))
+
+  passed <- max(parameters$rhat, na.rm = TRUE) <= thresholds$max_rhat &&
+    min(parameters$ess_bulk, na.rm = TRUE) >= thresholds$min_ess_bulk &&
+    min(parameters$ess_tail, na.rm = TRUE) >= thresholds$min_ess_tail &&
+    divergences <= thresholds$max_divergent_transitions &&
+    treedepth_hits <= thresholds$max_treedepth_exceeded &&
+    min(bfmi) >= thresholds$min_bfmi
+
+  if (passed) {
+    return(model)
+  }
+
+  retry_seed <- seed + 500000L
+  update(model, iter = 4000L, warmup = 2000L, seed = retry_seed)
+}
+
+results_dir <- here("analysis", "06-best-supportive-care", "results")
+imputation_dir <- file.path(results_dir, "imputations")
+model_dir <- file.path(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+m <- config$imputation$m_supporting
+
+event_columns <- c(cause_specific = "event_bsc", composite = "event_bsc_or_death")
+
+prepared <- read_parquet(file.path(results_dir, "prepared.parquet"))
+fixed_imputation <- readRDS(file.path(imputation_dir, "fixed.rds"))
+
+stopifnot(fixed_imputation$m == m, nrow(prepared) > 0L)
+```
+
+## Unadjusted and Adjusted (fixed)
+
+```{r}
+#| label: fit-unadjusted-and-fixed
+#| include: false
+unadjusted_seed_offset <- c(cause_specific = 1600, composite = 1601)
+fixed_seed_offset <- c(cause_specific = 1800, composite = 1900)
+
+for (endpoint_name in names(event_columns)) {
+  unadjusted_data <- prepared |>
+    transmute(
+      id,
+      tx,
+      time_to_bsc_days,
+      event = .data[[event_columns[[endpoint_name]]]]
+    )
+
+  stopifnot(sum(unadjusted_data$event) > 0L)
+
+  model_path <- file.path(model_dir, paste0("unadjusted-", endpoint_name, ".rds"))
+
+  if (!file.exists(model_path)) {
+    seed <- config$seeds$supporting + unadjusted_seed_offset[[endpoint_name]]
+
+    model <- stan_surv(
+      formula = Surv(time_to_bsc_days, event) ~ tx,
+      data = unadjusted_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = normal(0, 0.55),
+      prior_intercept = normal(0, 20),
+      prior_aux = dirichlet(1),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      refresh = 0L,
+      seed = seed
+    )
+    model <- refit_if_unconverged(model, seed)
+    saveRDS(model, model_path, compress = "xz")
+  }
+
+  for (index in seq_len(m)) {
+    completed <- complete(fixed_imputation, index)
+
+    stopifnot(
+      all(as.integer(as.character(completed$ecog_binary)) ==
+            derive_ecog_binary(completed$ecog_fstcnt)),
+      all(as.integer(as.character(completed$mgps)) ==
+            derive_mgps(completed$albumin, completed$c_reactive_protein))
+    )
+
+    fitting_data <- completed |>
+      transmute(
+        id,
+        tx,
+        time_to_bsc_days,
+        event = .data[[event_columns[[endpoint_name]]]],
+        ecog_binary,
+        stage_binary,
+        lung,
+        mgps = factor(mgps, levels = 0:2)
+      )
+
+    stopifnot(!anyNA(fitting_data), all(fitting_data$time_to_bsc_days > 0))
+
+    model_path <- file.path(
+      model_dir,
+      sprintf("fixed-%s-%02d.rds", endpoint_name, index)
+    )
+    if (file.exists(model_path)) next
+
+    seed <- config$seeds$supporting + (index - 1) * 1000 +
+      fixed_seed_offset[[endpoint_name]]
+
+    model <- stan_surv(
+      formula = Surv(time_to_bsc_days, event) ~
+        tx + ecog_binary + stage_binary + lung + mgps,
+      data = fitting_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = normal(location = rep(0, 6), scale = c(0.55, rep(2.5, 5))),
+      prior_intercept = normal(0, 20),
+      prior_aux = dirichlet(1),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      refresh = 0L,
+      seed = seed
+    )
+    model <- refit_if_unconverged(model, seed)
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```
+
+## Adjusted (hierarchical)
+
+```{r}
+#| label: fit-hierarchical
+#| include: false
+hierarchical_seed_offset <- c(cause_specific = 2800L, composite = 2900L)
+
+hierarchical_completed <- readRDS(file.path(imputation_dir, "hierarchical-completed.rds"))
+stopifnot(length(hierarchical_completed) == m)
+
+for (index in seq_len(m)) {
+  completed <- hierarchical_completed[[index]]
+
+  stopifnot(
+    all(as.integer(as.character(completed$ecog_binary)) ==
+          derive_ecog_binary(completed$ecog_fstcnt)),
+    all(as.integer(as.character(completed$mgps)) ==
+          derive_mgps(completed$albumin, completed$c_reactive_protein))
+  )
+
+  for (endpoint_name in names(event_columns)) {
+    fitting_data <- completed |>
+      mutate(event = .data[[event_columns[[endpoint_name]]]])
+
+    stopifnot(!anyNA(fitting_data), all(fitting_data$time_to_bsc_days > 0))
+
+    model_path <- file.path(
+      model_dir,
+      sprintf("hierarchical-%s-%02d.rds", endpoint_name, index)
+    )
+    if (file.exists(model_path)) next
+
+    seed <- index + hierarchical_seed_offset[[endpoint_name]]
+
+    model <- stan_surv(
+      formula = Surv(time_to_bsc_days, event) ~
+        tx + ecog_binary + stage_binary + mgps + (1 || diagnosis),
+      data = fitting_data,
+      basehaz = "ms",
+      basehaz_ops = list(df = 5),
+      prior = normal(location = rep(0, 5), scale = c(0.55, rep(2.5, 4))),
+      prior_intercept = normal(0, 20),
+      prior_aux = dirichlet(1),
+      prior_covariance = decov(),
+      chains = 4L,
+      cores = 4L,
+      iter = 2000L,
+      warmup = 1000L,
+      adapt_delta = 0.99,
+      refresh = 0L,
+      seed = seed
+    )
+    model <- refit_if_unconverged(model, seed)
+    saveRDS(model, model_path, compress = "xz")
+  }
+}
+```

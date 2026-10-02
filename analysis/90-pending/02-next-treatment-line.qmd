@@ -1,0 +1,23 @@
+---
+title: "Pending outcome: time to next treatment line"
+format: html
+execute:
+  eval: false
+  echo: false
+---
+
+# Time to next treatment line
+
+**Status: blocked — line-transition definition not ready.**
+
+The future treatment-line schema must provide `id`, unique `treatment_id`,
+`treatment_line`, `treatment_name`, `start_date`, `stop_date`, a controlled
+`line_transition_reason`, `progression_date`, `death_date`,
+`follow_up_end_date`, and an observation-completeness flag.  It must specify
+whether a same-line regimen change counts as a new line and how maintenance
+therapy is classified.
+
+The current `treatment_lines` schema has line numbers and start/stop dates but
+not the approved transition reason or completeness/censoring fields.  A line
+number alone cannot establish time to the *next* line, so no event indicator or
+model is produced.

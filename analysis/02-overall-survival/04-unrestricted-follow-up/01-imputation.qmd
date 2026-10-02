@@ -1,0 +1,163 @@
+---
+title: "Overall survival with unrestricted follow-up — imputation"
+subtitle: "Five completed datasets for the supporting PH and non-PH models"
+format: html
+---
+
+- Death indicator and Nelson–Aalen use unrestricted follow-up, not the 182-day endpoint.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(mice)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+# The passive mice methods call derive_ecog_binary() and derive_mgps(), so
+# they must be visible in the global environment.
+source(here("R", "covariates.R"))
+
+results_dir <- here(
+  "analysis", "02-overall-survival", "04-unrestricted-follow-up", "results"
+)
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+imputation_path <- file.path(results_dir, "imputations.rds")
+```
+
+## Imputation data
+
+```{r}
+#| label: prepare-imputation-data
+#| include: false
+
+imputation_data <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+) |>
+  # Column order sets the MICE visit sequence.
+  select(
+    id,
+    tx,
+    survival_time_days_unrestricted,
+    status_death_unrestricted,
+    ecog_fstcnt,
+    stage_binary,
+    lung,
+    age,
+    gender,
+    albumin,
+    bilirubin,
+    c_reactive_protein,
+    lactate_dehydrogenase
+  ) |>
+  mutate(
+    ecog_binary = derive_ecog_binary(ecog_fstcnt),
+    mgps = derive_mgps(albumin, c_reactive_protein),
+    ecog_fstcnt = ordered(ecog_fstcnt, levels = 0:4),
+    gender = factor(gender),
+    na_est = nelsonaalen(
+      pick(everything()),
+      timevar = survival_time_days_unrestricted,
+      statusvar = status_death_unrestricted
+    )
+  ) |>
+  # Passive variables last, so they update after their sources.
+  relocate(ecog_binary, mgps, .after = last_col())
+```
+
+## Imputation model
+
+```{r}
+#| label: impute
+#| include: false
+
+fixed_columns <- c(
+  "id",
+  "tx",
+  "survival_time_days_unrestricted",
+  "status_death_unrestricted",
+  "na_est"
+)
+
+methods <- make.method(imputation_data)
+methods[fixed_columns] <- ""
+methods["ecog_fstcnt"] <- "polr"
+methods["ecog_binary"] <- "~I(derive_ecog_binary(ecog_fstcnt))"
+methods["mgps"] <- "~I(derive_mgps(albumin, c_reactive_protein))"
+
+predictors <- make.predictorMatrix(imputation_data)
+predictors[fixed_columns, ] <- 0
+predictors[, c(
+  "id",
+  "survival_time_days_unrestricted",
+  "ecog_binary",
+  "mgps"
+)] <- 0
+
+if (!file.exists(imputation_path)) {
+  imputation <- mice(
+    imputation_data,
+    method = methods,
+    predictorMatrix = predictors,
+    m = config$imputation$m_supporting,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = config$seeds$supporting + 600,
+    printFlag = FALSE
+  )
+
+  saveRDS(imputation, imputation_path, compress = "xz")
+}
+
+imputation <- readRDS(imputation_path)
+```
+
+## Convergence and imputed distributions
+
+```{r}
+#| label: fig-supporting-os-unrestricted-imputation-traces
+#| fig-cap: "MICE trace plots for directly imputed variables in the unrestricted-follow-up OS analyses: mean and standard deviation of the imputed values, one line per completed dataset"
+#| fig-width: 8
+#| fig-height: 7
+#| echo: false
+
+plot_mice_traces(mice_chain_stats(imputation))
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-imputation-distributions
+#| fig-cap: "Observed (black) and imputed (pink, one line per completed dataset) distributions of the laboratory variables in the unrestricted-follow-up OS analyses"
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+lab_values <- imputed_values(
+  imputation,
+  c(
+    Albumin = "albumin",
+    Bilirubin = "bilirubin",
+    CRP = "c_reactive_protein",
+    LDH = "lactate_dehydrogenase"
+  )
+)
+
+plot_imputed_densities(lab_values$observed, lab_values$imputed)
+```
+
+```{r}
+#| label: fig-supporting-os-unrestricted-imputation-categories
+#| fig-cap: "Category proportions of the ordered ECOG score and the derived mGPS among observed values (black) and imputed values of each completed dataset (pink) in the unrestricted-follow-up OS analyses"
+#| fig-width: 8
+#| fig-height: 3.5
+#| echo: false
+
+imputation |>
+  imputed_category_proportions(c(ECOG = "ecog_fstcnt", mGPS = "mgps")) |>
+  plot_imputed_categories()
+```

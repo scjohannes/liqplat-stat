@@ -1,0 +1,144 @@
+---
+title: "Overall survival — imputation"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(mice)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+# The passive methods below call derive_ecog_binary() and derive_mgps(), so
+# they must exist in the global environment when mice() runs.
+source(here("R", "covariates.R"))
+
+results_dir <- here("analysis", "02-overall-survival", "01-main", "results")
+imputation_dir <- file.path(results_dir, "imputations")
+dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_main)
+imputation_paths <- file.path(
+  imputation_dir,
+  sprintf("imputation-%02d.rds", indices)
+)
+```
+
+```{r}
+#| label: build-imputation-data
+#| include: false
+
+# Gender is stored as text; mice treats a character column as constant and
+# drops it from the imputation models, so it enters as a factor.
+imputation_data <- read_parquet(file.path(results_dir, "prepared.parquet")) |>
+  mutate(
+    ecog_fstcnt = ordered(ecog_fstcnt, levels = 0:4),
+    gender = factor(gender)
+  ) |>
+  as.data.frame()
+
+imputation_data$na_est <- nelsonaalen(
+  imputation_data,
+  timevar = survival_time_days,
+  statusvar = event_death
+)
+
+# Passive variables last, so they update after their sources in each iteration.
+imputation_data <- imputation_data |>
+  relocate(ecog_binary, mgps, .after = last_col())
+```
+
+```{r}
+#| label: imputation-model
+#| include: false
+
+methods <- make.method(imputation_data)
+methods[c("id", "tx", "survival_time_days", "event_death", "na_est")] <- ""
+methods["ecog_fstcnt"] <- "polr"
+methods["ecog_binary"] <- "~I(derive_ecog_binary(ecog_fstcnt))"
+methods["mgps"] <- "~I(derive_mgps(albumin, c_reactive_protein))"
+
+predictors <- make.predictorMatrix(imputation_data)
+predictors[c("id", "tx", "survival_time_days", "event_death", "na_est"), ] <- 0
+predictors[, c("id", "survival_time_days", "ecog_binary", "mgps")] <- 0
+```
+
+```{r}
+#| label: impute-os
+#| include: false
+
+for (index in indices) {
+  if (file.exists(imputation_paths[[index]])) next
+
+  imputation <- mice(
+    imputation_data,
+    method = methods,
+    predictorMatrix = predictors,
+    m = 1,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = config$seeds$imputation + (index - 1) * 1000,
+    printFlag = FALSE
+  )
+  saveRDS(imputation, imputation_paths[[index]], compress = "xz")
+}
+
+# The per-index runs share data, methods and predictors, so they can be
+# combined into one mids object for the convergence and distribution plots.
+imputation <- imputation_paths |>
+  map(readRDS) |>
+  reduce(ibind)
+```
+
+## Convergence
+
+```{r}
+#| label: fig-os-imputation-traces
+#| fig-cap: "MICE trace plots for the imputed overall-survival variables: mean and standard deviation of the imputed values, one line per completed dataset"
+#| fig-width: 8
+#| fig-height: 7
+#| echo: false
+
+plot_mice_traces(mice_chain_stats(imputation))
+```
+
+## Observed and imputed distributions
+
+```{r}
+#| label: fig-os-imputation-distributions-continuous
+#| fig-cap: "Observed (black) and imputed (pink, one line per completed dataset) distributions of the laboratory variables"
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+lab_values <- imputed_values(
+  imputation,
+  c(
+    Albumin = "albumin",
+    Bilirubin = "bilirubin",
+    CRP = "c_reactive_protein",
+    LDH = "lactate_dehydrogenase"
+  )
+)
+
+plot_imputed_densities(lab_values$observed, lab_values$imputed)
+```
+
+```{r}
+#| label: fig-os-imputation-distributions-ecog
+#| fig-cap: "Category proportions of the ordered ECOG score and the derived mGPS among observed values (black) and imputed values of each completed dataset (pink)"
+#| fig-width: 8
+#| fig-height: 3.5
+#| echo: false
+
+imputation |>
+  imputed_category_proportions(c(ECOG = "ecog_fstcnt", mGPS = "mgps")) |>
+  plot_imputed_categories()
+```

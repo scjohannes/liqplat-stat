@@ -1,0 +1,192 @@
+---
+title: "CHIP classification"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+- SAP deviation: no multilevel model; the export supports only descriptive classification.
+
+```{r}
+#| label: setup
+
+library(here)
+library(arrow)
+library(knitr)
+library(tidyverse)
+
+source(here("R", "chip.R"))
+
+results_dir <- here("analysis", "10-implementation", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Classification
+
+```{r}
+#| label: chip-classification
+
+alterations <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-alterations.parquet")
+)
+samples <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet")
+)
+
+valid_mutations <- alterations |>
+  filter(alteration_type == "mutation", valid_ctdna_result %in% TRUE) |>
+  mutate(
+    chip_classification = classify_chip_status(
+      alteration_type,
+      found_in_solid_biopsy,
+      found_in_buffy_coat
+    )
+  )
+
+# Table order and labels; the report matches these labels exactly.
+class_labels <- c(
+  definite_chip = "CHIP: buffy-coat positive, solid-biopsy negative",
+  definite_non_chip = "Non-CHIP: buffy-coat negative",
+  tissue_positive_buffy_missing =
+    "Non-CHIP: solid-biopsy positive, buffy-coat sequencing missing",
+  possible_germline = "Possible germline: positive in tissue and buffy coat",
+  ctdna_only_unknown =
+    "Uncertain: ctDNA-only, buffy-coat sequencing missing",
+  unresolved = "Unresolved: other missing evidence"
+)
+
+valid_records <- nrow(valid_mutations)
+
+chip_status_summary <- valid_mutations |>
+  mutate(
+    chip_classification = factor(
+      chip_classification,
+      levels = names(class_labels)
+    )
+  ) |>
+  group_by(chip_classification, .drop = FALSE) |>
+  summarise(
+    mutation_records = n(),
+    unique_variants = n_distinct(variant_id, na.rm = TRUE),
+    patients = n_distinct(id, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    classification = unname(class_labels[as.character(chip_classification)]),
+    percent_of_valid_mutations = if (valid_records == 0L) {
+      NA_real_
+    } else {
+      100 * mutation_records / valid_records
+    },
+    valid_mutation_records = valid_records
+  ) |>
+  select(
+    classification,
+    mutation_records,
+    unique_variants,
+    patients,
+    percent_of_valid_mutations,
+    valid_mutation_records
+  )
+```
+
+## CHIP proportion under two assumptions
+
+```{r}
+#| label: chip-assumptions
+
+eligible_mutations <- valid_mutations |>
+  filter(
+    chip_classification %in% c(
+      "definite_chip",
+      "definite_non_chip",
+      "tissue_positive_buffy_missing",
+      "ctdna_only_unknown"
+    )
+  )
+
+valid_ctdna_patients <- samples |>
+  filter(valid_ctdna_result %in% TRUE, !is.na(id)) |>
+  pull(id) |>
+  n_distinct()
+
+# Classes counted as CHIP under each assumption; the report matches the
+# assumption labels exactly.
+chip_classes <- list(
+  "Assume ctDNA-only unknowns are not CHIP" = "definite_chip",
+  "Assume ctDNA-only unknowns are CHIP" = c(
+    "definite_chip",
+    "ctdna_only_unknown"
+  )
+)
+
+chip_assumption_summary <- imap(chip_classes, \(classes, assumption) {
+  chip_rows <- eligible_mutations |>
+    filter(chip_classification %in% classes)
+
+  tibble(
+    assumption = assumption,
+    chip_mutations = nrow(chip_rows),
+    assumption_eligible_mutation_records = nrow(eligible_mutations),
+    chip_mutation_percent = if_else(
+      nrow(eligible_mutations) == 0L,
+      NA_real_,
+      100 * nrow(chip_rows) / nrow(eligible_mutations)
+    ),
+    patients_with_chip_mutation = n_distinct(chip_rows$id, na.rm = TRUE),
+    valid_ctdna_patients = valid_ctdna_patients,
+    patients_with_chip_percent = if_else(
+      valid_ctdna_patients == 0L,
+      NA_real_,
+      100 * patients_with_chip_mutation / valid_ctdna_patients
+    )
+  )
+}) |>
+  list_rbind()
+
+write_parquet(
+  chip_status_summary,
+  file.path(results_dir, "chip-status-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  chip_assumption_summary,
+  file.path(results_dir, "chip-assumption-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: chip-status-table
+#| tbl-cap: "ctDNA mutation classification using solid-biopsy and buffy-coat findings"
+#| echo: false
+
+chip_status_summary |>
+  select(
+    classification,
+    mutation_records,
+    percent_of_valid_mutations,
+    unique_variants,
+    patients
+  ) |>
+  kable(digits = 1)
+```
+
+```{r}
+#| label: chip-assumption-table
+#| tbl-cap: "Proportion of valid ctDNA mutations classified as CHIP under two assumptions"
+#| echo: false
+
+chip_assumption_summary |>
+  select(
+    assumption,
+    chip_mutations,
+    assumption_eligible_mutation_records,
+    chip_mutation_percent,
+    patients_with_chip_mutation,
+    valid_ctdna_patients,
+    patients_with_chip_percent
+  ) |>
+  kable(digits = 1)
+```

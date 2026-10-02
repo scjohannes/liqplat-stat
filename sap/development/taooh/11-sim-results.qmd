@@ -1,0 +1,288 @@
+---
+title: Results of Simulations
+format:
+  typst:
+    papersize: a4
+    margin:
+      x: 2cm
+      y: 2.5cm
+    toc: false
+    columns: 1
+    tbl-cap-location: bottom
+---
+
+In this document we summarise and visualize the results of the simulations from step 6.
+
+## Setup
+
+### Load packages
+
+```{r}
+#| output: false
+library(here)
+library(fs)
+library(tidyverse)
+library(arrow)
+library(survival)
+library(patchwork)
+```
+
+### Set Threshold for P(Benefit)
+
+```{r}
+threshold <- 0.95
+```
+
+### Functions
+
+```{r}
+source(here("functions", "jackknife_mcse.R"))
+source(here("functions", "summarise-posterior.R"))
+source(here("functions", "summarise-iterations.R"))
+source(here("functions", "plot-rhat.R"))
+source(here("functions", "plot-p-benefit.R"))
+source(here("functions", "plot-posterior-distribution.R"))
+source(here("functions", "load-draws.R"))
+source(here("functions", "load-rhat-values.R"))
+```
+
+## Markov Models
+
+### H0
+
+#### Load draws + diagnostics
+```{r}
+# H0 misspecified, no clustering
+path <- here("2-hosp", "output", "sim-H0-misspec")
+misspec_h0 <- load_draws(path)
+rhat_misspec_h0 <- load_rhat_values(path = path)
+
+path <- here("2-hosp", "output", "sim-H0-correct-spec")
+true_h0 <- load_draws(path)
+rhat_true_h0 <- load_rhat_values(path = path)
+
+path <- here("2-hosp", "output", "sim-H0-cluster-misspec")
+misspec_cluster_h0 <- load_draws(path)
+rhat_misspec_clsuter_h0 <- load_rhat_values(path = path)
+```
+
+#### Convergence diagnostics
+```{r}
+#| fig-height: 6
+#| fig-width: 10
+rhat_plot_misspec_h0 <- rhat_misspec_h0 |>
+    plot_rhat(y = `beta.1.`)
+
+rhat_plot_true_h0 <- rhat_true_h0 |>
+    plot_rhat(y = `beta.1.`)
+
+rhat_plot_misspec_cluster_h0 <- rhat_misspec_clsuter_h0 |>
+    plot_rhat(y = `beta.1.`)
+
+rhat_plot_misspec_h0 + rhat_plot_true_h0 + rhat_plot_misspec_cluster_h0
+```
+
+#### Plot probability of benefit
+
+```{r}
+#| fig-height: 6
+#| fig-width: 10
+p1 <- misspec_h0 |>
+    plot_p_benefit(param = `tx=1`)
+
+p2 <- true_h0 |>
+    plot_p_benefit(param = `tx=1`)
+
+p3 <- misspec_cluster_h0 |>
+    plot_p_benefit(param = `tx=1`)
+
+p1 + p2 + p3
+```
+
+```{r}
+#| fig-height: 6
+#| fig-width: 10
+#plotting stacked posteriors
+p1 <- misspec_h0 |>
+  plot_posterior_distribution(x_variable = `tx=1`) +
+  labs(title = "Misspecified, no random intercept per patient.")
+
+p2 <- true_h0 |>
+  plot_posterior_distribution(x_variable = `tx=1`) +
+  labs(title = "Analysis model = data generating model")
+
+p1 + p2
+```
+
+```{r}
+summary_misspec_h0 <- misspec_h0 |>
+    group_by(iter) |>
+    summarise_posterior(
+        param_name = `tx=1`,
+        true_param_value = log(1),
+        threshold = 0.95) |>
+    summarise_iterations()
+
+summary_true_h0 <- true_h0 |>
+    group_by(iter) |>
+    summarise_posterior(
+        param_name = `tx=1`,
+        true_param_value = log(1),
+        threshold = 0.95) |>
+    summarise_iterations()
+
+summary_misspec_cluster_h0 <- misspec_cluster_h0 |>
+    group_by(iter) |>
+    summarise_posterior(
+        param_name = `tx=1`,
+        true_param_value = log(1),
+        threshold = 0.95) |>
+    summarise_iterations()
+
+# create dataframe with for comparison
+all_summaries <- bind_rows(
+  'true_model' = summary_true_h0,
+  'misspec_model' = summary_misspec_h0,
+  'misspec_cluster_model' = summary_misspec_cluster_h0,
+  .id = 'model_type'
+)
+
+# all_summaries |> tinytable::tt()
+
+formatted_summary <- all_summaries |>
+  # transmute creates new columns and drops the old ones
+  transmute(
+    Model = model_type,
+    # sprintf() formats the numbers and combines them into one string
+    `Point Estimate` = sprintf("%.3f (%.3f)", mean_point_estimate, mcse_point_estimate),
+    `Rejection Rate` = sprintf("%.3f (%.3f)", prob_rejection, mcse_prob_rejection),
+    Bias             = sprintf("%.3f (%.3f)", mean_bias, mcse_bias),
+    Coverage         = sprintf("%.3f (%.3f)", mean_coverage, mcse_coverage),
+    `Empirical SE`   = sprintf("%.3f (%.3f)", emp_SE, mcse_emp_SE),
+    `Model SE`       = sprintf("%.3f (%.3f)", mean_modSE, mcse_modSE)
+  )
+
+formatted_summary |> knitr::kable()
+
+saveRDS(all_summaries, file = here("2-hosp", "output", "sim-summary_h0.rds"))
+```
+
+### HA
+
+#### Load draws + diagnostics
+```{r}
+# H0 misspecified, no clustering
+path <- here("2-hosp", "output", "sim-HA-09")
+ha_09 <- load_draws(path)
+rhat_ha_09 <- load_rhat_values(path = path)
+
+path <- here("2-hosp", "output", "sim-HA-08")
+ha_08 <- load_draws(path)
+rhat_ha_08 <- load_rhat_values(path = path)
+
+path <- here("2-hosp", "output", "sim-HA-07")
+ha_07 <- load_draws(path)
+rhat_ha_07 <- load_rhat_values(path = path)
+```
+
+#### Convergence
+
+```{r}
+#| fig-height: 6
+#| fig-width: 10
+rhat_09 <- rhat_ha_09 |>
+    plot_rhat(y = `beta.1.`) +
+    labs(
+        subtitle = 'HA: OR = 0.9'
+    )
+
+rhat_08 <- rhat_ha_08 |>
+    plot_rhat(y = `beta.1.`) +
+    labs(
+        subtitle = 'HA: OR = 0.8'
+    )
+
+rhat_07 <- rhat_ha_07 |>
+    plot_rhat(y = `beta.1.`) +
+    labs(
+        subtitle = 'HA: OR = 0.7'
+    )
+
+rhat_09 + rhat_08 + rhat_07
+```
+
+#### P (Benefit)
+
+```{r}
+#| fig-height: 6
+#| fig-width: 10
+p1 <- ha_09 |>
+    plot_p_benefit(param = `tx`)
+
+p2 <- ha_08 |>
+    plot_p_benefit(param = `tx`)
+
+p3 <- ha_07 |>
+    plot_p_benefit(param = `tx`)
+
+p1 + p2 + p3
+```
+
+#### Summary
+
+```{r}
+summary_ha_09 <- ha_09 |>
+    group_by(iter) |>
+    summarise_posterior(
+        param_name = `tx`,
+        true_param_value = log(0.9),
+        threshold = 0.95) |>
+    summarise_iterations()
+
+summary_ha_08 <- ha_08 |>
+    group_by(iter) |>
+    summarise_posterior(
+        param_name = `tx`,
+        true_param_value = log(0.8),
+        threshold = 0.95) |>
+    summarise_iterations()
+
+summary_ha_07 <- ha_07 |>
+    group_by(iter) |>
+    summarise_posterior(
+        param_name = `tx`,
+        true_param_value = log(0.7),
+        threshold = 0.95) |>
+    summarise_iterations()
+
+# create dataframe for comparison
+all_summaries <- bind_rows(
+    'or_09' = summary_ha_09,
+    'or_08' = summary_ha_08,
+    'or_07' = summary_ha_07,
+    .id = 'model_type'
+)
+
+formatted_summary <- all_summaries |>
+    # transmute creates new columns and drops the old ones
+    transmute(
+        `True OR` = model_type,
+        `Clinical Effect` = case_when(
+            model_type == "or_09" ~ "~0.6 weeks",
+            model_type == "or_08" ~ "~1.2 weeks",
+            model_type == "or_07" ~ "~1.8 weeks"
+        ),
+        # sprintf() formats the numbers and combines them into one string
+        `Point Estimate (Median)` = sprintf("%.3f (%.3f)", mean_point_estimate, mcse_point_estimate),
+        `Rejection Rate` = sprintf("%.3f (%.3f)", prob_rejection, mcse_prob_rejection),
+        Bias             = sprintf("%.3f (%.3f)", mean_bias, mcse_bias),
+        Coverage         = sprintf("%.3f (%.3f)", mean_coverage, mcse_coverage),
+        `Empirical SE`   = sprintf("%.3f (%.3f)", emp_SE, mcse_emp_SE),
+        `Model SE`       = sprintf("%.3f (%.3f)", mean_modSE, mcse_modSE)
+    )
+
+#export
+saveRDS(formatted_summary, file = here("2-hosp", "output", "sim-summary_ha.rds"))
+
+formatted_summary |> knitr::kable()
+```

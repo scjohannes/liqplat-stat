@@ -1,0 +1,100 @@
+---
+title: "Plot for Recruitment"
+---
+
+```{r}
+library(here)
+library(tidyverse)
+library(arrow)
+library(ggplot2)
+```
+
+```{r}
+path <- here("data", "analysis-data", "liqplat_recruitment_data.parquet")
+
+
+file_info <- file.info(path)
+recruitment_data <- read_parquet(path) |>
+    filter(tx == 1)
+
+random_data <- recruitment_data |>
+  select(random_date) |>
+  mutate(random_date = as_date(random_date))  |>
+  arrange(random_date) |>
+  mutate(n = row_number(),
+         group = "Random selection for invitation to the trial")
+
+uptake_data <- recruitment_data  |>
+  mutate(icf_date = as_date(icddate)) |>
+  filter(!is.na(icf_date)) |> # Fixed typo in your original snippet "1"
+  select(icf_date) |>
+  arrange(icf_date) |>
+  mutate(n = row_number(),
+         group = "Informed consent signed")
+
+# --- Plotting Preparation ---
+
+# 1. Define custom colors to match Plotly hex codes
+custom_colors <- c(
+  "Random selection for invitation to the trial" = "#000000",
+  "Informed consent signed (Uptake)" = "#068194"
+)
+
+# 2. Calculate the center date to mimic xref="paper", x=0.5 for the annotation
+# We combine dates from both sets to find the true visual center of the plot
+all_dates <- c(random_data$random_date, uptake_data$icf_date)
+center_date <- min(all_dates, na.rm = TRUE) +
+               (max(all_dates, na.rm = TRUE) - min(all_dates, na.rm = TRUE)) / 2
+
+# --- The ggplot Code ---
+
+plot_recruitment <- ggplot() +
+  geom_line(data = random_data,
+            aes(x = random_date, y = n, color = group)) +
+  geom_point(data = random_data,
+             aes(x = random_date, y = n, color = group)) +
+  geom_line(data = uptake_data,
+            aes(x = icf_date, y = n, color = paste(group, "(Uptake)"))) +
+  geom_point(data = uptake_data,
+             aes(x = icf_date, y = n, color = paste(group, "(Uptake)"))) +
+
+  # 3. Target Line and Annotation
+  geom_hline(yintercept = 150, linetype = "dashed", color = "#068194") +
+  annotate("text", x = center_date, y = 145,
+           label = "recruitment target",
+           color = "#068194", size = 6, vjust = 1) +
+
+  # 4. Scales and Formatting
+  scale_color_manual(values = custom_colors, name = NULL) +
+  scale_y_continuous(
+    name = "number of patients",
+    limits = c(0, 200),
+    breaks = c(0, 50, 100, 150, 200)
+  ) +
+  scale_x_date(
+    name = "",
+    date_breaks = "3 months",
+    date_labels = "%b %Y"
+  ) +
+  # 5. Theme Configurations
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray95"),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(color = "black")
+  )
+
+plot_recruitment
+
+ggsave(
+  here("0-main-analysis", "img", "recruitment_plot.png"),
+  plot = plot_recruitment,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```

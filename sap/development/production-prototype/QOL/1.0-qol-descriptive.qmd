@@ -1,0 +1,118 @@
+---
+title: "Quality of life descriptive"
+---
+
+## Setup
+
+```{r}
+#| output: false
+library(here)
+library(tidyverse)
+library(patchwork)
+library(arrow)
+```
+
+## Data
+
+```{r}
+data_raw <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_long.parquet"))
+
+data_wide <- read_parquet(here("data", "analysis-data", "liqplat_analysis_data_wide.parquet")) |>
+  select(id, albumin, c_reactive_protein)
+```
+
+Invert QoL Data for modelling
+
+```{r}
+# data_raw <- data_raw |>
+#   mutate(
+#     baseline_q30 = case_when(
+#       baseline_q30 == 1 ~ 7,
+#       baseline_q30 == 2 ~ 6,
+#       baseline_q30 == 3 ~ 5,
+#       baseline_q30 == 4 ~ 4,
+#       baseline_q30 == 5 ~ 3,
+#       baseline_q30 == 6 ~ 2,
+#       baseline_q30 == 7 ~ 1,
+#       TRUE ~ baseline_q30
+#     ),
+#     y_qol = case_when(
+#       y_qol == 1 ~ 7,
+#       y_qol == 2 ~ 6,
+#       y_qol == 3 ~ 5,
+#       y_qol == 4 ~ 4,
+#       y_qol == 5 ~ 3,
+#       y_qol == 6 ~ 2,
+#       y_qol == 7 ~ 1,
+#       TRUE ~ y_qol
+#     )
+#   )
+```
+
+## Plot Observed data
+
+```{r}
+p <- data_raw |>
+    mutate(y_qol = if_else(day == 0, baseline_q30, y_qol)) |>
+    filter(day >= 0, !is.na(y_qol)) |>
+    mutate(tx_label = if_else(tx == 0, "Usual Care", "Single-Arm Trial")) |>
+    ggplot(aes(x = day, y = y_qol, group = id)) +
+    geom_point(alpha = 0.2) +
+    geom_line(alpha = 0.2) +
+    facet_wrap(~tx_label) +
+    labs(
+      x = "Day",
+      y = "Quality of life (1 = Very Poor to 7 = Excellent)"
+    )
+
+ggsave(
+  plot = p,
+  here("0-main-analysis", "img", "qol-descriptive.svg"),
+  width = 10,
+  height = 6,
+  dpi = 300)
+```
+
+## Questionnaire Completion
+
+Includes Baseline
+
+```{r}
+questionnaire_summary <- data_raw |>
+    mutate(y_qol = if_else(day == 0, baseline_q30, y_qol)) |>
+    filter(day >= 0) |>
+    group_by(tx) |>
+    summarize(
+        responses = sum(!is.na(y_qol)),
+        total_observations = n(),
+        completion_rate = mean(!is.na(y_qol)) * 100,
+        .groups = "drop"
+    ) |>
+    mutate(
+        tx_label = if_else(tx == 0, "External Comparator", "Single-Arm Trial")
+    ) |>
+    select(tx_label, responses, total_observations, completion_rate)
+
+questionnaire_summary
+```
+
+Excludes Baseline
+
+```{r}
+questionnaire_summary_fu <- data_raw |>
+    mutate(y_qol = if_else(day == 0, baseline_q30, y_qol)) |>
+    filter(day > 0) |>
+    group_by(tx) |>
+    summarize(
+        responses = sum(!is.na(y_qol)),
+        total_observations = n(),
+        completion_rate = mean(!is.na(y_qol)) * 100,
+        .groups = "drop"
+    ) |>
+    mutate(
+        tx_label = if_else(tx == 0, "External Comparator", "Single-Arm Trial")
+    ) |>
+    select(tx_label, responses, total_observations, completion_rate)
+
+questionnaire_summary_fu
+```

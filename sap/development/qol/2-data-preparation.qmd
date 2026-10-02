@@ -1,0 +1,106 @@
+---
+Title : QoL Data Preparation
+---
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+```
+
+```{r}
+df <- read_parquet("./data/qol_complete.parquet")
+```
+
+
+## Add treatment + lag + gap
+
+We will reduce the granularity of time to weeks, because we only have 1-3 measurements per patient over the span of 182 days.
+This means that we are making the implicit assumption that the quality of life assessed on any day of the week will be constant for that week. We also implicitly assume that a death on monday is equivalent to a day on sunday, or that a survival difference of 7 days is negligible. On the other hand, if we stuck to the granular scale of days instead of weeks, our estimates might convey a false sense of precision.
+
+
+```{r}
+q30_inverted_map <- c(
+        "1" = "7",
+        "2" = "6",
+        "3" = "5",
+        "4" = "4",
+        "5" = "3",
+        "6" = "2",
+        "7" = "1"
+      )
+
+baseline <- df |>
+    select(pat_id, baseline_q30, ecog_fstcnt, diagnosis, plan_fstcnt_coded, tx, gender, age, week) |>
+    mutate(
+        week = 0,
+        q30 = baseline_q30) |>
+    distinct()
+
+df <- df |>
+    bind_rows(baseline) |>
+    # We inverse the ordering of the states, so death = 8, becomes the absorbing state
+    mutate(,
+      y = factor(q30_inverted_map[as.character(q30)], ordered = TRUE)
+    ) |>
+    group_by(pat_id) |>
+    arrange(pat_id, week) |>
+    mutate(
+        yprev = lag(y, n = 1, order_by = week),
+        weekprev = lag(week, n = 1, order_by = week),
+        gap =  week - weekprev) |>
+    slice(-1) |>
+    ungroup()
+```
+
+## Expand the dataset to include every unobserved week
+
+For unobserved week, QoL will we interval-censored, i.e., [1-7], as we now it's not category 8.
+
+```{r}
+# censored_df <-
+#     df_weeks |>
+#     select(pat_id, gender, pat_age, ecog_fstcnt, diagnosis, plan_fstcnt_coded, status, tx, surv_weeks) |>
+#     distinct() |>
+#     mutate(week = list(1:26)) |>
+#     unnest(week) |>
+#     left_join(df_weeks, by = c("pat_id", "pat_age", "week", "gender", "ecog_fstcnt", "diagnosis", "plan_fstcnt_coded", "status", "tx", "surv_weeks")) |>
+#     mutate(
+#         yprev = as.numeric(as.character(yprev)),
+#         y = as.numeric(as.character(y))) |>
+#     group_by(pat_id) |>
+#     fill(yprev, .direction = "up") |>
+#     mutate(
+#         yprev = case_when(
+#             is.na(yprev) ~ lag(y, n = 1, order_by = week),
+#             TRUE ~ yprev
+#         ),
+#         y.a = case_when(
+#             !is.na(y) ~ y,
+#             TRUE ~ 1
+#         ),
+#         y.b = case_when(
+#             !is.na(y) ~ y,
+#             TRUE ~ 7
+#         )
+#     ) |>
+#     fill(yprev, .direction = "down") |>
+#     mutate(gap_group = cumsum(lag(!is.na(y), default = FALSE))) |>
+#     group_by(pat_id, gap_group) |>
+#     mutate(gap = row_number()) |>
+#     ungroup() |>
+#     select(-gap_group) |>
+#     filter(!(status == 1 & week > surv_weeks)) |>
+#     mutate(
+#       ecog_fstcnt = factor(ecog_fstcnt, ordered = FALSE), # rmsb can't handle ordered factor for predictions later on
+#       yprev = factor(yprev) # absolutely needs to be a factor
+#     )
+```
+
+## Export
+
+```{r}
+write_parquet(df, sink = "./data/qol_historic.parquet")
+```

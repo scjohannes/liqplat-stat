@@ -1,0 +1,64 @@
+---
+title: "OS non-proportional hazards — fitting"
+subtitle: "Supporting analysis with a time-varying treatment effect"
+format: html
+---
+
+- `rstanarm` default priors, not the SAP priors of the main model.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(survival)
+library(mice)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+imputation_dir <- here(
+  "analysis", "02-overall-survival", "01-main", "results", "imputations"
+)
+results_dir <- here(
+  "analysis", "02-overall-survival", "02-non-proportional-hazards", "results"
+)
+model_dir <- file.path(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: fit-supporting-os-nph
+#| include: false
+
+for (index in seq_len(config$imputation$m_supporting)) {
+  model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+  if (file.exists(model_path)) next
+
+  fitting_data <- readRDS(
+    file.path(imputation_dir, sprintf("imputation-%02d.rds", index))
+  ) |>
+    complete(1) |>
+    mutate(mgps = factor(mgps, levels = 0:2)) |>
+    # Zero follow-up is dropped from fitting only; standardization keeps it.
+    filter_out(survival_time_days == 0)
+
+  model <- stan_surv(
+    formula = Surv(survival_time_days, event_death) ~
+      tve(tx, df = 3, degree = 3) +
+      ecog_binary + stage_binary + lung + mgps,
+    data = fitting_data,
+    chains = 4L,
+    iter = 1000L,
+    warmup = 500L,
+    cores = 4L,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    seed = config$seeds$supporting + (index - 1) * 1000
+  )
+
+  saveRDS(model, model_path, compress = "xz")
+}
+```

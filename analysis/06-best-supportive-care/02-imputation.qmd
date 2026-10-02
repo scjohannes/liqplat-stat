@@ -1,0 +1,279 @@
+---
+title: "Best supportive care — fixed and hierarchical imputations"
+format: html
+---
+
+- Event indicators and both Nelson–Aalen hazards inform imputation [@Bonneville2022, sec. 4.1]
+- Not SMC-FCS: compatibility with the survival model is approximate
+
+```{r}
+#| label: setup
+#| include: false
+library(mice)
+library(miceadds)
+library(here)
+library(arrow)
+library(yaml)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+# The passive MICE methods below call these helpers by name.
+source(here("R", "covariates.R"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "06-best-supportive-care", "results")
+imputation_dir <- file.path(results_dir, "imputations")
+dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+
+m <- config$imputation$m_supporting
+
+prepared <- read_parquet(file.path(results_dir, "prepared.parquet"))
+```
+
+## Adjusted (fixed)
+
+```{r}
+#| label: impute-fixed
+#| include: false
+fixed_data <- prepared |>
+  mutate(
+    ecog_binary = derive_ecog_binary(ecog_fstcnt),
+    mgps = derive_mgps(albumin, c_reactive_protein),
+    ecog_fstcnt = ordered(ecog_fstcnt),
+    gender = factor(gender),
+    na_bsc = nelsonaalen(prepared, time_to_bsc_days, event_bsc),
+    na_death = nelsonaalen(prepared, time_to_bsc_days, event_death_before_bsc)
+  ) |>
+  # Passive variables go last so they update after their sources.
+  relocate(ecog_binary, mgps, .after = last_col())
+
+fixed_columns <- c(
+  "id", "tx", "time_to_bsc_days", "event_bsc", "event_death_before_bsc",
+  "event_bsc_or_death", "na_bsc", "na_death"
+)
+
+fixed_methods <- make.method(fixed_data)
+fixed_methods[fixed_columns] <- ""
+fixed_methods["ecog_fstcnt"] <- "polr"
+fixed_methods["ecog_binary"] <- "~I(derive_ecog_binary(ecog_fstcnt))"
+fixed_methods["mgps"] <- "~I(derive_mgps(albumin, c_reactive_protein))"
+
+fixed_predictors <- make.predictorMatrix(fixed_data)
+fixed_predictors[fixed_columns, ] <- 0
+fixed_predictors[
+  ,
+  c("id", "time_to_bsc_days", "event_bsc_or_death", "ecog_binary", "mgps")
+] <- 0
+
+fixed_path <- file.path(imputation_dir, "fixed.rds")
+
+if (!file.exists(fixed_path)) {
+  imputation <- mice(
+    fixed_data,
+    method = fixed_methods,
+    predictorMatrix = fixed_predictors,
+    m = m,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = config$seeds$supporting + 1700,
+    printFlag = FALSE
+  )
+  saveRDS(imputation, fixed_path, compress = "xz")
+}
+
+fixed_imputation <- readRDS(fixed_path)
+
+for (index in seq_len(m)) {
+  completed <- complete(fixed_imputation, index)
+
+  stopifnot(
+    !anyNA(completed[c("tx", "ecog_binary", "stage_binary", "lung", "mgps")]),
+    all(as.integer(as.character(completed$ecog_binary)) ==
+          derive_ecog_binary(completed$ecog_fstcnt)),
+    all(as.integer(as.character(completed$mgps)) ==
+          derive_mgps(completed$albumin, completed$c_reactive_protein))
+  )
+}
+```
+
+```{r}
+#| label: fig-bsc-imputation-traces
+#| fig-cap: "MICE traces for the five Adjusted (fixed) BSC imputations"
+#| fig-width: 8
+#| fig-height: 9
+#| echo: false
+plot_mice_traces(mice_chain_stats(fixed_imputation))
+```
+
+```{r}
+#| label: fig-bsc-imputation-distributions
+#| fig-cap: "Observed and imputed laboratory measurements for the Adjusted (fixed) BSC branch"
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+laboratory_variables <- c(
+  Albumin = "albumin",
+  Bilirubin = "bilirubin",
+  "C-reactive protein" = "c_reactive_protein",
+  "Lactate dehydrogenase" = "lactate_dehydrogenase"
+)
+
+fixed_laboratory_values <- imputed_values(fixed_imputation, laboratory_variables)
+plot_imputed_densities(
+  fixed_laboratory_values$observed,
+  fixed_laboratory_values$imputed
+)
+```
+
+```{r}
+#| label: tbl-bsc-imputation-events
+#| tbl-cap: "Logged MICE events for the Adjusted (fixed) branch, if any"
+#| echo: false
+if (!is.null(fixed_imputation$loggedEvents)) {
+  fixed_imputation$loggedEvents |>
+    count(dep, meth, out, name = "logged_events") |>
+    kable()
+}
+```
+
+## Adjusted (hierarchical)
+
+```{r}
+#| label: impute-hierarchical
+#| include: false
+diagnoses <- here("analysis", "00-data", "results", "analysis-cohort.parquet") |>
+  read_parquet() |>
+  select(id, diagnosis)
+
+hierarchical_prepared <- prepared |>
+  select(-lung) |>
+  left_join(diagnoses, by = "id", relationship = "one-to-one") |>
+  mutate(
+    diagnosis = factor(diagnosis),
+    diagnosis_id = as.integer(diagnosis),
+    gender = factor(gender)
+  )
+
+stopifnot(
+  !anyNA(hierarchical_prepared$diagnosis),
+  nrow(hierarchical_prepared) > 0L,
+  !anyDuplicated(hierarchical_prepared$id)
+)
+
+hierarchical_data <- hierarchical_prepared |>
+  mutate(
+    na_bsc = nelsonaalen(hierarchical_prepared, time_to_bsc_days, event_bsc),
+    na_death = nelsonaalen(
+      hierarchical_prepared,
+      time_to_bsc_days,
+      event_death_before_bsc
+    )
+  ) |>
+  select(-diagnosis)
+
+hierarchical_incomplete <- names(which(colSums(is.na(hierarchical_data)) > 0))
+
+hierarchical_methods <- make.method(hierarchical_data)
+hierarchical_methods[] <- ""
+# ECOG is imputed with a numeric working model.
+hierarchical_methods[hierarchical_incomplete] <- "2l.pmm"
+
+hierarchical_predictors <- make.predictorMatrix(hierarchical_data)
+hierarchical_predictors[, c("id", "time_to_bsc_days", "event_bsc_or_death")] <- 0
+hierarchical_predictors[!names(hierarchical_methods) %in% hierarchical_incomplete, ] <- 0
+# -2 marks diagnosis_id as the cluster variable.
+hierarchical_predictors[hierarchical_incomplete, "diagnosis_id"] <- -2
+
+hierarchical_path <- file.path(imputation_dir, "hierarchical.rds")
+
+if (!file.exists(hierarchical_path)) {
+  imputation <- mice(
+    hierarchical_data,
+    method = hierarchical_methods,
+    predictorMatrix = hierarchical_predictors,
+    m = m,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = 2701L,
+    printFlag = FALSE
+  )
+  saveRDS(imputation, hierarchical_path)
+}
+
+hierarchical_imputation <- readRDS(hierarchical_path)
+
+stopifnot(
+  hierarchical_imputation$m == m,
+  all(
+    hierarchical_imputation$predictorMatrix[hierarchical_incomplete, "diagnosis_id"] == -2
+  )
+)
+```
+
+```{r}
+#| label: complete-hierarchical
+#| include: false
+hierarchical_completed <- map(seq_len(m), function(index) {
+  completed <- complete(hierarchical_imputation, index) |>
+    mutate(
+      diagnosis = hierarchical_prepared$diagnosis,
+      ecog_binary = derive_ecog_binary(ecog_fstcnt),
+      mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2)
+    )
+
+  stopifnot(
+    !anyNA(completed),
+    all(completed$ecog_fstcnt %in% 0:4),
+    all(as.integer(as.character(completed$ecog_binary)) ==
+          derive_ecog_binary(completed$ecog_fstcnt)),
+    all(as.integer(as.character(completed$mgps)) ==
+          derive_mgps(completed$albumin, completed$c_reactive_protein))
+  )
+
+  completed
+})
+
+saveRDS(
+  hierarchical_completed,
+  file.path(imputation_dir, "hierarchical-completed.rds")
+)
+```
+
+```{r}
+#| label: fig-bsc-diagnosis-imputation-traces
+#| fig-cap: "MICE traces for the Adjusted (hierarchical) BSC imputations"
+#| fig-alt: "Means and standard deviations of imputed ECOG and laboratory values over 50 MICE iterations, with a separate trace for each of five diagnosis-level imputations."
+#| fig-width: 8
+#| fig-height: 9
+#| echo: false
+plot_mice_traces(mice_chain_stats(hierarchical_imputation))
+```
+
+```{r}
+#| label: fig-bsc-diagnosis-imputation-distributions
+#| fig-cap: "Observed and imputed laboratory measurements for the Adjusted (hierarchical) BSC branch"
+#| fig-alt: "Density curves compare observed laboratory measurements with each of the five completed diagnosis-level imputations for albumin, bilirubin, CRP, and LDH."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+hierarchical_laboratory_values <- imputed_values(
+  hierarchical_imputation,
+  laboratory_variables
+)
+plot_imputed_densities(
+  hierarchical_laboratory_values$observed,
+  hierarchical_laboratory_values$imputed
+)
+```
+
+```{r}
+#| label: tbl-bsc-diagnosis-imputation-events
+#| tbl-cap: "Logged MICE events for the Adjusted (hierarchical) branch, if any"
+#| echo: false
+if (!is.null(hierarchical_imputation$loggedEvents)) {
+  hierarchical_imputation$loggedEvents |>
+    count(dep, meth, out, name = "logged_events") |>
+    kable()
+}
+```

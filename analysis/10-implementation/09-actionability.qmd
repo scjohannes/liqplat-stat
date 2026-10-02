@@ -1,0 +1,460 @@
+---
+title: "ctDNA alteration actionability"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+library(here)
+library(arrow)
+library(knitr)
+library(tidyverse)
+
+source(here("R", "chip.R"))
+
+results_dir <- here("analysis", "10-implementation", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Data and denominator
+
+```{r}
+#| label: read-data
+
+alterations <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-alterations.parquet")
+)
+samples <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet")
+)
+
+# Patients with at least one valid ctDNA result, in order of first appearance.
+valid_patient_ids <- samples |>
+  filter(as.logical(valid_ctdna_result) %in% TRUE, !is.na(id)) |>
+  pull(id) |>
+  unique()
+
+if (length(valid_patient_ids) == 0L) {
+  stop(
+    "Actionability is pending because no valid ctDNA-result patient is recorded."
+  )
+}
+denominator <- length(valid_patient_ids)
+```
+
+```{r}
+#| label: alteration-types
+
+alteration_records <- alterations |>
+  mutate(
+    chip_classification = classify_chip_status(
+      alteration_type,
+      found_in_solid_biopsy,
+      found_in_buffy_coat
+    ),
+    # Harmonise the type only after classifying CHIP, which needs the source type.
+    alteration_type = tolower(trimws(as.character(alteration_type))),
+    alteration_type = case_when(
+      alteration_type %in% c("snv", "snp", "indel", "small_variant") ~
+        "mutation",
+      alteration_type %in% c("copy_number", "copy number", "copy-number") ~
+        "cnv",
+      alteration_type %in% c("structural_variant", "structural variant") ~
+        "fusion",
+      .default = alteration_type
+    )
+  )
+
+if (nrow(alteration_records) > 0L &&
+    !any(alteration_records$alteration_type %in% c("mutation", "cnv", "fusion"))) {
+  stop("Actionability alteration_type has no mutation, CNV, or fusion records.")
+}
+```
+
+## Records under the two CHIP assumptions
+
+```{r}
+#| label: scenario-records
+
+assumptions <- c(
+  "Assume ctDNA-only unknowns are not CHIP",
+  "Assume ctDNA-only unknowns are CHIP"
+)
+
+scenario_records <- cross_join(
+  tibble(assumption = assumptions),
+  alteration_records
+) |>
+  mutate(
+    non_chip = if_else(
+      alteration_type == "mutation",
+      chip_classification %in% c(
+        "definite_non_chip",
+        "tissue_positive_buffy_missing"
+      ) |
+        (assumption == assumptions[[1]] &
+           chip_classification == "ctdna_only_unknown"),
+      alteration_type %in% c("cnv", "fusion")
+    ),
+    sensitivity = trimws(as.character(sensitivity)),
+    resistance = trimws(as.character(resistance))
+  ) |>
+  filter(
+    as.logical(valid_ctdna_result) %in% TRUE,
+    non_chip,
+    alteration_type %in% c("mutation", "cnv", "fusion")
+  )
+```
+
+```{r}
+#| label: evidence-rule
+
+is_recorded_actionability_evidence <- function(level) {
+  values <- trimws(as.character(level))
+  non_evidence <- c(
+    "unknown", "not_assessed", "not assessed", "not available",
+    "not_applicable", "not applicable", "not tested", "not_tested",
+    "not performed", "not_performed", "not reported", "not_reported",
+    "pending", "no evidence", "no_evidence", "no level", "no_level",
+    "none", "na", "n/a"
+  )
+  !(is.na(values) | !nzchar(values) | tolower(values) %in% non_evidence)
+}
+```
+
+## Long actionability table
+
+```{r}
+#| label: long-table
+
+long <- scenario_records |>
+  pivot_longer(
+    c(sensitivity, resistance),
+    names_to = "actionability_type",
+    values_to = "actionability_level",
+    cols_vary = "slowest"
+  ) |>
+  mutate(
+    recorded_exact_level = !is.na(actionability_level) &
+      nzchar(actionability_level)
+  ) |>
+  select(
+    id,
+    alteration_id,
+    assumption,
+    alteration_type,
+    actionability_type,
+    actionability_level,
+    onkb_version,
+    onkb_updated_date,
+    recorded_exact_level,
+    non_chip,
+    valid_ctdna_result
+  )
+
+long_evidence <- long |>
+  filter(is_recorded_actionability_evidence(actionability_level))
+
+write_parquet(
+  long,
+  file.path(results_dir, "actionability-long.parquet"),
+  compression = "zstd"
+)
+```
+
+## Completeness of recorded levels
+
+```{r}
+#| label: completeness
+
+actionability_qc <- long |>
+  filter(!is_recorded_actionability_evidence(actionability_level)) |>
+  mutate(
+    recorded_value = trimws(as.character(actionability_level)),
+    recorded_value = case_when(
+      is.na(recorded_value) ~ "<missing>",
+      !nzchar(recorded_value) ~ "<blank>",
+      .default = recorded_value
+    )
+  ) |>
+  group_by(
+    assumption,
+    evidence_direction = actionability_type,
+    recorded_value
+  ) |>
+  summarise(
+    alteration_records_n = n(),
+    patients_n = n_distinct(id),
+    .groups = "drop"
+  )
+
+write_parquet(
+  actionability_qc,
+  file.path(results_dir, "actionability-level-completeness.parquet"),
+  compression = "zstd"
+)
+```
+
+## Alteration and patient counts by exact level
+
+```{r}
+#| label: current-levels
+
+current_levels <- tibble(
+  actionability_type = c(rep("sensitivity", 5L), rep("resistance", 2L)),
+  actionability_level = c("1", "2", "3A", "3B", "4", "R1", "R2"),
+  onkb_category = c(
+    "Standard care",
+    "Standard care",
+    "Investigational",
+    "Investigational",
+    "Hypothetical",
+    "Standard-care resistance",
+    "Investigational resistance"
+  ),
+  within_direction_position = c(
+    "1 (strongest)", "2", "3", "4", "5 (weakest)",
+    "1 (strongest)", "2"
+  ),
+  level_meaning = c(
+    "FDA-recognized biomarker predictive of response to an FDA-approved drug in the same indication",
+    "Standard-care biomarker recommended by the NCCN or other professional guidelines and predictive of response to an FDA-approved drug in the same indication",
+    "Compelling clinical evidence supports the biomarker as predictive of response to a drug in the same indication",
+    "Standard-care or investigational biomarker predictive of response to an FDA-approved or investigational drug in another indication",
+    "Compelling biological evidence supports the biomarker as predictive of response to a drug",
+    "Standard-care biomarker predictive of resistance to an FDA-approved drug in the same indication",
+    "Compelling clinical evidence supports the biomarker as predictive of resistance to a drug"
+  )
+) |>
+  mutate(level_position = row_number())
+```
+
+```{r}
+#| label: level-summary
+
+observed_levels <- long_evidence |>
+  distinct(
+    assumption,
+    id,
+    alteration_id,
+    actionability_type,
+    actionability_level,
+    .keep_all = TRUE
+  ) |>
+  group_by(assumption, actionability_type, actionability_level) |>
+  summarise(
+    onkb_versions = sort(unique(trimws(as.character(onkb_version)))) |>
+      str_subset(".") |>
+      paste(collapse = ", ") |>
+      na_if(""),
+    onkb_update_range = if (all(is.na(onkb_updated_date))) {
+      NA_character_
+    } else {
+      range(as.Date(onkb_updated_date), na.rm = TRUE) |>
+        format("%Y-%m-%d") |>
+        paste(collapse = " to ")
+    },
+    mutation_count = sum(alteration_type == "mutation"),
+    mutation_patient_count = n_distinct(id[alteration_type == "mutation"]),
+    cnv_count = sum(alteration_type == "cnv"),
+    cnv_patient_count = n_distinct(id[alteration_type == "cnv"]),
+    fusion_count = sum(alteration_type == "fusion"),
+    fusion_patient_count = n_distinct(id[alteration_type == "fusion"]),
+    alteration_count = n(),
+    patient_count = n_distinct(id),
+    .groups = "drop"
+  ) |>
+  mutate(
+    level_code = sub("^LEVEL[ _-]*", "", toupper(trimws(actionability_level)))
+  )
+
+zero_levels <- cross_join(
+  tibble(assumption = assumptions),
+  select(current_levels, actionability_type, level_code = actionability_level)
+) |>
+  anti_join(
+    observed_levels,
+    by = c("assumption", "actionability_type", "level_code")
+  ) |>
+  mutate(
+    actionability_level = paste0("LEVEL_", level_code),
+    onkb_versions = NA_character_,
+    onkb_update_range = NA_character_,
+    mutation_count = 0L,
+    mutation_patient_count = 0L,
+    cnv_count = 0L,
+    cnv_patient_count = 0L,
+    fusion_count = 0L,
+    fusion_patient_count = 0L,
+    alteration_count = 0L,
+    patient_count = 0L
+  )
+
+actionability_levels <- bind_rows(observed_levels, zero_levels) |>
+  left_join(
+    rename(current_levels, level_code = actionability_level),
+    by = c("actionability_type", "level_code")
+  ) |>
+  mutate(
+    onkb_category = coalesce(
+      onkb_category,
+      "Version-specific or non-canonical recorded value"
+    ),
+    level_meaning = coalesce(
+      level_meaning,
+      "Review the exact recorded value against the recorded OncoKB version"
+    ),
+    denominator_valid_ctdna_patients = denominator,
+    patient_proportion = patient_count / denominator
+  ) |>
+  arrange(
+    match(assumption, assumptions),
+    is.na(level_position),
+    level_position,
+    actionability_type,
+    actionability_level
+  ) |>
+  select(
+    assumption,
+    actionability_type,
+    actionability_level,
+    onkb_category,
+    within_direction_position,
+    level_meaning,
+    onkb_versions,
+    onkb_update_range,
+    mutation_count,
+    mutation_patient_count,
+    cnv_count,
+    cnv_patient_count,
+    fusion_count,
+    fusion_patient_count,
+    alteration_count,
+    patient_count,
+    denominator_valid_ctdna_patients,
+    patient_proportion
+  )
+
+write_parquet(
+  actionability_levels,
+  file.path(results_dir, "actionability-level-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+## Patient-level actionability
+
+```{r}
+#| label: patient-summary
+
+patient_evidence <- scenario_records |>
+  summarise(
+    any_sensitivity = any(is_recorded_actionability_evidence(sensitivity)),
+    any_resistance = any(is_recorded_actionability_evidence(resistance)),
+    .by = c(assumption, id)
+  )
+
+patient_summary <- cross_join(
+  tibble(assumption = assumptions),
+  tibble(id = valid_patient_ids)
+) |>
+  left_join(patient_evidence, by = c("assumption", "id")) |>
+  mutate(
+    any_sensitivity = replace_na(any_sensitivity, FALSE),
+    any_resistance = replace_na(any_resistance, FALSE),
+    any_actionable = any_sensitivity | any_resistance,
+    no_actionable_finding = !any_sensitivity & !any_resistance
+  )
+
+actionability_summary <- patient_summary |>
+  summarise(
+    "Any sensitivity evidence" = sum(any_sensitivity),
+    "Any resistance evidence" = sum(any_resistance),
+    "Any sensitivity or resistance evidence" = sum(any_actionable),
+    "Both sensitivity and resistance evidence" =
+      sum(any_sensitivity & any_resistance),
+    "No actionable finding" = sum(no_actionable_finding),
+    .by = assumption
+  ) |>
+  pivot_longer(
+    -assumption,
+    names_to = "patient_category",
+    values_to = "patient_count"
+  ) |>
+  mutate(
+    denominator_valid_ctdna_patients = denominator,
+    patient_proportion = patient_count / denominator
+  )
+
+write_parquet(
+  patient_summary,
+  file.path(results_dir, "actionability-patient-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  actionability_summary,
+  file.path(results_dir, "actionability-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+## Tables
+
+```{r}
+#| label: actionability-summary
+#| tbl-cap: "Patient-level actionability summary"
+
+kable(actionability_summary)
+```
+
+```{r}
+#| label: actionability-alteration-counts
+#| tbl-cap: "Non-CHIP alteration records by exact OncoKB therapeutic level"
+
+actionability_levels |>
+  select(
+    assumption,
+    evidence_direction = actionability_type,
+    exact_recorded_level = actionability_level,
+    onkb_category,
+    position_within_direction = within_direction_position,
+    level_meaning,
+    recorded_oncokb_versions = onkb_versions,
+    recorded_oncokb_update_range = onkb_update_range,
+    mutation_records_n = mutation_count,
+    cnv_records_n = cnv_count,
+    fusion_records_n = fusion_count,
+    all_alteration_records_n = alteration_count
+  ) |>
+  kable()
+```
+
+```{r}
+#| label: actionability-completeness
+#| tbl-cap: "Missing and non-evidence OncoKB level values retained for completeness checks"
+
+kable(actionability_qc)
+```
+
+```{r}
+#| label: actionability-patient-prevalence
+#| tbl-cap: "Patients with at least one non-CHIP alteration at each exact OncoKB therapeutic level"
+
+actionability_levels |>
+  select(
+    assumption,
+    evidence_direction = actionability_type,
+    exact_recorded_level = actionability_level,
+    patients_with_mutation_n = mutation_patient_count,
+    patients_with_cnv_n = cnv_patient_count,
+    patients_with_fusion_n = fusion_patient_count,
+    patients_with_any_alteration_n = patient_count,
+    validly_tested_patients_n = denominator_valid_ctdna_patients,
+    any_alteration_patient_proportion = patient_proportion
+  ) |>
+  kable()
+```

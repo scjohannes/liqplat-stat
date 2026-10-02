@@ -1,0 +1,169 @@
+---
+title: "LIQPLAT recruitment"
+format:
+  html:
+    toc: true
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library(arrow)
+library(here)
+library(knitr)
+library(scales)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "01-population", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Recruitment accounting
+
+```{r}
+#| label: recruitment-summary
+
+recruitment <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-recruitment.parquet")
+)
+
+randomized <- recruitment |>
+  filter(!is.na(randomization_date), group_assignment %in% c(0, 1))
+
+recruitment_summary <- tibble(
+  step = c(
+    "randomized_total",
+    "selected_for_invitation",
+    "not_selected",
+    "enrolled"
+  ),
+  n = c(
+    nrow(randomized),
+    sum(randomized$group_assignment == 1),
+    sum(randomized$group_assignment == 0),
+    sum(!is.na(randomized$informed_consent_date))
+  )
+)
+
+write_parquet(
+  recruitment_summary,
+  here(results_dir, "recruitment-summary.parquet")
+)
+```
+
+```{r}
+#| label: tbl-recruitment
+#| tbl-cap: "Aggregate recruitment accounting"
+#| echo: false
+
+recruitment_summary |>
+  kable()
+```
+
+## Cumulative recruitment
+
+```{r}
+#| label: recruitment-cumulative
+
+# Acceptance is a subset of the ctDNA group: same colour, dotted line.
+recruitment_colors <- c(
+  "Randomized comparison (total)" = "grey50",
+  "ctDNA" = group_colours[["ctDNA"]],
+  "Accepted invitation" = group_colours[["ctDNA"]]
+)
+recruitment_linetypes <- c(
+  "Randomized comparison (total)" = "solid",
+  "ctDNA" = "solid",
+  "Accepted invitation" = "13"
+)
+
+recruitment_events <- bind_rows(
+  randomized |>
+    transmute(date = randomization_date, group = "Randomized comparison (total)"),
+  randomized |>
+    filter(group_assignment == 1) |>
+    transmute(date = randomization_date, group = "ctDNA"),
+  randomized |>
+    filter(group_assignment == 1, !is.na(informed_consent_date)) |>
+    transmute(date = informed_consent_date, group = "Accepted invitation")
+)
+
+stopifnot(nrow(recruitment_events) > 0)
+
+plot_dates <- seq(
+  min(recruitment_events$date) - 1,
+  max(recruitment_events$date),
+  by = "day"
+)
+
+recruitment_cumulative <- recruitment_events |>
+  count(group, date) |>
+  complete(
+    group = names(recruitment_colors),
+    date = plot_dates,
+    fill = list(n = 0L)
+  ) |>
+  arrange(group, date) |>
+  group_by(group) |>
+  mutate(cumulative_n = cumsum(n)) |>
+  ungroup() |>
+  mutate(group = factor(group, levels = names(recruitment_colors)))
+```
+
+```{r}
+#| label: recruitment-plot
+
+recruitment_plot <- ggplot(
+  recruitment_cumulative,
+  aes(date, cumulative_n, colour = group, fill = group, linetype = group)
+) +
+  geom_area(position = "identity", alpha = 0.12, colour = NA) +
+  geom_line(linewidth = 0.7) +
+  geom_point(data = filter(recruitment_cumulative, n > 0), size = 1) +
+  geom_hline(yintercept = 150, linetype = "dashed", colour = reference_line_colour) +
+  annotate(
+    "text",
+    x = min(plot_dates),
+    y = 150,
+    label = "Uptake target: 150",
+    hjust = 0,
+    vjust = -0.6,
+    colour = reference_line_colour,
+    size = 3.5
+  ) +
+  scale_colour_manual(values = recruitment_colors, drop = FALSE) +
+  scale_fill_manual(values = recruitment_colors, drop = FALSE) +
+  scale_linetype_manual(values = recruitment_linetypes, drop = FALSE) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(
+    limits = c(0, NA),
+    breaks = breaks_width(50),
+    expand = expansion(mult = c(0, 0.08))
+  ) +
+  labs(
+    x = NULL,
+    y = "Cumulative number of patients",
+    colour = NULL,
+    fill = NULL,
+    linetype = NULL
+  )
+
+save_figure(
+  recruitment_plot,
+  here(results_dir, "recruitment-cumulative.svg"),
+  height = 4.5
+)
+```
+
+```{r}
+#| label: fig-recruitment
+#| echo: false
+#| fig-width: 8
+#| fig-height: 4.5
+#| fig-cap: "Cumulative recruitment: both randomized groups combined, patients selected for invitation (group_assignment = 1), and selected patients with recorded informed consent. Randomized and selected patients are counted on their randomization date; acceptance is counted on the informed consent date. Shaded areas overlap and are not additive."
+#| fig-alt: "Three cumulative recruitment curves for the randomized comparison, selection for invitation, and invitation acceptance, with a dashed uptake target at 150 patients."
+
+recruitment_plot
+```

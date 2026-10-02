@@ -1,0 +1,127 @@
+---
+title: "Molecular tumour board outcomes"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+- Descriptive; not prespecified in the SAP.
+
+```{r}
+#| label: setup
+
+library(here)
+library(arrow)
+library(knitr)
+library(tidyverse)
+
+results_dir <- here("analysis", "10-implementation", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Follow-up from consent
+
+```{r}
+#| label: accepted-patients
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+)
+
+accepted <- cohort |>
+  filter(invitation_accepted == 1L) |>
+  mutate(
+    # Missing vital status gives a missing endpoint date, not a censored one.
+    endpoint_date = if_else(
+      status_death_unrestricted == 1L,
+      death_date,
+      last_known_alive_date
+    ),
+    # enrolled_date is the consent date in the export.
+    follow_up_days_from_consent = as.numeric(
+      endpoint_date - as.Date(enrolled_date)
+    ),
+    has_eight_weeks = !is.na(follow_up_days_from_consent) &
+      follow_up_days_from_consent >= 56
+  )
+
+if (nrow(accepted) == 0L) stop("No patients accepted the invitation.")
+
+# Accepters with known follow-up shorter than eight weeks, and with none.
+short_follow_up <- accepted |>
+  filter(!has_eight_weeks, !is.na(follow_up_days_from_consent))
+
+died_before_eight_weeks <- sum(short_follow_up$status_death_unrestricted == 1L)
+censored_before_eight_weeks <- sum(
+  short_follow_up$status_death_unrestricted == 0L
+)
+follow_up_date_missing <- sum(is.na(accepted$follow_up_days_from_consent))
+```
+
+## MTB outcomes
+
+```{r}
+#| label: mtb-outcomes
+
+mtb_summary <- bind_rows(
+  "All invitation accepters" = accepted,
+  "At least 8 weeks from consent" = filter(accepted, has_eight_weeks),
+  .id = "population"
+) |>
+  summarise(
+    patients = n(),
+    registered = sum(mtb_reg == 1L, na.rm = TRUE),
+    registered_percent = 100 * registered / patients,
+    discussed = sum(n_mtb >= 1, na.rm = TRUE),
+    discussed_percent = 100 * discussed / patients,
+    recommendation_report_sent = sum(mtb_n_reports >= 1, na.rm = TRUE),
+    recommendation_report_sent_percent =
+      100 * recommendation_report_sent / patients,
+    missing_registration = sum(is.na(mtb_reg)),
+    missing_discussion = sum(is.na(n_mtb)),
+    missing_recommendation_report = sum(is.na(mtb_n_reports)),
+    .by = population
+  ) |>
+  mutate(
+    died_before_eight_weeks = died_before_eight_weeks,
+    censored_before_eight_weeks = censored_before_eight_weeks,
+    follow_up_date_missing = follow_up_date_missing
+  )
+
+distribution <- accepted |>
+  count(n_mtb, name = "patients")
+
+write_parquet(
+  mtb_summary,
+  file.path(results_dir, "mtb-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  distribution,
+  file.path(results_dir, "mtb-discussion-distribution.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: mtb-summary
+#| tbl-cap: "Molecular tumour board outcomes"
+#| echo: false
+
+mtb_summary |>
+  select(
+    population,
+    patients,
+    registered,
+    registered_percent,
+    discussed,
+    discussed_percent,
+    recommendation_report_sent,
+    recommendation_report_sent_percent,
+    missing_registration,
+    missing_discussion,
+    missing_recommendation_report
+  ) |>
+  kable()
+```

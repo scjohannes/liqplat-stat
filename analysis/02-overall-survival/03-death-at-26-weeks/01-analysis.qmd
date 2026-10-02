@@ -1,0 +1,174 @@
+---
+title: "Death at 26 weeks — supporting analysis"
+subtitle: "Unadjusted Bayesian logistic model on completed 182-day vital status"
+format: html
+---
+
+- Censored alive before day 182: death drawn from the QoL landmark vital-status model.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(rstanarm)
+library(here)
+library(arrow)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "posterior.R"))
+
+qol_dir <- here("analysis", "03-quality-of-life")
+results_dir <- here(
+  "analysis", "02-overall-survival", "03-death-at-26-weeks", "results"
+)
+model_dir <- file.path(results_dir, "models")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+n_draws <- config$posterior_draws$supporting
+horizon_days <- config$analysis$horizon_days
+```
+
+```{r}
+#| label: prepare-data
+#| include: false
+
+prepared <- read_parquet(file.path(qol_dir, "results", "prepared.parquet")) |>
+  mutate(
+    diagnosis_group = factor(
+      diagnosis_group,
+      levels = unique(diagnosis_group[order(diagnosis_code)])
+    ),
+    gender = factor(gender),
+    age_scaled = scale(age)
+  ) |>
+  as.data.frame()
+
+vital_status_model <- readRDS(
+  file.path(
+    qol_dir, "02-six-month-landmark", "results", "vital-status-model.rds"
+  )
+)
+
+unresolved <- prepared$event_death == 0L &
+  prepared$survival_time_days < horizon_days
+```
+
+## Completing 182-day vital status
+
+```{r}
+#| label: complete-vital-status
+#| include: false
+
+completed_datasets <- indices |>
+  map(function(index) {
+    death_182 <- prepared$event_death
+    conditional_survival <- rep(NA_real_, nrow(prepared))
+
+    if (any(unresolved)) {
+      predicted_survival <- posterior_survfit(
+        vital_status_model,
+        newdata = prepared[unresolved, ],
+        type = "surv",
+        times = horizon_days,
+        condition = TRUE,
+        last_time = "survival_time_days",
+        standardise = FALSE,
+        extrapolate = FALSE,
+        draws = 1L,
+        seed = config$seeds$supporting + (index - 1) * 1000 + 2600,
+        return_matrix = TRUE
+      )
+      conditional_survival[unresolved] <- as.numeric(
+        predicted_survival[[1L]][1L, ]
+      )
+
+      set.seed(config$seeds$supporting + (index - 1) * 1000 + 2700)
+      death_182[unresolved] <- rbinom(
+        n = sum(unresolved),
+        size = 1L,
+        prob = 1 - conditional_survival[unresolved]
+      )
+    }
+
+    tibble(
+      id = prepared$id,
+      tx = prepared$tx,
+      death_182 = death_182,
+      conditional_survival = conditional_survival,
+      imputation = index
+    )
+  })
+
+saveRDS(
+  completed_datasets,
+  file.path(results_dir, "imputations.rds"),
+  compress = "xz"
+)
+```
+
+## Logistic models and pooled risks
+
+```{r}
+#| label: fit-and-pool
+#| include: false
+
+draws <- indices |>
+  map(function(index) {
+    model_path <- file.path(model_dir, sprintf("model-%02d.rds", index))
+    if (!file.exists(model_path)) {
+      model <- stan_glm(
+        death_182 ~ tx,
+        data = completed_datasets[[index]],
+        family = binomial(),
+        chains = 4L,
+        iter = 1000L,
+        warmup = 500L,
+        cores = 4L,
+        seed = config$seeds$supporting + (index - 1) * 1000 + 2800
+      )
+      saveRDS(model, model_path, compress = "xz")
+    }
+    posterior <- as.matrix(readRDS(model_path))
+
+    set.seed(config$seeds$supporting + (index - 1) * 1000 + 2900)
+    posterior <- posterior[
+      sample.int(nrow(posterior), n_draws),
+      ,
+      drop = FALSE
+    ]
+    intercept <- posterior[, "(Intercept)"]
+    treatment <- posterior[, "tx"]
+
+    tibble(
+      draw = seq_len(n_draws),
+      death_risk_usual_care = plogis(intercept),
+      death_risk_ctdna = plogis(intercept + treatment),
+      death_risk_difference = plogis(intercept + treatment) -
+        plogis(intercept),
+      imputation = index
+    )
+  }) |>
+  list_rbind()
+
+risk_difference_summary <- draws$death_risk_difference |>
+  summarize_posterior_draws() |>
+  mutate(
+    imputations = length(indices),
+    posterior_draws_per_imputation = n_draws,
+    computationally_reduced = TRUE
+  )
+
+write_parquet(
+  draws,
+  file.path(results_dir, "draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  risk_difference_summary,
+  file.path(results_dir, "summary.parquet"),
+  compression = "zstd"
+)
+```
