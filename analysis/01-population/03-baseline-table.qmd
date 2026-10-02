@@ -1,69 +1,168 @@
 ---
 title: "LIQPLAT baseline population table"
 format: html
-execute:
-  echo: false
-  warning: false
-  message: false
 ---
 
-Table 1 describes the randomized population by invitation assignment, irrespective
-of whether an invitation was accepted. Continuous variables are summarized by
-median [Q1, Q3]; categorical variables by n (%), using the full column denominator.
-Missing values remain visible; no multiple imputation is used.
+- ITT population by assignment, regardless of invitation acceptance.
 
 ```{r}
-#| label: baseline-table-data
-#| include: false
+#| label: setup
+#| message: false
 
-source(here::here("R", "analysis-config.R"))
-source(here::here("R", "survival-helpers.R"))
-source(here::here("R", "baseline-table-helpers.R"))
-config <- read_analysis_config()
-# Read the current V5 cohort, including the newly exported baseline Q29.
-cohort <- arrow::read_parquet(here::here(
-  config_get(config, "paths", "private_data"), "cohort_follow_up.parquet"
-)) |> as.data.frame()
+library(arrow)
+library(here)
+library(table1)
+library(tidyverse)
 
-required <- c("id", "tx", "gender", "age", "ecog_fstcnt", "baseline_q29",
-              "baseline_q30", "diagnosis", "albumin", "c_reactive_protein", "stage_binary")
+source(here("R", "covariates.R"))
 
-stopifnot(all(required %in% names(cohort)), !anyDuplicated(cohort$id),
-          all(cohort$tx %in% 0:1),
-          all(is.na(cohort$gender) | cohort$gender %in% c("female", "male")),
-          all(is.na(cohort$ecog_fstcnt) | cohort$ecog_fstcnt %in% 0:4),
-          all(is.na(cohort$stage_binary) | cohort$stage_binary %in% 0:1))
+private_dir <- here("data", "private")
+results_dir <- here("analysis", "01-population", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
 
-cohort$group <- factor(cohort$tx, levels = c(1, 0),
-  labels = c("Selected for SAT invitation", "Usual care"))
+```{r}
+#| label: read
 
-cohort$gender <- factor(cohort$gender, levels = c("female", "male"), labels = c("Female", "Male"))
+cohort <- read_parquet(here(private_dir, "cohort_follow_up.parquet")) |>
+  as.data.frame()
 
-cohort$ecog_fstcnt <- factor(cohort$ecog_fstcnt, levels = 0:4)
+qol <- read_parquet(here(private_dir, "qol.parquet")) |>
+  as.data.frame()
 
-qol <- arrow::read_parquet(here::here(
-  config_get(config, "paths", "private_data"), "qol.parquet"
-)) |> as.data.frame()
+# The first-contact date is exported as date_visit (legacy name visit_date).
+visit_field <- intersect(c("date_visit", "visit_date"), names(cohort))
 
-cohort <- complete_table_baseline_qol(cohort, qol)
+stopifnot(
+  length(visit_field) == 1L,
+  c(
+    "id", "tx", "gender", "age", "ecog_fstcnt", "baseline_q29",
+    "baseline_q30", "diagnosis", "albumin", "c_reactive_protein", "stage_binary"
+  ) %in% names(cohort),
+  c("id", "assessment_id", "questionnaire_date", "q29", "q30") %in% names(qol),
+  !anyDuplicated(cohort$id),
+  cohort$tx %in% 0:1,
+  is.na(cohort$gender) | cohort$gender %in% c("female", "male"),
+  is.na(cohort$ecog_fstcnt) | cohort$ecog_fstcnt %in% 0:4,
+  is.na(cohort$stage_binary) | cohort$stage_binary %in% 0:1
+)
+```
 
-cohort$ql2 <- baseline_ql2(cohort$baseline_q29, cohort$baseline_q30)
+## Baseline QoL items
 
-cohort$diagnosis <- snomed_to_diagnosis(as.character(cohort$diagnosis))
+```{r}
+#| label: baseline-items
 
-if (any(grepl("^SNM_", cohort$diagnosis))) stop("Add labels for unmapped diagnosis codes.")
+visits <- tibble(
+  id = cohort$id,
+  date_visit = as.Date(cohort[[visit_field]])
+)
 
-cohort$diagnosis <- factor(cohort$diagnosis)
-cohort$mgps <- factor(derive_mgps(cohort$albumin, cohort$c_reactive_protein), levels = 0:2)
+closest_items <- qol |>
+  select(id, assessment_id, questionnaire_date, q29, q30) |>
+  pivot_longer(
+    c(q29, q30),
+    names_to = "item",
+    names_transform = \(item) factor(item, levels = c("q29", "q30")),
+    values_to = "value"
+  ) |>
+  filter(!is.na(value), !is.na(questionnaire_date)) |>
+  inner_join(visits, by = "id") |>
+  mutate(
+    distance_days = abs(as.integer(as.Date(questionnaire_date) - date_visit))
+  ) |>
+  filter(!is.na(distance_days), distance_days <= 14L) |>
+  arrange(id, item, distance_days, questionnaire_date, assessment_id) |>
+  distinct(id, item, .keep_all = TRUE) |>
+  select(id, item, value) |>
+  # names_expand keeps both closest_ columns even if one item has no candidate.
+  pivot_wider(
+    names_from = item,
+    values_from = value,
+    names_prefix = "closest_",
+    names_expand = TRUE
+  )
 
-cohort$stage_binary <- factor(cohort$stage_binary, levels = 0:1,
-  labels = c("Locally advanced", "Metastasised"))
-  
-labels <- c(gender = "Gender", age = "Age (years)", ecog_fstcnt = "ECOG at first contact",
-  ql2 = "Global health status / QoL (QL2, 0–100)", diagnosis = "Diagnosis",
-  mgps = "Modified Glasgow Prognostic Score (mGPS)", stage_binary = "Disease stage")
+cohort <- cohort |>
+  left_join(closest_items, by = "id") |>
+  mutate(
+    baseline_q29 = coalesce(baseline_q29, closest_q29),
+    baseline_q30 = coalesce(baseline_q30, closest_q30)
+  ) |>
+  select(-closest_q29, -closest_q30)
+```
 
-for (variable in names(labels)) attr(cohort[[variable]], "label") <- labels[[variable]]
+## QL2 score
+
+- Scored per the [EORTC QLQ-C30 manual](https://qol.eortc.org/app/uploads/sites/2/2018/02/SCmanual.pdf).
+
+```{r}
+#| label: ql2
+
+stopifnot(
+  "Baseline QoL items must be integers from 1 to 7 or missing." =
+    (is.na(cohort$baseline_q29) | cohort$baseline_q29 %in% 1:7) &
+      (is.na(cohort$baseline_q30) | cohort$baseline_q30 %in% 1:7)
+)
+
+cohort <- cohort |>
+  mutate(
+    # Items run 1 (best) to 7 (worst), so reverse them (8 - item) first.
+    ql2 = (rowMeans(cbind(8 - baseline_q29, 8 - baseline_q30), na.rm = TRUE) - 1) /
+      6 * 100,
+    # rowMeans() of two missing items is NaN.
+    ql2 = if_else(is.nan(ql2), NA_real_, ql2)
+  )
+
+stopifnot(
+  "QL2 must lie within [0, 100]." =
+    is.na(cohort$ql2) | between(cohort$ql2, 0, 100)
+)
+```
+
+## Table variables
+
+```{r}
+#| label: table-variables
+
+cohort <- cohort |>
+  mutate(
+    group = factor(
+      tx,
+      levels = c(1, 0),
+      labels = c("ctDNA", "Usual care")
+    ),
+    gender = factor(gender, levels = c("female", "male"), labels = c("Female", "Male")),
+    ecog_fstcnt = factor(ecog_fstcnt, levels = 0:4),
+    diagnosis = snomed_to_diagnosis(as.character(diagnosis)),
+    mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2),
+    stage_binary = factor(
+      stage_binary,
+      levels = 0:1,
+      labels = c("Locally advanced", "Metastasised")
+    )
+  )
+
+if (any(str_detect(cohort$diagnosis, "^SNM_"))) {
+  stop("Add labels for unmapped diagnosis codes.")
+}
+
+cohort <- cohort |>
+  mutate(diagnosis = factor(diagnosis))
+
+label(cohort$gender) <- "Gender"
+label(cohort$age) <- "Age (years)"
+label(cohort$ecog_fstcnt) <- "ECOG at first contact"
+label(cohort$ql2) <- "Global health status / QoL (QL2, 0–100)"
+label(cohort$diagnosis) <- "Diagnosis"
+label(cohort$mgps) <- "Modified Glasgow Prognostic Score (mGPS)"
+label(cohort$stage_binary) <- "Disease stage"
+```
+
+## Table 1
+
+```{r}
+#| label: baseline-table
 
 footnote <- paste(
   "PROMs are considered up to 14 days after first contact.",
@@ -73,44 +172,45 @@ footnote <- paste(
   "Percentages include missing observations in the denominator."
 )
 
-baseline_table <- table1::table1(
+baseline_table <- table1(
   ~ gender + age + ecog_fstcnt + ql2 + diagnosis + mgps + stage_binary | group,
-  data = cohort, overall = "Overall", render.continuous = c(. = "Median [Q1, Q3]"),
-  render.categorical = "FREQ (PCT%)", topclass = "Rtable1-zebra",
+  data = cohort,
+  overall = "Overall",
+  render.continuous = c(. = "Median [Q1, Q3]"),
+  render.categorical = "FREQ (PCT%)",
+  topclass = "Rtable1-zebra",
   footnote = footnote
 )
 
-result_dir <- here::here("analysis", "01-population", "results")
-dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
-saveRDS(baseline_table, file.path(result_dir, "baseline-table1.rds"))
+saveRDS(baseline_table, here(results_dir, "baseline-table1.rds"))
 
-# Store aggregate display cells, never participant-level records, for other formats.
-arrow::write_parquet(as.data.frame(baseline_table),
-  file.path(result_dir, "baseline-characteristics.parquet"))
+# Aggregate display cells only, never participant-level records.
+write_parquet(
+  as.data.frame(baseline_table),
+  here(results_dir, "baseline-characteristics.parquet")
+)
 ```
 
 ```{r}
 #| label: tbl-baseline-table1
+#| echo: false
 #| tbl-cap: "Baseline characteristics by randomized invitation assignment."
 
 baseline_table
 ```
 
-QL2 follows the [EORTC QLQ-C30 scoring manual](https://qol.eortc.org/app/uploads/sites/2/2018/02/SCmanual.pdf).
-Dedicated baseline values take priority. For each missing item, the closest
-nonmissing questionnaire response within 14 days before or after first contact
-is used, including eligible post-contact measurements. Ties use the earlier
-questionnaire date, then assessment ID, as in the primary QoL analysis.
-Selection is item-specific, so Q29 and Q30 can originate from different
-questionnaires when item availability differs.
-The broad diagnosis categories use the labels from the original project Table 1,
-without restricting the display to the most common diagnoses or using OncoTree.
-
 ```{r}
+#| label: ql2-item-availability
+#| echo: false
 #| results: asis
 
-cat(sprintf("QL2 uses both baseline items for %d participants and one item for %d; %d have neither item.\n",
-  sum(!is.na(cohort$baseline_q29) & !is.na(cohort$baseline_q30)),
-  sum(xor(is.na(cohort$baseline_q29), is.na(cohort$baseline_q30))),
-  sum(is.na(cohort$baseline_q29) & is.na(cohort$baseline_q30))))
+n_both_items <- sum(!is.na(cohort$baseline_q29) & !is.na(cohort$baseline_q30))
+n_one_item <- sum(xor(is.na(cohort$baseline_q29), is.na(cohort$baseline_q30)))
+n_no_item <- sum(is.na(cohort$baseline_q29) & is.na(cohort$baseline_q30))
+
+str_glue(
+  "QL2 uses both baseline items for {n_both_items} participants and one item ",
+  "for {n_one_item}; {n_no_item} have neither item.\n"
+) |>
+  cat()
 ```

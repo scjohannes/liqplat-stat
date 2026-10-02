@@ -1,69 +1,350 @@
 ---
 title: "LIQPLAT CONSORT participant flow"
 format: html
-execute:
-  echo: false
-  warning: false
-  message: false
 ---
 
-Participant flow uses one anonymous row per candidate from the seven-column
-V4 CONSORT export. Screening reasons and invitation outcomes are taken directly
-from the export, without inferring them from missing acceptance values.
+```{r}
+#| label: setup
+#| message: false
+
+library(arrow)
+library(here)
+library(knitr)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "01-population", "results")
+figure_dir <- here(results_dir, "figures")
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Allowed values
 
 ```{r}
-#| label: consort-setup
-#| include: false
+#| label: allowed-values
 
-source(here::here("R", "consort-helpers.R"))
-consort_data <- arrow::read_parquet(here::here("data", "private", "consort_ipd.parquet"))
-accounting <- consort_accounting(consort_data)
-result_dir <- here::here("analysis", "01-population", "results")
-figure_dir <- file.path(result_dir, "figures")
-dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
-arrow::write_parquet(accounting, file.path(result_dir, "consort-accounting.parquet"))
-consort_plot <- plot_consort(accounting)
-for (extension in c("svg", "pdf", "png")) {
-  ggplot2::ggsave(file.path(figure_dir, paste0("consort-flow.", extension)),
-    consort_plot, width = 11, height = 14, units = "in", dpi = 300, bg = "white")
+consort_columns <- c(
+  "screened",
+  "not_screened_reason",
+  "exclusion_reason",
+  "qualified_for_random_selection",
+  "group_assignment",
+  "invitation_status",
+  "accepted_invitation"
+)
+
+not_screened_reasons <- c(
+  "Competing trial",
+  "Three patients already selected for random invitation that week"
+)
+
+exclusion_reasons <- c(
+  "No solid tumor",
+  "Primary brain tumor",
+  "Resectable tumor",
+  "No indication for medical treatment",
+  "Prior systemic treatment",
+  "GRC declined or unclear",
+  "Not eligible - reason not recorded"
+)
+
+invitation_statuses <- c(
+  "Approached and accepted intervention",
+  "Approached and declined intervention",
+  "Not approached",
+  "Approached with decision missing"
+)
+```
+
+## Validation
+
+```{r}
+#| label: validate
+
+consort <- read_parquet(here("data", "private", "consort_ipd.parquet"))
+
+stopifnot(
+  "Expected the seven-column CONSORT V4 contract." =
+    setequal(names(consort), consort_columns),
+  "Screening and qualification must be complete binary indicators." =
+    consort$screened %in% 0:1 & consort$qualified_for_random_selection %in% 0:1,
+  "Acceptance must be 0, 1, or missing." =
+    is.na(consort$accepted_invitation) | consort$accepted_invitation %in% 0:1
+)
+
+allowed_values <- list(
+  not_screened_reason = not_screened_reasons,
+  exclusion_reason = exclusion_reasons,
+  group_assignment = c("ctDNA + SOC", "SOC"),
+  invitation_status = invitation_statuses
+)
+
+iwalk(allowed_values, \(allowed, field) {
+  if (!all(is.na(consort[[field]]) | consort[[field]] %in% allowed)) {
+    stop("Unrecognized value in ", field)
+  }
+})
+
+consort <- consort |>
+  mutate(
+    is_screened = screened == 1,
+    is_eligible = qualified_for_random_selection == 1,
+    is_allocated = !is.na(group_assignment),
+    is_selected = group_assignment %in% "ctDNA + SOC",
+    is_accepted = invitation_status %in% "Approached and accepted intervention",
+    is_declined = invitation_status %in% "Approached and declined intervention"
+  )
+
+with(consort, stopifnot(
+  "Screening and not-screened reasons disagree." =
+    is.na(not_screened_reason) == is_screened,
+  "Clinical exclusions cannot apply to not-screened candidates." =
+    is_screened | is.na(exclusion_reason),
+  "Screened ineligible candidates require a clinical exclusion reason." =
+    !is_screened | is_eligible | !is.na(exclusion_reason),
+  "Allocated candidates cannot have clinical exclusion reasons." =
+    !is_allocated | is.na(exclusion_reason),
+  "Eligible candidates must have been screened." =
+    !is_eligible | is_screened,
+  "Allocated candidates must be eligible." =
+    !is_allocated | is_eligible,
+  "Invitation outcomes apply only to the selected SAT arm." =
+    is_selected | (is.na(invitation_status) & is.na(accepted_invitation)),
+  "Invitation status and acceptance disagree." =
+    ifelse(
+      is_accepted,
+      accepted_invitation == 1,
+      ifelse(is_declined, accepted_invitation == 0, is.na(accepted_invitation))
+    )
+))
+```
+
+## Accounting
+
+```{r}
+#| label: accounting
+
+counts <- consort |>
+  summarise(
+    candidates = n(),
+    not_screened = sum(!is_screened),
+    assessed = sum(is_screened),
+    excluded = sum(is_screened & !is_eligible),
+    eligible = sum(is_eligible),
+    unallocated = sum(is_eligible & !is_allocated),
+    randomized = sum(is_allocated),
+    selected = sum(is_selected),
+    usual_care = sum(group_assignment %in% "SOC"),
+    not_approached = sum(invitation_status %in% "Not approached"),
+    status_missing = sum(is_selected & is.na(invitation_status)),
+    approached = sum(invitation_status %in% invitation_statuses[c(1, 2, 4)]),
+    accepted = sum(is_accepted),
+    declined = sum(is_declined),
+    decision_missing = sum(invitation_status %in% "Approached with decision missing")
+  ) |>
+  unlist()
+
+stopifnot(
+  "CONSORT branches do not reconcile." = c(
+    counts[["candidates"]] == counts[["not_screened"]] + counts[["assessed"]],
+    counts[["assessed"]] == counts[["excluded"]] + counts[["eligible"]],
+    counts[["eligible"]] == counts[["unallocated"]] + counts[["randomized"]],
+    counts[["randomized"]] == counts[["selected"]] + counts[["usual_care"]],
+    counts[["selected"]] ==
+      counts[["approached"]] + counts[["not_approached"]] + counts[["status_missing"]],
+    counts[["approached"]] ==
+      counts[["accepted"]] + counts[["declined"]] + counts[["decision_missing"]]
+  )
+)
+
+# Denominator (parent step) of each step.
+parents <- c(
+  candidates = "candidates",
+  not_screened = "candidates",
+  assessed = "candidates",
+  excluded = "assessed",
+  eligible = "assessed",
+  unallocated = "eligible",
+  randomized = "eligible",
+  selected = "randomized",
+  usual_care = "randomized",
+  not_approached = "selected",
+  status_missing = "selected",
+  approached = "selected",
+  accepted = "approached",
+  declined = "approached",
+  decision_missing = "approached"
+)
+
+reason_counts <- c(
+  map_int(set_names(not_screened_reasons), \(reason) {
+    sum(consort$not_screened_reason %in% reason)
+  }),
+  map_int(set_names(exclusion_reasons), \(reason) {
+    sum(!consort$is_eligible & consort$exclusion_reason %in% reason)
+  })
+)
+
+accounting <- tibble(
+  step = c(names(counts), names(reason_counts)),
+  n = unname(c(counts, reason_counts)),
+  denominator = unname(c(
+    counts[parents[names(counts)]],
+    rep(counts[["not_screened"]], length(not_screened_reasons)),
+    rep(counts[["excluded"]], length(exclusion_reasons))
+  ))
+) |>
+  mutate(proportion = if_else(denominator > 0, n / denominator, NA_real_))
+
+write_parquet(accounting, here(results_dir, "consort-accounting.parquet"))
+```
+
+## Flow diagram
+
+```{r}
+#| label: consort-plot
+
+n <- set_names(accounting$n, accounting$step)
+
+box_label <- function(title, key) {
+  paste0(title, "\n(n = ", format(n[[key]], big.mark = ",", trim = TRUE), ")")
 }
+
+boxes <- tibble(
+  x = c(3, 8, 3, 8, 3, 8, 3, 3, 8, 3, 8, 3),
+  y = c(16, 14.8, 13, 11.6, 9.5, 9.5, 7.5, 5.5, 5.5, 3.3, 3.3, 1),
+  width = c(4.1, 4.4, 4.1, 4.4, 4.1, 4.4, 4.1, 4.1, 4.4, 4.1, 4.4, 4.1),
+  height = c(1, 1.9, 1, 2.6, 1, 1, 1, 1.2, 1.2, 1, 1.4, 1.5),
+  text = c(
+    box_label("Candidates recorded", "candidates"),
+    paste0(
+      box_label("Not screened", "not_screened"),
+      "\nCompeting trial (n = ", n["Competing trial"], ")",
+      "\nWeekly invitation limit reached (n = ",
+      n["Three patients already selected for random invitation that week"], ")"
+    ),
+    box_label("Assessed for eligibility", "assessed"),
+    paste0(
+      box_label("Excluded", "excluded"),
+      "\n",
+      str_flatten(
+        paste0(exclusion_reasons, " (n = ", n[exclusion_reasons], ")"),
+        collapse = "\n"
+      )
+    ),
+    box_label("Eligible for random selection", "eligible"),
+    box_label("No allocation recorded", "unallocated"),
+    box_label("Randomized", "randomized"),
+    box_label("Selected for SAT invitation
+ctDNA", "selected"),
+    box_label("Not selected for invitation\nUsual care", "usual_care"),
+    box_label("Approached / offered invitation", "approached"),
+    paste0(
+      box_label("Not approached / not offered", "not_approached"),
+      if (n["status_missing"] > 0) {
+        paste0("\nInvitation status missing (n = ", n["status_missing"], ")")
+      } else {
+        ""
+      }
+    ),
+    paste0(
+      "Accepted invitation (n = ", n["accepted"], ")",
+      "\nDeclined invitation (n = ", n["declined"], ")",
+      if (n["decision_missing"] > 0) {
+        paste0("\nDecision missing (n = ", n["decision_missing"], ")")
+      } else {
+        ""
+      }
+    )
+  )
+)
+
+segments <- tibble(
+  x = c(3, 3, 3, 3, 3, 3, 3, 3, 5.05, 3, 3, 3, 3, 8, 8),
+  y = c(15.5, 14.8, 12.5, 11.3, 9, 7, 6.6, 6.6, 9.5, 4.9, 4.3, 4.3, 2.8, 6.6, 4.3),
+  xend = c(3, 5.8, 3, 5.8, 3, 3, 3, 8, 5.8, 3, 3, 8, 3, 8, 8),
+  yend = c(13.5, 14.8, 10, 11.3, 8, 6.6, 6.1, 6.6, 9.5, 4.3, 3.8, 4.3, 1.75, 6.1, 4),
+  arrow = c(
+    TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE, FALSE,
+    TRUE, FALSE, TRUE, FALSE, TRUE, TRUE, TRUE
+  )
+)
+
+consort_plot <- ggplot() +
+  geom_segment(
+    data = filter(segments, !arrow),
+    aes(x = x, y = y, xend = xend, yend = yend),
+    linewidth = 0.45,
+    colour = "grey30"
+  ) +
+  geom_segment(
+    data = filter(segments, arrow),
+    aes(x = x, y = y, xend = xend, yend = yend),
+    linewidth = 0.45,
+    colour = "grey30",
+    arrow = arrow(length = unit(2, "mm"), type = "closed")
+  ) +
+  geom_rect(
+    data = boxes,
+    aes(
+      xmin = x - width / 2,
+      xmax = x + width / 2,
+      ymin = y - height / 2,
+      ymax = y + height / 2
+    ),
+    fill = "white",
+    colour = "grey30",
+    linewidth = 0.5
+  ) +
+  # Text size of the axis labels of the other figures (8.8 pt).
+  geom_text(
+    data = boxes,
+    aes(x = x, y = y, label = text),
+    size = 3.1,
+    lineheight = 1.15
+  ) +
+  coord_cartesian(xlim = c(0.6, 10.4), ylim = c(0, 16.7), expand = FALSE) +
+  theme_void() +
+  theme(plot.background = element_rect(fill = "white", colour = NA))
+
+# PNG and SVG.
+save_figure(consort_plot, here(figure_dir, "consort-flow.png"), height = 10.5)
 ```
 
 ```{r}
 #| label: fig-consort-flow
+#| echo: false
 #| fig-cap: "LIQPLAT participant flow. Patients considered for a competing trial or after the weekly limit of three SAT invitations has been reached are not screened. Among eligible candidates, random selection determines who is invited to the SAT (offered ctDNA); those not selected receive usual care. Selected candidates must subsequently be approached and may accept or decline. Invitation outcomes do not change randomized allocation or ITT membership."
 #| fig-alt: "Candidate flow through screening, eligibility and random allocation, with invitation outcomes only for the SAT arm. Exact counts appear in the accounting table below."
 #| out-width: 100%
 
-knitr::include_graphics(file.path(figure_dir, "consort-flow.png"))
+include_graphics(here(figure_dir, "consort-flow.png"))
 ```
-
-Not-screened reasons are separate from clinical exclusions, which use the first
-applicable reason in the exported hierarchy. Eligible candidates without an
-allocation remain visible. Not approached is distinct from approached with a
-missing decision. Missing SAT invitation status is shown explicitly when present;
-no invitation process is imputed for usual-care candidates.
 
 ```{r}
 #| label: consort-source-discrepancy
+#| echo: false
 #| results: asis
 
-conflicting_eligibility <- sum(consort_data$qualified_for_random_selection == 1 &
-                               !is.na(consort_data$exclusion_reason))
+conflicting_eligibility <- sum(consort$is_eligible & !is.na(consort$exclusion_reason))
+
 if (conflicting_eligibility > 0) {
-  cat(sprintf(paste0("**Source-data discrepancy:** %s candidates are marked eligible ",
-    "but also carry an exclusion reason. The explicit qualification field takes ",
-    "precedence: they remain in the eligible branch and are not counted again ",
-    "as clinical exclusions. These source records require reconciliation.\n"),
-    conflicting_eligibility))
+  cat(
+    "**Source-data discrepancy:**", conflicting_eligibility,
+    "candidates are marked eligible but also carry an exclusion reason.",
+    "The explicit qualification field takes precedence: they remain in the",
+    "eligible branch and are not counted again as clinical exclusions.",
+    "These source records require reconciliation.\n"
+  )
 }
 ```
 
 ```{r}
 #| label: tbl-consort-accounting
+#| echo: false
 #| tbl-cap: "Participant accounting, including parent denominators and proportions."
 
 accounting |>
-  transform(proportion = round(proportion, 4)) |>
-  knitr::kable()
+  mutate(proportion = round(proportion, 4)) |>
+  kable()
 ```
