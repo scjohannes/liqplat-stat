@@ -1,0 +1,472 @@
+---
+title: "Baseline ctDNA detection"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+library(here)
+library(yaml)
+library(arrow)
+library(brms)
+library(marginaleffects)
+library(ggdist)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "covariates.R"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "10-implementation", "results")
+models_dir <- file.path(results_dir, "models")
+figures_dir <- file.path(results_dir, "figures")
+dir.create(models_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+
+detection_model_path <- file.path(models_dir, "baseline-detection.rds")
+ordinal_model_path <- file.path(models_dir, "baseline-mutations-ordinal.rds")
+```
+
+## Baseline sample
+
+```{r}
+#| label: baseline-sample
+
+samples <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet")
+)
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+)
+
+selected_ids <- cohort |>
+  filter(tx == 1) |>
+  pull(id)
+
+# Earliest valid sample taken before treatment start (or any valid sample if no
+# treatment start is recorded); ties on date are broken by sample_id.
+baseline <- samples |>
+  filter(id %in% selected_ids) |>
+  left_join(select(cohort, id, treatment_start_date), by = "id") |>
+  filter(
+    !is.na(sample_date),
+    valid_ctdna_result %in% TRUE,
+    is.na(treatment_start_date) | sample_date < treatment_start_date
+  ) |>
+  arrange(id, sample_date, sample_id) |>
+  distinct(id, .keep_all = TRUE) |>
+  mutate(ctdna_detected = n_mut > 0)
+```
+
+```{r}
+#| label: baseline-descriptive
+
+baseline_summary <- tibble(
+  n_selected = length(selected_ids),
+  n_accepted = sum(cohort$invitation_accepted, na.rm = TRUE),
+  n_valid_baseline = nrow(baseline),
+  n_detected = sum(baseline$ctdna_detected),
+  n_not_detected = n_valid_baseline - n_detected,
+  detection_proportion_valid_baseline = n_detected / n_valid_baseline
+)
+
+write_parquet(
+  baseline_summary,
+  file.path(results_dir, "baseline-detection-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: baseline-summary
+#| tbl-cap: "Baseline ctDNA detection summary"
+#| echo: false
+
+kable(baseline_summary)
+```
+
+## Logistic detection model
+
+- SAP deviation: diagnosis is a random intercept; several diagnoses have 1–3 patients.
+
+```{r}
+#| label: detection-fit
+
+detection_data <- baseline |>
+  left_join(select(cohort, id, diagnosis), by = "id") |>
+  mutate(ctdna_detected = as.integer(ctdna_detected)) |>
+  select(ctdna_detected, diagnosis)
+
+if (!file.exists(detection_model_path)) {
+  detection_fit <- brm(
+    ctdna_detected ~ 1 + (1 | diagnosis),
+    data = detection_data,
+    family = bernoulli("logit"),
+    iter = 2000L,
+    chains = 4L,
+    cores = 1L,
+    seed = config$seeds$supporting + 3L,
+    refresh = 0L
+  )
+  saveRDS(detection_fit, detection_model_path, compress = "xz")
+}
+
+detection_fit <- readRDS(detection_model_path)
+```
+
+```{r}
+#| label: detection-probability
+
+detection_draws <- avg_predictions(
+  detection_fit,
+  newdata = detection_data,
+  type = "response",
+  re_formula = NULL
+) |>
+  get_draws() |>
+  select(draw)
+
+detection_model_summary <- detection_draws |>
+  summarise(
+    outcome = "baseline_ctdna_detection_probability",
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    n_model = nrow(detection_data),
+    n_diagnoses = n_distinct(detection_data$diagnosis)
+  )
+
+write_parquet(
+  detection_draws,
+  file.path(results_dir, "baseline-detection-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  detection_model_summary,
+  file.path(results_dir, "baseline-detection-model-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: detection-model-summary
+#| tbl-cap: "Posterior probability of ctDNA detection at baseline"
+#| echo: false
+
+kable(detection_model_summary)
+```
+
+```{r}
+#| label: fig-detection-posterior
+#| fig-cap: "Posterior probability of ctDNA detection at baseline. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "A half-eye density above a posterior dot plot of the probability of ctDNA detection at baseline among selected patients with a valid baseline sample, in percent, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 5
+
+# No reference line: a probability has no natural reference value.
+detection_posterior_plot <- plot_posterior(
+  100 * detection_draws$draw,
+  x_label = "Probability of ctDNA detection at baseline, %",
+  reference = NULL
+)
+
+save_figure(
+  detection_posterior_plot,
+  file.path(figures_dir, "baseline-detection-posterior.png"),
+  height = 5
+)
+detection_posterior_plot
+```
+
+### Detection by diagnosis
+
+- Diagnoses with few patients are shrunk toward the overall probability.
+
+```{r}
+#| label: detection-diagnosis-predictions
+
+detection_fit <- set_modeldata(detection_fit, detection_fit$data)
+
+# Patients per diagnosis in the fitted data; also used for the ordinal figure.
+diagnosis_counts <- detection_fit$data |>
+  count(diagnosis, name = "n_patients")
+
+diagnosis_draws <- avg_predictions(
+  detection_fit,
+  by = "diagnosis",
+  type = "response",
+  re_formula = NULL
+) |>
+  get_draws() |>
+  select(diagnosis, drawid, draw)
+
+diagnosis_summary <- diagnosis_draws |>
+  group_by(diagnosis) |>
+  summarise(
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    .groups = "drop"
+  ) |>
+  left_join(diagnosis_counts, by = "diagnosis") |>
+  mutate(diagnosis = snomed_to_diagnosis(diagnosis)) |>
+  arrange(desc(posterior_median))
+
+write_parquet(
+  diagnosis_draws,
+  file.path(results_dir, "baseline-detection-diagnosis-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  diagnosis_summary,
+  file.path(results_dir, "baseline-detection-diagnosis-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-detection-diagnosis-summary
+#| tbl-cap: "Posterior probability of ctDNA detection at baseline by diagnosis"
+#| echo: false
+
+kable(diagnosis_summary)
+```
+
+```{r}
+#| label: fig-detection-diagnosis-predictions
+#| fig-cap: "Posterior probability of ctDNA detection at baseline by diagnosis, ordered by posterior median; n is the number of patients with a valid baseline sample. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Posterior half-eye densities of the probability of ctDNA detection at baseline, in percent, one row per histological diagnosis ordered by posterior median, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 9
+
+diagnosis_plot_draws <- diagnosis_draws |>
+  left_join(diagnosis_counts, by = "diagnosis") |>
+  mutate(
+    diagnosis_label = paste0(
+      snomed_to_diagnosis(diagnosis), " (n = ", n_patients, ")"
+    ),
+    diagnosis_label = fct_reorder(diagnosis_label, draw, .fun = median)
+  )
+
+# One row per diagnosis: half-eyes only (as in plot_posterior()), without the
+# dot plots, which would overlap between rows.
+diagnosis_predictions_plot <- ggplot(
+  diagnosis_plot_draws,
+  aes(x = 100 * draw, y = diagnosis_label)
+) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_qi) +
+  labs(x = "Probability of ctDNA detection at baseline, %", y = NULL) +
+  theme(panel.grid.major.y = element_blank())
+
+save_figure(
+  diagnosis_predictions_plot,
+  file.path(figures_dir, "baseline-detection-diagnosis-predictions.png"),
+  height = 9
+)
+diagnosis_predictions_plot
+```
+
+## Ordinal model for the number of mutations
+
+- Additional analysis, not in the SAP.
+
+```{r}
+#| label: ordinal-fit
+
+ordinal_data <- baseline |>
+  left_join(select(cohort, id, diagnosis), by = "id") |>
+  mutate(
+    n_mut = factor(n_mut, levels = sort(unique(n_mut)), ordered = TRUE)
+  ) |>
+  select(n_mut, diagnosis)
+
+if (!file.exists(ordinal_model_path)) {
+  ordinal_fit <- brm(
+    n_mut ~ 1 + (1 | diagnosis),
+    data = ordinal_data,
+    family = cumulative("logit"),
+    iter = 2000L,
+    chains = 4L,
+    cores = 1L,
+    seed = config$seeds$supporting + 4L,
+    refresh = 0L
+  )
+  saveRDS(ordinal_fit, ordinal_model_path, compress = "xz")
+}
+
+ordinal_fit <- readRDS(ordinal_model_path)
+```
+
+```{r}
+#| label: ordinal-quantities
+
+# Per-draw probability of detection and expected count from the category
+# probabilities; the category labels are the observed mutation counts.
+summarise_mutation_draws <- function(category_draws, by = character()) {
+  category_draws |>
+    mutate(n_mut = as.numeric(as.character(group))) |>
+    summarise(
+      detection_probability = 1 - sum(draw[n_mut == 0]),
+      expected_mutations = sum(n_mut * draw),
+      .by = all_of(c(by, "drawid"))
+    ) |>
+    pivot_longer(
+      c(detection_probability, expected_mutations),
+      names_to = "quantity",
+      values_to = "draw"
+    )
+}
+
+summarise_posterior <- function(draws, by) {
+  draws |>
+    summarise(
+      posterior_mean = mean(draw),
+      posterior_median = median(draw),
+      lower_95 = quantile(draw, 0.025),
+      upper_95 = quantile(draw, 0.975),
+      .by = all_of(by)
+    )
+}
+
+ordinal_draws <- avg_predictions(
+  ordinal_fit,
+  newdata = ordinal_data,
+  type = "response",
+  re_formula = NULL
+) |>
+  get_draws() |>
+  select(group, drawid, draw) |>
+  summarise_mutation_draws()
+
+ordinal_diagnosis_draws <- avg_predictions(
+  ordinal_fit,
+  newdata = ordinal_data,
+  by = "diagnosis",
+  type = "response",
+  re_formula = NULL
+) |>
+  get_draws() |>
+  select(group, diagnosis, drawid, draw) |>
+  summarise_mutation_draws("diagnosis")
+
+ordinal_summary <- ordinal_draws |>
+  summarise_posterior("quantity") |>
+  mutate(n_model = nrow(ordinal_data))
+
+ordinal_diagnosis_summary <- ordinal_diagnosis_draws |>
+  summarise_posterior(c("quantity", "diagnosis")) |>
+  left_join(
+    count(ordinal_data, diagnosis, name = "n_patients"),
+    by = "diagnosis"
+  ) |>
+  mutate(diagnosis = snomed_to_diagnosis(diagnosis)) |>
+  arrange(quantity, desc(posterior_median))
+
+write_parquet(
+  ordinal_draws,
+  file.path(results_dir, "baseline-mutations-ordinal-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  ordinal_summary,
+  file.path(results_dir, "baseline-mutations-ordinal-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  ordinal_diagnosis_draws,
+  file.path(results_dir, "baseline-mutations-ordinal-diagnosis-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  ordinal_diagnosis_summary,
+  file.path(
+    results_dir,
+    "baseline-mutations-ordinal-diagnosis-summary.parquet"
+  ),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-ordinal-summary
+#| tbl-cap: "Posterior probability of detection and expected number of mutations at baseline from the proportional odds model"
+#| echo: false
+
+kable(ordinal_summary)
+```
+
+```{r}
+#| label: fig-ordinal-posterior
+#| fig-cap: "Posterior probability of ctDNA detection and expected number of mutations at baseline from the proportional odds model. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Two panels of half-eye densities above posterior dot plots from the proportional odds model: the probability of ctDNA detection at baseline in percent, and the expected number of mutations in the baseline sample, each with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 7
+
+ordinal_quantity_labels <- c(
+  detection_probability = "Probability of ctDNA detection at baseline, %",
+  expected_mutations = "Expected number of mutations at baseline"
+)
+
+ordinal_posterior_plot <- ordinal_draws |>
+  mutate(
+    draw = if_else(quantity == "detection_probability", 100 * draw, draw)
+  ) |>
+  plot_posterior(x_label = NULL, reference = NULL, normalize = "panels") +
+  facet_wrap(
+    ~ quantity,
+    ncol = 1,
+    scales = "free_x",
+    labeller = as_labeller(ordinal_quantity_labels)
+  )
+
+save_figure(
+  ordinal_posterior_plot,
+  file.path(figures_dir, "baseline-mutations-ordinal-posterior.png"),
+  height = 7
+)
+ordinal_posterior_plot
+```
+
+```{r}
+#| label: tbl-ordinal-diagnosis-summary
+#| tbl-cap: "Posterior probability of detection and expected number of mutations at baseline by diagnosis from the proportional odds model"
+#| echo: false
+
+kable(ordinal_diagnosis_summary)
+```
+
+```{r}
+#| label: fig-ordinal-diagnosis-predictions
+#| fig-cap: "Posterior expected number of mutations at baseline by diagnosis from the proportional odds model, ordered by posterior median; n is the number of patients with a valid baseline sample. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Posterior half-eye densities of the expected number of mutations in the baseline sample, one row per histological diagnosis ordered by posterior median, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 9
+
+ordinal_diagnosis_plot <- ordinal_diagnosis_draws |>
+  filter(quantity == "expected_mutations") |>
+  left_join(diagnosis_counts, by = "diagnosis") |>
+  mutate(
+    diagnosis_label = paste0(
+      snomed_to_diagnosis(diagnosis), " (n = ", n_patients, ")"
+    ),
+    diagnosis_label = fct_reorder(diagnosis_label, draw, .fun = median)
+  ) |>
+  ggplot(aes(x = draw, y = diagnosis_label)) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_qi) +
+  labs(x = "Expected number of mutations at baseline", y = NULL) +
+  theme(panel.grid.major.y = element_blank())
+
+save_figure(
+  ordinal_diagnosis_plot,
+  file.path(figures_dir, "baseline-mutations-ordinal-diagnosis-predictions.png"),
+  height = 9
+)
+ordinal_diagnosis_plot
+```

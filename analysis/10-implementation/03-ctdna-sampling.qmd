@@ -1,0 +1,112 @@
+---
+title: "ctDNA sampling by randomized group"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+- Descriptive; not prespecified in the SAP.
+- Sampled: at least one sample date recorded (attempted sample).
+
+```{r}
+#| label: setup
+
+library(here)
+library(arrow)
+library(knitr)
+library(tidyverse)
+
+results_dir <- here("analysis", "10-implementation", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: read-data
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+)
+samples <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet")
+)
+
+if (any(!samples$id %in% cohort$id)) {
+  stop("ctDNA samples contain a patient absent from the cohort dataset.")
+}
+```
+
+## Patient-level sampling
+
+```{r}
+#| label: patient-sampling
+
+patient_samples <- samples |>
+  group_by(id) |>
+  summarise(
+    n_attempted_samples = sum(attempted_sample %in% TRUE),
+    has_valid_sample = any(valid_ctdna_result %in% TRUE),
+    has_mutation_positive_sample = any(
+      attempted_sample %in% TRUE &
+        valid_ctdna_result %in% TRUE &
+        !is.na(n_mut) &
+        n_mut > 0
+    ),
+    .groups = "drop"
+  )
+
+# Patients without any sample count as not sampled.
+patient_data <- cohort |>
+  select(id, tx) |>
+  left_join(patient_samples, by = "id") |>
+  mutate(
+    n_attempted_samples = replace_na(n_attempted_samples, 0L),
+    has_valid_sample = replace_na(has_valid_sample, FALSE),
+    has_mutation_positive_sample = replace_na(
+      has_mutation_positive_sample,
+      FALSE
+    ),
+    randomized_group = case_when(
+      tx == 0L ~ "Usual care",
+      tx == 1L ~ "ctDNA"
+    )
+  ) |>
+  filter(!is.na(randomized_group))
+```
+
+## Summary by randomized group
+
+```{r}
+#| label: sampling-summary
+
+sampling_summary <- patient_data |>
+  group_by(randomized_group) |>
+  summarise(
+    randomized_patients = n(),
+    patients_sampled = sum(n_attempted_samples > 0L),
+    sampled_percent = 100 * patients_sampled / randomized_patients,
+    attempted_samples = sum(n_attempted_samples),
+    patients_with_valid_sample = sum(has_valid_sample),
+    patients_with_mutation_positive_sample = sum(has_mutation_positive_sample),
+    mutation_positive_percent_of_valid = if_else(
+      patients_with_valid_sample == 0L,
+      NA_real_,
+      100 * patients_with_mutation_positive_sample / patients_with_valid_sample
+    ),
+    .groups = "drop"
+  )
+
+write_parquet(
+  sampling_summary,
+  file.path(results_dir, "ctdna-sampling-by-group.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: ctdna-sampling-summary
+#| tbl-cap: "Patients sampled and mutation-positive by randomized group"
+#| echo: false
+
+kable(sampling_summary)
+```

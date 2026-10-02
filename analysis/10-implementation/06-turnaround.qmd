@@ -1,0 +1,61 @@
+---
+title: "Sampling-to-first-report turnaround"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+- Turnaround: sampling to first report (earliest analysis date of the sample).
+
+```{r}
+#| label: setup
+
+library(here)
+library(arrow)
+library(knitr)
+library(tidyverse)
+
+results_dir <- here("analysis", "10-implementation", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: turnaround
+
+samples <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet")
+)
+
+turnaround_values <- samples |>
+  transmute(turnaround_days = as.numeric(analysis_date - sample_date)) |>
+  filter(turnaround_days >= 0)
+
+turnaround_summary <- tibble(
+  n_samples = nrow(samples),
+  n_valid_date_pairs = nrow(turnaround_values),
+  n_excluded_missing_or_invalid = nrow(samples) - nrow(turnaround_values),
+  median_days = median(turnaround_values$turnaround_days),
+  q1_days = quantile(turnaround_values$turnaround_days, 0.25),
+  q3_days = quantile(turnaround_values$turnaround_days, 0.75)
+)
+
+write_parquet(
+  turnaround_summary,
+  file.path(results_dir, "turnaround-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  turnaround_values,
+  file.path(results_dir, "turnaround-values.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: turnaround-summary
+#| tbl-cap: "Sampling-to-report turnaround summary"
+#| echo: false
+
+kable(turnaround_summary)
+```
