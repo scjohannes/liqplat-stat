@@ -73,3 +73,9 @@ nohup.out
 /sap/SAP.typ
 /sap/SAP_files/
 tmp/
+artifacts/
+
+# Local archives of the analysis and report, and stray R graphics output
+/reports.zip
+/analysis.zip
+Rplots.pdf

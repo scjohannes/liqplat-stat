@@ -1,16 +1,19 @@
 project:
   type: default
   output-dir: _site
-  # Analysis notebooks are rendered explicitly by scripts/run-all.R.  The
-  # default project therefore does not enumerate them as implicit targets.
+  # Analysis notebooks are rendered one by one by scripts/run-all.R. The
+  # report in reports/ is a separate Quarto book project.
+  render:
+    - analysis/**/*.qmd
+    - sap/SAP.qmd
   resources:
     - sap/SAP.qmd
     - sap
-    - reports
 
 execute:
   freeze: auto
   echo: false
+  message: false
 
 format:
   html:

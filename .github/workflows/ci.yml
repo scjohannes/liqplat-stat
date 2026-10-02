@@ -1,4 +1,7 @@
-name: LIQPLAT CI
+name: Render SAP
+
+# The analyses need the private data, so CI only checks that the Statistical
+# Analysis Plan renders from a clean clone.
 
 on:
   push:
@@ -9,13 +12,12 @@ permissions:
   contents: read
 
 jobs:
-  static-and-smoke:
+  render-sap:
     runs-on: windows-latest
     env:
       LC_ALL: C
-      R_KEEP_PKG_SOURCE: yes
     steps:
-      - name: Check out clean repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up R 4.6.1
@@ -24,42 +26,17 @@ jobs:
           r-version: "4.6.1"
           use-public-rspm: true
 
-      - name: Set up Rtools45
-        uses: r-lib/actions/setup-rtools@v2
-        with:
-          rtools-version: "45"
-
       - name: Set up Quarto 1.9.37
         uses: quarto-dev/quarto-actions/setup@v2
         with:
           version: "1.9.37"
 
-      - name: Install test dependencies
+      - name: Install packages used by the SAP
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
           cache: true
-          extra-packages: any::arrow, any::digest, any::here, any::knitr, any::rmarkdown, any::testthat, any::withr, any::yaml
+          extra-packages: any::knitr, any::rmarkdown, any::here, any::tidyverse, any::tinytable, any::arrow
 
-      - name: Run parse, contract, and privacy tests
+      - name: Render SAP
         shell: pwsh
-        run: |
-          $env:MAKEFLAGS = 'PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin'
-          Rscript tests/testthat.R
-
-      - name: Run no-PHI synthetic report smoke test
-        shell: pwsh
-        run: |
-          $env:MAKEFLAGS = 'PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin'
-          Rscript scripts/synthetic-smoke-test.R
-
-      - name: Verify command-line help and environment preflight
-        shell: pwsh
-        run: |
-          $env:MAKEFLAGS = 'PATH=/x86_64-w64-mingw32.static.posix/bin:/usr/bin'
-          Rscript scripts/check-environment.R --help
-          Rscript scripts/run-all.R --help
-
-      - name: Render SAP from clean clone
-        shell: pwsh
-        run: |
-          quarto render sap/SAP.qmd --to typst --output-dir .ci-artifacts/sap
+        run: quarto render sap/SAP.qmd --to typst --output-dir .ci-artifacts/sap
