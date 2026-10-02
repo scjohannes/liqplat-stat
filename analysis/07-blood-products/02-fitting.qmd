@@ -1,0 +1,228 @@
+---
+title: "Blood products — model fitting"
+format: html
+---
+
+- Prespecified: adjusted model for all blood products. All other models are additional.
+
+```{r}
+#| label: setup
+
+library(brms)
+library(posterior)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here("analysis", "07-blood-products", "results")
+
+blood_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
+completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
+spline_knots <- readRDS(file.path(results_dir, "spline-knots.rds"))
+
+blood_outcomes <- c(
+  blood_products = "n_blood_products",
+  erythrocytes = "n_erythrocyte_concentrates",
+  thrombocytes = "n_thrombocyte_concentrates"
+)
+```
+
+## Model formulas
+
+```{r}
+#| label: model-formulas
+
+# Knots are written into the formula as numbers so predictions on new data
+# use the same basis.
+ns_call <- function(variable) {
+  knots <- spline_knots[[variable]]
+
+  sprintf(
+    "splines::ns(%s, knots = %s, Boundary.knots = c(%s, %s))",
+    variable,
+    knots[2],
+    knots[1],
+    knots[3]
+  )
+}
+
+adjusted_terms <- paste(
+  "tx",
+  ns_call("hemoglobin"),
+  ns_call("platelet_count"),
+  ns_call("age"),
+  ns_call("creatinine"),
+  "ecog_group",
+  "offset(log(exposure_days))",
+  sep = " + "
+)
+
+unadjusted_terms <- "tx + offset(log(exposure_days))"
+
+blood_formulas <- list(
+  adjusted = map(blood_outcomes, \(outcome) {
+    bf(as.formula(paste(outcome, "~", adjusted_terms)))
+  }),
+  unadjusted = map(blood_outcomes, \(outcome) {
+    bf(as.formula(paste(outcome, "~", unadjusted_terms)))
+  })
+)
+```
+
+## Priors
+
+- Alternative priors tested: adjusted all-product rate ratio stayed 0.67–0.70.
+
+```{r}
+#| label: priors
+
+blood_priors <- c(
+  # Flat default is improper: no thrombocyte transfusions at ECOG 3+.
+  prior(normal(0, 10), class = "b"),
+  # Pre-2.21 brms default; the new default lets chains escape to the Poisson limit.
+  prior(gamma(0.01, 0.01), class = "shape")
+)
+```
+
+## Fitting
+
+```{r}
+#| label: fit-models
+
+model_grid <- expand_grid(
+  outcome = names(blood_outcomes),
+  adjustment = c("adjusted", "unadjusted")
+) |>
+  mutate(
+    seed = config$seeds$supporting + 2400L + row_number(),
+    model_path = file.path(
+      results_dir,
+      paste0("model-", outcome, "-", adjustment, ".rds")
+    )
+  )
+
+thresholds <- config$diagnostics
+
+# Convergence diagnostics of one fit: R-hat and bulk and tail ESS over all
+# parameters (including lp__), divergences, transitions at the maximum tree
+# depth, and the smallest E-BFMI across chains.
+fit_diagnostics <- function(fit) {
+  draw_summary <- summarise_draws(fit, "rhat", "ess_bulk", "ess_tail")
+  nuts <- nuts_params(fit)
+  max_treedepth <- control_params(fit)$max_treedepth
+
+  tibble(
+    iterations = fit$fit@sim$iter,
+    max_rhat = max(draw_summary$rhat),
+    min_ess_bulk = min(draw_summary$ess_bulk),
+    min_ess_tail = min(draw_summary$ess_tail),
+    divergences = sum(nuts$Value[nuts$Parameter == "divergent__"]),
+    treedepth_hits = sum(
+      nuts$Value[nuts$Parameter == "treedepth__"] >= max_treedepth
+    ),
+    min_bfmi = min(rstan::get_bfmi(fit$fit))
+  )
+}
+
+passes_thresholds <- function(diagnostics) {
+  with(diagnostics, coalesce(
+    max_rhat <= thresholds$max_rhat &
+      min_ess_bulk >= thresholds$min_ess_bulk &
+      min_ess_tail >= thresholds$min_ess_tail &
+      divergences <= thresholds$max_divergent_transitions &
+      treedepth_hits <= thresholds$max_treedepth_exceeded &
+      min_bfmi >= thresholds$min_bfmi,
+    FALSE
+  ))
+}
+
+pwalk(model_grid, \(outcome, adjustment, seed, model_path) {
+  if (!file.exists(model_path)) {
+    fits <- if (adjustment == "adjusted") {
+      # brm_multiple() seeds only compilation; seed R's RNG for the Stan seeds.
+      set.seed(seed)
+
+      brm_multiple(
+        blood_formulas$adjusted[[outcome]],
+        data = completed_datasets,
+        family = negbinomial(),
+        prior = blood_priors,
+        init = 0,
+        chains = 4L,
+        iter = 2000L,
+        cores = 1L,
+        seed = seed,
+        combine = FALSE,
+        refresh = 0L
+      )
+    } else {
+      list(brm(
+        blood_formulas$unadjusted[[outcome]],
+        data = blood_data,
+        family = negbinomial(),
+        prior = blood_priors,
+        init = 0,
+        chains = 4L,
+        iter = 2000L,
+        cores = 1L,
+        seed = seed,
+        refresh = 0L
+      ))
+    }
+
+    # A fit that misses a diagnostic threshold is refitted once with twice
+    # the iterations and a new seed, the rule used for the Markov and BSC
+    # models.
+    fits <- imap(fits, \(fit, index) {
+      if (passes_thresholds(fit_diagnostics(fit))) {
+        return(fit)
+      }
+      update(fit, iter = 4000L, seed = seed + 500000L + index, refresh = 0L)
+    })
+
+    saveRDS(fits, model_path, compress = "xz")
+  }
+})
+
+blood_fits <- model_grid |>
+  mutate(fits = map(model_path, readRDS))
+```
+
+## Diagnostics
+
+```{r}
+#| label: model-diagnostics
+
+blood_diagnostics <- blood_fits |>
+  mutate(diagnostics = map(fits, \(fits) {
+    list_rbind(map(fits, fit_diagnostics), names_to = "imputation")
+  })) |>
+  select(outcome, adjustment, diagnostics) |>
+  unnest(diagnostics) |>
+  mutate(passed = passes_thresholds(pick(everything())))
+```
+
+```{r}
+#| label: tbl-model-diagnostics
+#| tbl-cap: "Convergence diagnostics per model and imputation"
+
+kable(blood_diagnostics, digits = 3)
+```
+
+- Fits passing every threshold: `r sum(blood_diagnostics$passed)` of `r nrow(blood_diagnostics)`
+
+```{r}
+#| label: tbl-combined-coefficients
+#| tbl-cap: "Posterior coefficients of the adjusted combined blood-product model (first imputation)"
+
+blood_fits |>
+  filter(outcome == "blood_products", adjustment == "adjusted") |>
+  pull(fits) |>
+  pluck(1, 1) |>
+  fixef() |>
+  kable(digits = 3)
+```
