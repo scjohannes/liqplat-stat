@@ -1,0 +1,271 @@
+---
+title: "QoL six-month landmark: unadjusted model"
+subtitle: "Supporting analysis"
+format: html
+---
+
+- Computationally reduced: first `m_supporting` imputations only.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rms)
+library(rmsb)
+library(posterior)
+library(ggdist)
+library(knitr)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+landmark_dir <- here(
+  "analysis", "03-quality-of-life", "02-six-month-landmark", "results"
+)
+imputation_dir <- file.path(landmark_dir, "imputations")
+results_dir <- file.path(landmark_dir, "unadjusted")
+model_dir <- file.path(results_dir, "models")
+trace_dir <- file.path(results_dir, "trace-plots")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_supporting)
+model_paths <- file.path(model_dir, sprintf("model-%02d.rds", indices))
+```
+
+## Fitting
+
+```{r}
+#| label: convergence-rule
+#| include: false
+
+diagnostics_pass <- function(diagnostics) {
+  finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+  finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+  finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+
+  length(finite_rhat) > 0L &&
+    length(finite_bulk) > 0L &&
+    length(finite_tail) > 0L &&
+    all(finite_rhat <= config$diagnostics$max_rhat) &&
+    all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+    all(finite_tail >= config$diagnostics$min_ess_tail)
+}
+```
+
+```{r}
+#| label: fit-models
+#| include: false
+
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+
+for (index in indices) {
+  if (file.exists(model_paths[index])) next
+
+  data <- file.path(imputation_dir, sprintf("completed-%02d.rds", index)) |>
+    readRDS() |>
+    mutate(y_landmark = ordered(y_landmark, levels = 1:8))
+
+  # rms looks up the datadist object by name in the global environment.
+  dd <- datadist(data)
+  options(datadist = "dd")
+
+  fit_seed <- config$seeds$supporting + (index - 1) * 1000 + 400
+  attempts <- list(
+    list(
+      iter = config$markov$iterations,
+      warmup = config$markov$warmup,
+      seed = fit_seed
+    ),
+    list(
+      iter = config$markov$retry_iterations,
+      warmup = config$markov$retry_iterations / 2L,
+      seed = fit_seed + 500000L
+    )
+  )
+
+  for (attempt in attempts) {
+    model <- blrm(
+      y_landmark ~ tx,
+      pcontrast = pcontrast_tx,
+      data = data,
+      chains = config$markov$chains,
+      iter = attempt$iter,
+      warmup = attempt$warmup,
+      backend = "cmdstan",
+      loo = FALSE,
+      sampling.args = list(
+        seed = attempt$seed,
+        parallel_chains = config$markov$chains
+      )
+    )
+
+    passed <- stanGet(model) |>
+      as_draws_df() |>
+      summarise_draws() |>
+      diagnostics_pass()
+    if (passed) break
+  }
+
+  if (!passed) {
+    stop(
+      "Persistent convergence failure in unadjusted landmark QoL imputation ",
+      index,
+      "."
+    )
+  }
+
+  saveRDS(model, model_paths[index], compress = "xz")
+}
+
+options(datadist = NULL)
+
+models <- map(model_paths, readRDS)
+```
+
+## Convergence
+
+```{r}
+#| label: check-convergence
+#| echo: false
+
+diagnostics <- models |>
+  imap(\(model, index) {
+    stanGet(model) |>
+      as_draws_df() |>
+      summarise_draws() |>
+      mutate(imputation = index)
+  }) |>
+  list_rbind()
+
+write_parquet(
+  diagnostics,
+  file.path(results_dir, "diagnostics.parquet"),
+  compression = "zstd"
+)
+
+passed <- diagnostics_pass(diagnostics)
+if (!passed) stop("The pooled unadjusted landmark QoL diagnostic check failed.")
+
+tibble(
+  models = length(indices),
+  maximum_rhat = max(diagnostics$rhat[is.finite(diagnostics$rhat)]),
+  minimum_ess_bulk = min(diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]),
+  minimum_ess_tail = min(diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]),
+  passed = passed
+) |>
+  kable()
+```
+
+```{r}
+#| label: save-trace-plots
+#| include: false
+
+# Intercepts and the treatment coefficient (rmsb's names for Stan's alpha and
+# beta).
+for (index in indices) {
+  trace_variables <- colnames(models[[index]]$draws)
+  if (length(trace_variables) == 0L) {
+    stop("No unadjusted QoL alpha or beta parameters were found for trace plotting.")
+  }
+
+  save_figure(
+    plot_traces(trace_draws(models[[index]], trace_variables), ncol = 3),
+    file.path(trace_dir, sprintf("trace-%02d.png", index)),
+    height = 1.4 * ceiling(length(trace_variables) / 3)
+  )
+}
+```
+
+## Estimand
+
+- Odds ratio for a worse state (including death); below 1 favours ctDNA.
+
+```{r}
+#| label: derive-estimand
+#| include: false
+
+draws <- models |>
+  imap(\(model, index) {
+    stopifnot(
+      "The unadjusted QoL posterior does not contain the coefficient `tx`." =
+        "tx" %in% colnames(model$draws)
+    )
+
+    set.seed(config$seeds$supporting + (index - 1) * 1000 + 450)
+    selected <- sample.int(
+      nrow(model$draws),
+      config$posterior_draws$supporting,
+      replace = FALSE
+    )
+
+    tibble(
+      imputation = index,
+      draw = seq_len(config$posterior_draws$supporting),
+      log_odds_ratio_worse = model$draws[selected, "tx"],
+      odds_ratio_worse = exp(log_odds_ratio_worse)
+    )
+  }) |>
+  list_rbind()
+
+summary <- draws |>
+  summarise(
+    estimand = "unadjusted proportional odds ratio for a worse six-month QoL/death state",
+    posterior_mean = mean(odds_ratio_worse),
+    posterior_median = median(odds_ratio_worse),
+    q025 = quantile(odds_ratio_worse, 0.025, names = FALSE),
+    q975 = quantile(odds_ratio_worse, 0.975, names = FALSE),
+    probability_benefit = mean(log_odds_ratio_worse < 0),
+    imputations = n_distinct(imputation),
+    posterior_draws_per_imputation = config$posterior_draws$supporting,
+    computationally_reduced = TRUE
+  )
+
+write_parquet(
+  draws,
+  file.path(results_dir, "estimand-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  summary,
+  file.path(results_dir, "summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-unadjusted-summary
+#| tbl-cap: "Unadjusted proportional odds ratio for a worse six-month QoL/death state"
+#| echo: false
+
+kable(summary, digits = 3)
+```
+
+```{r}
+#| label: fig-unadjusted-posterior
+#| fig-cap: "Posterior of the unadjusted treatment odds ratio for a worse six-month QoL/death state, stacked across imputations (logarithmic scale)"
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+posterior_plot <- plot_posterior(
+  draws$odds_ratio_worse,
+  x_label = "Unadjusted odds ratio for a worse six-month QoL/death state, ctDNA versus usual care",
+  reference = 1,
+  log_scale = TRUE
+)
+
+save_figure(posterior_plot, file.path(results_dir, "odds-ratio-posterior.png"))
+
+posterior_plot
+```

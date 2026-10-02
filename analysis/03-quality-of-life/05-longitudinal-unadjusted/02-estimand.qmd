@@ -1,0 +1,340 @@
+---
+title: "QoL death-inclusive Markov, unadjusted — state occupancy and estimand"
+subtitle: "Difference in weeks with good-or-better QoL over 26 weeks"
+format:
+  html:
+    toc: true
+---
+
+- Positive values favour ctDNA.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(mostr)
+library(ggdist)
+library(knitr)
+library(arrow)
+library(here)
+library(yaml)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+n_imputations <- config$imputation$m_supporting
+indices <- seq_len(n_imputations)
+n_draws <- config$posterior_draws$main
+
+results_dir <- here(
+  "analysis", "03-quality-of-life", "05-longitudinal-unadjusted", "results"
+)
+model_dir <- file.path(results_dir, "models")
+estimand_dir <- file.path(results_dir, "estimand")
+figure_dir <- file.path(results_dir, "figures", "estimand")
+
+dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## State occupancy probabilities per imputation
+
+```{r}
+#| label: compute-sops
+#| include: false
+
+# Keep only the summary columns and the draws; the avg_sops() object itself
+# carries large attributes (the model, the prediction data and the draws).
+# Subsetting the column list by name drops those attributes.
+sop_results <- indices |>
+  map(\(index) {
+    model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+
+    # The +750 offset keeps the seeds apart from the adjusted model (+600).
+    sops <- avg_sops(
+      model = model,
+      variables = list(tx = c(0, 1)),
+      times = 1:26,
+      y_levels = 1:8,
+      absorb = 8L,
+      p_var = "yprev",
+      id_var = "id",
+      time_var = "week",
+      include_re = TRUE,
+      n_draws = n_draws,
+      seed = config$seeds$supporting + (index - 1) * 1000 + 750,
+      posterior_summary = "median",
+      return_draws = TRUE
+    )
+
+    sop_draws <- as.data.frame(attr(sops, "draws"))
+    required_columns <- c("draw_id", "estimate", "time", "state", "tx")
+
+    stopifnot(
+      "SOP draws lack the draw, state, time or treatment columns" =
+        all(required_columns %in% names(sop_draws)),
+      "SOP draws are incomplete" =
+        n_distinct(sop_draws$draw_id) == n_draws &&
+          !anyNA(sop_draws[required_columns])
+    )
+
+    list(
+      summary = as_tibble(as.list(sops)[names(sops)]) |>
+        mutate(imputation = index),
+      draws = sop_draws |>
+        mutate(
+          imputation = index,
+          state = as.integer(as.character(state)),
+          tx = as.integer(as.character(tx))
+        )
+    )
+  })
+
+sop_summary_by_imputation <- map(sop_results, "summary") |> list_rbind()
+ungrouped_sop_draws <- map(sop_results, "draws") |> list_rbind()
+
+draw_sums <- ungrouped_sop_draws |>
+  summarise(
+    probability = sum(estimate),
+    .by = c(imputation, draw_id, tx, time)
+  )
+
+stopifnot(
+  "A posterior SOP draw does not sum to one across states" =
+    all(abs(draw_sums$probability - 1) <= 1e-6)
+)
+```
+
+## Pool and integrate the matched SOP draws
+
+```{r}
+#| label: pool-sops
+#| include: false
+
+state_labels <- c(
+  "Excellent", "Very good", "Good", "Average",
+  "Below average", "Poor", "Very poor", "Death"
+)
+
+ungrouped_sop_summary <- ungrouped_sop_draws |>
+  mutate(
+    state = factor(state, levels = 1:8, labels = state_labels),
+    tx = group_factor(tx)
+  ) |>
+  summarise(
+    conf.low = quantile(estimate, 0.025, names = FALSE),
+    conf.high = quantile(estimate, 0.975, names = FALSE),
+    estimate = median(estimate),
+    .by = c(tx, time, state)
+  )
+
+grouped_sop_draws <- ungrouped_sop_draws |>
+  mutate(
+    state = case_when(
+      state %in% 1:3 ~ "Good",
+      state == 4L ~ "Average",
+      state %in% 5:7 ~ "Bad",
+      state == 8L ~ "Death",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  summarise(
+    estimate = sum(estimate),
+    .by = c(imputation, draw_id, tx, time, state)
+  )
+
+stopifnot(!anyNA(grouped_sop_draws$state))
+
+grouped_sop_summary <- grouped_sop_draws |>
+  mutate(
+    state = factor(
+      state,
+      levels = c("Good", "Average", "Bad", "Death"),
+      labels = c("Good (1-3)", "Average (4)", "Bad (5-7)", "Death (8)")
+    ),
+    tx = group_factor(tx)
+  ) |>
+  summarise(
+    conf.low = quantile(estimate, 0.025, names = FALSE),
+    conf.high = quantile(estimate, 0.975, names = FALSE),
+    estimate = median(estimate),
+    .by = c(tx, time, state)
+  )
+
+# Each interval must contain its median and not all intervals may be empty.
+sop_columns <- c("estimate", "conf.low", "conf.high", "time", "state", "tx")
+
+for (sop_summary in list(ungrouped_sop_summary, grouped_sop_summary)) {
+  interval_width <- sop_summary$conf.high - sop_summary$conf.low
+
+  stopifnot(
+    !anyNA(sop_summary[sop_columns]),
+    all(sop_summary$conf.low <= sop_summary$estimate),
+    all(sop_summary$conf.high >= sop_summary$estimate),
+    any(abs(interval_width) >= .Machine$double.eps)
+  )
+}
+
+time_in_group_draws <- grouped_sop_draws |>
+  summarise(
+    weeks = sum(estimate),
+    .by = c(imputation, draw_id, tx, state)
+  )
+
+comparison_draws <- time_in_group_draws |>
+  filter(state == "Good") |>
+  select(imputation, draw_id, tx, weeks) |>
+  pivot_wider(names_from = tx, values_from = weeks, names_prefix = "tx_") |>
+  mutate(
+    draw = tx_1 - tx_0,
+    estimand = "Difference in weeks with good-or-better QoL"
+  )
+
+stopifnot(
+  "The good-QoL contrast must keep one matched contrast per draw" =
+    nrow(comparison_draws) == n_imputations * n_draws &&
+      !anyNA(comparison_draws$draw)
+)
+
+estimand_summary <- comparison_draws |>
+  summarise(
+    estimand = first(estimand),
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    q025 = quantile(draw, 0.025, names = FALSE),
+    q975 = quantile(draw, 0.975, names = FALSE),
+    probability_benefit = mean(draw > 0),
+    horizon_weeks = 26L,
+    imputations = n_distinct(imputation),
+    posterior_draws_per_imputation = n_draws,
+    computationally_reduced = config$imputation$m_main < 50
+  )
+
+outputs <- list(
+  "state-occupancy-by-imputation-summary.parquet" = sop_summary_by_imputation,
+  "state-occupancy-ungrouped-draws.parquet" = ungrouped_sop_draws,
+  "state-occupancy-ungrouped-summary.parquet" = ungrouped_sop_summary,
+  "state-occupancy-grouped-draws.parquet" = grouped_sop_draws,
+  "state-occupancy-grouped-summary.parquet" = grouped_sop_summary,
+  "time-in-group-draws.parquet" = time_in_group_draws,
+  "good-qol-difference-draws.parquet" = comparison_draws,
+  "good-qol-difference-summary.parquet" = estimand_summary
+)
+
+iwalk(outputs, \(data, filename) {
+  write_parquet(
+    as.data.frame(data),
+    file.path(estimand_dir, filename),
+    compression = "zstd"
+  )
+})
+```
+
+```{r}
+#| label: tbl-estimand
+#| tbl-cap: "Posterior summary of the unadjusted ctDNA-minus-usual-care difference in weeks with good-or-better QoL"
+#| echo: false
+
+estimand_summary |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  kable()
+```
+
+## State occupancy probabilities
+
+- Ribbons: 95% credible intervals.
+
+```{r}
+#| label: fig-model-sops-ungrouped
+#| fig-cap: "Pooled unadjusted model-derived QoL/death state occupancy probabilities by randomized group"
+#| fig-alt: "Posterior state occupancy curves over 26 weeks for seven ordered QoL states and death from the unadjusted model. Colours distinguish states, line types distinguish randomized groups, and ribbons show 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+ungrouped_sop_plot <- plot_sops(
+  ungrouped_sop_summary,
+  time_var = "time",
+  facet_var = NULL,
+  linetype_var = "tx"
+) +
+  scale_linetype_group() +
+  scale_colour_state() +
+  scale_fill_state() +
+  labs(
+    x = "Week after random selection",
+    y = "State occupancy probability",
+    colour = "QoL state",
+    fill = "QoL state",
+    linetype = NULL,
+    title = NULL
+  )
+
+save_figure(
+  ungrouped_sop_plot,
+  file.path(figure_dir, "model-state-occupancy-ungrouped.png"),
+  height = 5.5
+)
+
+ungrouped_sop_plot
+```
+
+```{r}
+#| label: fig-model-sops-grouped
+#| fig-cap: "Pooled unadjusted model-derived state occupancy probabilities grouped as Good, Average, Bad, and Death"
+#| fig-alt: "Posterior state occupancy curves over 26 weeks for Good quality of life states one to three, Average state four, Bad states five to seven, and Death state eight, from the unadjusted model. Line types identify randomized groups and ribbons show 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 5.5
+#| echo: false
+
+grouped_sop_plot <- plot_sops(
+  grouped_sop_summary,
+  time_var = "time",
+  facet_var = NULL,
+  linetype_var = "tx"
+) +
+  scale_linetype_group() +
+  scale_colour_state() +
+  scale_fill_state() +
+  labs(
+    x = "Week after random selection",
+    y = "State occupancy probability",
+    colour = "QoL state",
+    fill = "QoL state",
+    linetype = NULL,
+    title = NULL
+  )
+
+save_figure(
+  grouped_sop_plot,
+  file.path(figure_dir, "model-state-occupancy-grouped.png"),
+  height = 5.5
+)
+
+grouped_sop_plot
+```
+
+```{r}
+#| label: fig-comparison-posterior
+#| fig-cap: "Posterior distribution of the unadjusted treatment difference in weeks with good-or-better QoL"
+#| fig-alt: "A half-eye density above a posterior dot plot of the ctDNA-minus-usual-care difference in weeks spent in QoL states one through three over 26 weeks, from the unadjusted model. Thick and thin intervals show the 66 and 95 percent credible intervals, and a dashed line marks zero."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+comparison_posterior_plot <- plot_posterior(
+  comparison_draws$draw,
+  x_label = paste0(
+    "Difference in weeks with good-or-better QoL over 26 weeks ",
+    "(ctDNA − usual care)"
+  )
+)
+
+save_figure(
+  comparison_posterior_plot,
+  file.path(figure_dir, "good-qol-time-difference-posterior.png")
+)
+
+comparison_posterior_plot
+```

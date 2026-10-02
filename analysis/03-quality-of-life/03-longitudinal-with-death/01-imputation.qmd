@@ -1,0 +1,385 @@
+---
+title: "QoL death-inclusive Markov — imputation"
+subtitle: "Two-stage imputation of the weekly QoL data"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(mice)
+library(Hmisc)
+library(arrow)
+library(here)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+n_imputations <- config$imputation$m_supporting
+indices <- seq_len(n_imputations)
+
+input_path <- here(
+  "analysis", "03-quality-of-life", "results",
+  "death-inclusive-longitudinal-prepared.parquet"
+)
+results_dir <- here(
+  "analysis", "03-quality-of-life", "03-longitudinal-with-death", "results"
+)
+imputation_dir <- file.path(results_dir, "imputations")
+baseline_imputation_path <- file.path(results_dir, "baseline-imputations.rds")
+
+dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Prepare the weekly imputation data
+
+```{r}
+#| label: prepare-weekly-data
+#| include: false
+
+prepared_full <- read_parquet(input_path) |>
+  as.data.frame() |>
+  arrange(id, week)
+
+required_columns <- c(
+  "id", "tx", "week", "q30", "baseline_q30", "event_death",
+  "survival_time_days", "death_week", "ecog_fstcnt", "diagnosis_code"
+)
+stopifnot(
+  all(required_columns %in% names(prepared_full)),
+  !anyNA(prepared_full$id),
+  !anyDuplicated(prepared_full[c("id", "week")])
+)
+
+patient_survival <- prepared_full |>
+  distinct(id, survival_time_days, event_death)
+
+patient_survival$na_est <- nelsonaalen(
+  patient_survival,
+  timevar = survival_time_days,
+  statusvar = event_death
+)
+
+mean_followup_qol <- prepared_full |>
+  filter(!is.na(q30), q30 %in% 1:7) |>
+  summarise(mean_observed_q30 = mean(as.numeric(q30)), .by = id)
+
+week_basis <- rcspline.eval(1:26, nk = 4, inclx = TRUE) |>
+  as.data.frame() |>
+  set_names(c("week", "week_rcs_1", "week_rcs_2"))
+
+prepared_full <- prepared_full |>
+  left_join(patient_survival |> select(id, na_est), by = "id") |>
+  left_join(week_basis, by = "week") |>
+  mutate(
+    gender = factor(gender),
+    age_scaled = (age - mean(age, na.rm = TRUE)) / sd(age, na.rm = TRUE),
+    ecog_fstcnt = factor(
+      if_else(ecog_fstcnt == 4, 3, ecog_fstcnt),
+      ordered = TRUE
+    ),
+    plan_fstcnt_coded = fct_lump_n(factor(plan_fstcnt_coded), n = 4),
+    diagnosis_code = factor(diagnosis_code),
+    stage_binary = factor(stage_binary),
+    baseline_q30 = factor(baseline_q30, levels = 1:7, ordered = TRUE)
+  )
+```
+
+```{r}
+#| label: split-living-and-death-rows
+#| include: false
+
+prepared <- prepared_full |>
+  filter(event_death == 0L | week < death_week) |>
+  select(-y_death_inclusive)
+
+death_template <- prepared_full |>
+  filter(event_death == 1L, week == death_week) |>
+  select(-y_death_inclusive)
+
+decedent_ids <- prepared_full |>
+  filter(event_death == 1L) |>
+  distinct(id) |>
+  pull(id)
+
+stopifnot(
+  "The death template must contain exactly one death row per decedent" =
+    !anyNA(death_template$id) &&
+      !anyDuplicated(death_template[c("id", "week")]) &&
+      nrow(death_template) == length(decedent_ids) &&
+      setequal(death_template$id, decedent_ids)
+)
+
+write_parquet(
+  prepared,
+  file.path(results_dir, "prepared.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  death_template,
+  file.path(results_dir, "death-template.parquet"),
+  compression = "zstd"
+)
+```
+
+## Impute patient-level variables
+
+```{r}
+#| label: impute-baseline
+#| include: false
+
+baseline_variables <- c(
+  "age_scaled", "gender", "ecog_fstcnt", "diagnosis_code", "stage_binary",
+  "plan_fstcnt_coded", "albumin", "c_reactive_protein", "baseline_q30"
+)
+baseline_targets <- c(
+  "ecog_fstcnt", "diagnosis_code", "plan_fstcnt_coded", "albumin",
+  "c_reactive_protein", "baseline_q30", "mean_observed_q30"
+)
+completed_baseline_variables <- setdiff(baseline_targets, "mean_observed_q30")
+
+# Column order drives the MICE visit sequence; keep it.
+baseline_data <- prepared_full |>
+  distinct(id, .keep_all = TRUE) |>
+  select(id, tx, all_of(baseline_variables), event_death, na_est) |>
+  left_join(mean_followup_qol, by = "id")
+
+if (file.exists(baseline_imputation_path)) {
+  baseline_imputations <- readRDS(baseline_imputation_path)
+} else {
+  methods <- make.method(baseline_data)
+  methods[setdiff(names(methods), baseline_targets)] <- ""
+
+  predictors <- make.predictorMatrix(baseline_data)
+  predictors[, "id"] <- 0L
+
+  baseline_imputations <- mice(
+    baseline_data,
+    m = n_imputations,
+    maxit = config$imputation$maxit,
+    method = methods,
+    predictorMatrix = predictors,
+    donors = config$imputation$donors,
+    seed = config$seeds$supporting + 500,
+    printFlag = TRUE
+  )
+
+  saveRDS(baseline_imputations, baseline_imputation_path, compress = "xz")
+}
+
+stopifnot(
+  "The cached baseline MICE object has the wrong number of datasets" =
+    baseline_imputations$m == n_imputations
+)
+```
+
+## Configure the longitudinal QoL imputation
+
+- Previous-state predictor: observed Q30 carried forward; completed baseline Q30 until the first one.
+- Nelson--Aalen estimate and death indicator are predictors: informative about missing Q30.
+
+```{r}
+#| label: configure-longitudinal-imputation
+#| include: false
+
+history_proxy <- prepared_full |>
+  select(id, week, q30) |>
+  arrange(id, week) |>
+  group_by(id) |>
+  mutate(yprev_imputation = lag(q30)) |>
+  fill(yprev_imputation, .direction = "down") |>
+  ungroup() |>
+  select(id, week, yprev_imputation)
+
+q30_predictors <- c(
+  "tx", "age_scaled", "gender", "ecog_fstcnt", "diagnosis_code",
+  "stage_binary", "plan_fstcnt_coded", "albumin", "c_reactive_protein",
+  "baseline_q30", "event_death", "na_est", "week", "week_rcs_1",
+  "week_rcs_2", "yprev_imputation"
+)
+
+analysis_baseline_variables <- c(
+  "tx", "age", "gender", "diagnosis_code", "stage_binary", "ecog_fstcnt",
+  "plan_fstcnt_coded", "albumin", "c_reactive_protein"
+)
+```
+
+## Impute weekly QoL and add death
+
+- Death is never a MICE target; the observed death row is reattached afterwards.
+
+```{r}
+#| label: impute-weekly-qol
+#| include: false
+
+expected_keys <- bind_rows(
+  prepared |> select(id, week),
+  death_template |> select(id, week)
+)
+
+run_summary <- list()
+
+for (index in indices) {
+  long_imputation_path <- file.path(
+    imputation_dir,
+    sprintf("long-imputation-%02d.rds", index)
+  )
+
+  completed_baseline <- complete(baseline_imputations, index) |>
+    as.data.frame() |>
+    select(id, all_of(completed_baseline_variables))
+
+  stopifnot(
+    !anyNA(completed_baseline$id),
+    !anyDuplicated(completed_baseline$id),
+    setequal(completed_baseline$id, baseline_data$id)
+  )
+
+  if (file.exists(long_imputation_path)) {
+    long_imputation <- readRDS(long_imputation_path)
+  } else {
+    imputation_data <- prepared |>
+      select(-all_of(completed_baseline_variables)) |>
+      left_join(completed_baseline, by = "id", relationship = "many-to-one") |>
+      left_join(
+        history_proxy,
+        by = c("id", "week"),
+        relationship = "one-to-one"
+      ) |>
+      mutate(
+        yprev_imputation = coalesce(
+          yprev_imputation,
+          as.numeric(as.character(baseline_q30))
+        ),
+        yprev_imputation = factor(yprev_imputation, levels = 1:7),
+        q30 = factor(q30, levels = 1:7, ordered = TRUE),
+        tx = as.numeric(as.character(tx))
+      )
+
+    stopifnot(
+      !anyNA(imputation_data$id),
+      !anyDuplicated(imputation_data[c("id", "week")])
+    )
+
+    missing_predictors <- imputation_data[q30_predictors] |>
+      keep(anyNA) |>
+      names()
+    if (length(missing_predictors) > 0L) {
+      stop(
+        "Longitudinal imputation ", index,
+        " has missing values in completed predictors: ",
+        str_flatten_comma(missing_predictors)
+      )
+    }
+
+    methods <- make.method(imputation_data)
+    methods[] <- ""
+    methods["q30"] <- "polr"
+
+    predictors <- make.predictorMatrix(imputation_data)
+    predictors[, ] <- 0L
+    predictors["q30", q30_predictors] <- 1L
+
+    long_imputation <- mice(
+      imputation_data,
+      m = 1L,
+      maxit = config$imputation$maxit,
+      method = methods,
+      predictorMatrix = predictors,
+      seed = config$seeds$supporting + (index - 1) * 1000 + 550,
+      polr.to.loggedEvents = TRUE,
+      printFlag = TRUE
+    )
+
+    saveRDS(long_imputation, long_imputation_path, compress = "xz")
+  }
+
+  living_completed <- complete(long_imputation, 1L) |>
+    as.data.frame() |>
+    mutate(
+      q30 = as.integer(as.character(q30)),
+      y = q30
+    )
+
+  stopifnot(
+    "MICE did not preserve the living patient-week rows" =
+      !anyNA(living_completed$id) &&
+        !anyNA(living_completed$y) &&
+        !anyDuplicated(living_completed[c("id", "week")]) &&
+        setequal(
+          select(living_completed, id, week),
+          select(prepared, id, week)
+        )
+  )
+
+  death_rows <- death_template |>
+    select(-all_of(completed_baseline_variables)) |>
+    left_join(completed_baseline, by = "id", relationship = "many-to-one") |>
+    mutate(q30 = NA_integer_, y = 8L)
+
+  stopifnot(
+    "The death rows do not match the observed death template" =
+      !anyNA(death_rows$id) &&
+        nrow(death_rows) == nrow(death_template) &&
+        setequal(
+          select(death_rows, id, week),
+          select(death_template, id, week)
+        )
+  )
+
+  completed <- bind_rows(living_completed, death_rows) |>
+    arrange(id, week) |>
+    group_by(id) |>
+    mutate(
+      yprev = coalesce(
+        lag(y),
+        as.integer(as.character(first(baseline_q30)))
+      ),
+      yprev = factor(yprev, levels = 1:7)
+    ) |>
+    ungroup() |>
+    select(
+      id, y, q30, yprev, week, baseline_q30,
+      all_of(analysis_baseline_variables)
+    )
+
+  stopifnot(
+    "A completed dataset failed the patient, week, outcome or death checks" =
+      !anyNA(completed$id) &&
+        !anyNA(completed$y) &&
+        !anyDuplicated(completed[c("id", "week")]) &&
+        setequal(select(completed, id, week), expected_keys) &&
+        setequal(completed$id, prepared_full$id) &&
+        setequal(completed$id[completed$y == 8L], death_template$id) &&
+        all(completed$y %in% 1:8)
+  )
+
+  write_parquet(
+    completed,
+    file.path(imputation_dir, sprintf("imputation-%02d.parquet", index)),
+    compression = "zstd"
+  )
+
+  run_summary[[index]] <- tibble(
+    imputation = index,
+    rows = nrow(completed),
+    participants = n_distinct(completed$id),
+    imputed_q30 = nrow(long_imputation$imp$q30),
+    deaths = sum(completed$y == 8L),
+    logged_events = if (is.null(long_imputation$loggedEvents)) {
+      0L
+    } else {
+      nrow(long_imputation$loggedEvents)
+    }
+  )
+}
+
+run_summary <- list_rbind(run_summary)
+
+write_parquet(
+  run_summary,
+  file.path(results_dir, "imputation-run-summary.parquet"),
+  compression = "zstd"
+)
+```

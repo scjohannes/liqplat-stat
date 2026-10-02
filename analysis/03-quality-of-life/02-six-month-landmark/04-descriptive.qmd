@@ -1,0 +1,277 @@
+---
+title: "QoL six-month landmark: descriptive summaries"
+subtitle: "Observed, imputed and model-derived six-month state distributions"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+# rms must be attached: the adjusted model formula calls rcs(), which
+# predict() re-evaluates on the new data.
+library(rms)
+library(rmsb)
+library(scales)
+library(knitr)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+landmark_dir <- here(
+  "analysis", "03-quality-of-life", "02-six-month-landmark", "results"
+)
+results_dir <- file.path(landmark_dir, "descriptive")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+m_main <- config$imputation$m_main
+m_supporting <- config$imputation$m_supporting
+
+prepared <- read_parquet(
+  here("analysis", "03-quality-of-life", "results", "prepared.parquet")
+)
+completed_datasets <- map(seq_len(m_main), \(index) {
+  readRDS(file.path(
+    landmark_dir, "imputations", sprintf("completed-%02d.rds", index)
+  ))
+})
+
+state_levels <- as.character(1:8)
+display_levels <- c(state_levels, "Missing")
+```
+
+## Raw data
+
+```{r}
+#| label: raw-summaries
+#| include: false
+
+raw_summary <- prepared |>
+  group_by(tx) |>
+  summarise(
+    n = n(),
+    deaths_by_day_182 = sum(event_death == 1L, na.rm = TRUE),
+    baseline_qol_observed = sum(!is.na(baseline_q30)),
+    baseline_qol_missing = sum(is.na(baseline_q30)),
+    landmark_qol_observed = sum(!is.na(landmark_q30)),
+    landmark_qol_missing = sum(is.na(landmark_q30)),
+    composite_observed = sum(!is.na(y_landmark)),
+    composite_missing = sum(is.na(y_landmark)),
+    .groups = "drop"
+  )
+
+raw_counts <- prepared |>
+  mutate(
+    state = if_else(is.na(y_landmark), "Missing", as.character(y_landmark)),
+    state = factor(state, levels = display_levels)
+  ) |>
+  count(tx, state, .drop = FALSE, name = "n") |>
+  group_by(tx) |>
+  mutate(
+    proportion = n / sum(n),
+    source = "Observed raw data"
+  ) |>
+  ungroup()
+
+write_parquet(raw_summary, file.path(results_dir, "raw-summary.parquet"))
+write_parquet(raw_counts, file.path(results_dir, "raw-state-counts.parquet"))
+```
+
+```{r}
+#| label: tbl-raw-summary
+#| tbl-cap: "Availability of the raw QoL variables by randomized group"
+#| echo: false
+
+kable(raw_summary)
+```
+
+## Completed datasets
+
+```{r}
+#| label: imputed-proportions
+#| include: false
+
+imputed_probabilities <- completed_datasets |>
+  imap(\(data, index) {
+    data |>
+      mutate(state = factor(y_landmark, levels = 1:8)) |>
+      count(tx, state, .drop = FALSE, name = "n") |>
+      group_by(tx) |>
+      mutate(
+        imputation = index,
+        proportion = n / sum(n)
+      ) |>
+      ungroup() |>
+      select(imputation, tx, state, proportion)
+  }) |>
+  list_rbind()
+
+write_parquet(
+  imputed_probabilities,
+  file.path(results_dir, "imputed-state-probabilities.parquet")
+)
+```
+
+## Model-standardized state probabilities
+
+```{r}
+#| label: model-probabilities
+#| include: false
+
+# Called once per model (adjusted and unadjusted).
+model_state_summary <- function(model_name, m, seed_family, n_draws) {
+  model_draws <- seq_len(m) |>
+    map(\(index) {
+      model <- readRDS(file.path(
+        landmark_dir, model_name, "models", sprintf("model-%02d.rds", index)
+      ))
+
+      set.seed(seed_family + (index - 1) * 1000 + 700)
+      selected <- sample.int(nrow(model$draws), n_draws, replace = FALSE)
+      model$draws <- model$draws[selected, , drop = FALSE]
+
+      map(0:1, \(treatment) {
+        # Draws x participants x states; average over participants.
+        probabilities <- predict(
+          model,
+          newdata = completed_datasets[[index]] |> mutate(tx = treatment),
+          type = "fitted.ind",
+          posterior.summary = "all"
+        )
+        standardized <- apply(probabilities, c(1, 3), mean)
+
+        expand_grid(
+          draw = seq_len(nrow(standardized)),
+          state = state_levels
+        ) |>
+          mutate(
+            imputation = index,
+            tx = treatment,
+            probability = as.vector(t(standardized))
+          )
+      }) |>
+        list_rbind()
+    }) |>
+    list_rbind()
+
+  model_draws |>
+    group_by(tx, state) |>
+    summarise(
+      proportion = median(probability),
+      q025 = quantile(probability, 0.025, names = FALSE),
+      q975 = quantile(probability, 0.975, names = FALSE),
+      .groups = "drop"
+    ) |>
+    mutate(n = NA_integer_)
+}
+
+adjusted_summary <- model_state_summary(
+  "adjusted",
+  m = m_main,
+  seed_family = config$seeds$qol,
+  n_draws = config$posterior_draws$main
+) |>
+  mutate(source = "Median proportional-odds prediction")
+
+unadjusted_summary <- model_state_summary(
+  "unadjusted",
+  m = m_supporting,
+  seed_family = config$seeds$supporting,
+  n_draws = config$posterior_draws$supporting
+) |>
+  mutate(source = "Median unadjusted proportional-odds prediction")
+
+write_parquet(
+  adjusted_summary,
+  file.path(results_dir, "adjusted-model-state-probabilities.parquet")
+)
+write_parquet(
+  unadjusted_summary,
+  file.path(results_dir, "unadjusted-model-state-probabilities.parquet")
+)
+```
+
+## Figures
+
+```{r}
+#| label: state-distribution-plots
+#| include: false
+
+# Called once per model (adjusted and unadjusted). States use the state
+# colours; the "Missing" category of the raw data is drawn as NA in grey.
+state_distribution_plot <- function(model_summary, m) {
+  imputed_summary <- imputed_probabilities |>
+    filter(imputation <= m) |>
+    group_by(tx, state) |>
+    summarise(proportion = mean(proportion), .groups = "drop") |>
+    mutate(
+      n = NA_integer_,
+      source = "Mean across completed datasets"
+    )
+
+  plot_data <- bind_rows(
+    raw_counts |> select(tx, state, n, proportion, source),
+    imputed_summary |> select(tx, state, n, proportion, source),
+    model_summary |> select(tx, state, n, proportion, source)
+  ) |>
+    mutate(
+      state = factor(state, levels = state_levels),
+      tx = group_factor(tx),
+      source = fct_inorder(source)
+    )
+
+  ggplot(plot_data, aes(x = tx, y = proportion, fill = state)) +
+    geom_col(width = 0.72) +
+    facet_wrap(vars(source), nrow = 1L, labeller = label_wrap_gen(width = 25)) +
+    scale_fill_state(
+      drop = FALSE,
+      na.value = "grey75",
+      labels = \(states) replace_na(states, "Missing")
+    ) +
+    scale_y_continuous(labels = label_percent()) +
+    labs(
+      x = NULL,
+      y = "Proportion",
+      fill = "QoL/death state"
+    ) +
+    theme(panel.grid.major.x = element_blank())
+}
+
+adjusted_plot <- state_distribution_plot(adjusted_summary, m = m_main)
+unadjusted_plot <- state_distribution_plot(unadjusted_summary, m = m_supporting)
+
+save_figure(
+  adjusted_plot,
+  file.path(results_dir, "adjusted-state-distributions.png")
+)
+save_figure(
+  unadjusted_plot,
+  file.path(results_dir, "unadjusted-state-distributions.png")
+)
+```
+
+```{r}
+#| label: fig-adjusted-state-distributions
+#| fig-cap: "Observed, imputed and adjusted proportional-odds model-derived distributions of the six-month QoL/death state"
+#| fig-alt: "Three faceted stacked bar charts compare QoL and death states 1 through 8 by treatment group. The raw-data panel also includes a grey missing category."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+adjusted_plot
+```
+
+```{r}
+#| label: fig-unadjusted-state-distributions
+#| fig-cap: "Observed, imputed and unadjusted proportional-odds model-derived distributions of the six-month QoL/death state"
+#| fig-alt: "Three faceted stacked bar charts compare QoL and death states 1 through 8 by treatment group. The raw-data panel also includes a grey missing category."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+unadjusted_plot
+```

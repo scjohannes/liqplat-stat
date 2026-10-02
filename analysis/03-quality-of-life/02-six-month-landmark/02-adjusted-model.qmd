@@ -1,0 +1,245 @@
+---
+title: "QoL six-month landmark: adjusted model"
+subtitle: "Bayesian proportional-odds model adjusted for baseline QoL"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rms)
+library(rmsb)
+library(posterior)
+library(ggdist)
+library(knitr)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+landmark_dir <- here(
+  "analysis", "03-quality-of-life", "02-six-month-landmark", "results"
+)
+imputation_dir <- file.path(landmark_dir, "imputations")
+results_dir <- file.path(landmark_dir, "adjusted")
+model_dir <- file.path(results_dir, "models")
+trace_dir <- file.path(results_dir, "trace-plots")
+dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(trace_dir, recursive = TRUE, showWarnings = FALSE)
+
+indices <- seq_len(config$imputation$m_main)
+model_paths <- file.path(model_dir, sprintf("model-%02d.rds", indices))
+```
+
+## Fitting
+
+```{r}
+#| label: fit-models
+#| include: false
+
+pcontrast_tx <- list(
+  c1 = list(tx = 1),
+  c2 = list(tx = 0),
+  contrast = expression(c1 - c2),
+  mu = 0,
+  sd = 0.5
+)
+
+for (index in indices) {
+  if (file.exists(model_paths[index])) next
+
+  data <- file.path(imputation_dir, sprintf("completed-%02d.rds", index)) |>
+    readRDS() |>
+    mutate(
+      y_landmark = factor(y_landmark, levels = 1:8, ordered = TRUE),
+      baseline_q30 = as.numeric(as.character(baseline_q30))
+    )
+
+  # rms looks up the datadist object by name in the global environment.
+  dd <- datadist(data)
+  options(datadist = "dd")
+
+  model <- blrm(
+    y_landmark ~ tx + rcs(baseline_q30, 4),
+    pcontrast = pcontrast_tx,
+    data = data,
+    chains = config$markov$chains,
+    iter = config$markov$iterations,
+    warmup = config$markov$warmup,
+    backend = "cmdstan",
+    loo = FALSE,
+    sampling.args = list(
+      seed = config$seeds$qol + (index - 1) * 1000,
+      parallel_chains = config$markov$chains
+    )
+  )
+
+  saveRDS(model, model_paths[index], compress = "xz")
+}
+
+models <- map(model_paths, readRDS)
+```
+
+## Convergence
+
+- R-hat limit relaxed by 0.01 from the configured value: one imputation had R-hat 1.015.
+
+```{r}
+#| label: check-convergence
+#| echo: false
+
+diagnostics <- models |>
+  imap(\(model, index) {
+    stanGet(model) |>
+      as_draws_df() |>
+      summarise_draws() |>
+      mutate(imputation = index)
+  }) |>
+  list_rbind()
+
+write_parquet(
+  diagnostics,
+  file.path(results_dir, "diagnostics.parquet"),
+  compression = "zstd"
+)
+
+finite_rhat <- diagnostics$rhat[is.finite(diagnostics$rhat)]
+finite_bulk <- diagnostics$ess_bulk[is.finite(diagnostics$ess_bulk)]
+finite_tail <- diagnostics$ess_tail[is.finite(diagnostics$ess_tail)]
+
+passed <- length(finite_rhat) > 0L &&
+  length(finite_bulk) > 0L &&
+  length(finite_tail) > 0L &&
+  all(finite_rhat <= config$diagnostics$max_rhat + 0.01) &&
+  all(finite_bulk >= config$diagnostics$min_ess_bulk) &&
+  all(finite_tail >= config$diagnostics$min_ess_tail)
+
+if (!passed) stop("The pooled adjusted landmark QoL diagnostic check failed.")
+
+tibble(
+  models = length(indices),
+  maximum_rhat = max(finite_rhat),
+  minimum_ess_bulk = min(finite_bulk),
+  minimum_ess_tail = min(finite_tail),
+  passed = passed
+) |>
+  kable()
+```
+
+```{r}
+#| label: save-trace-plots
+#| include: false
+
+# Intercepts and regression coefficients (rmsb's names for Stan's alpha and
+# beta).
+for (index in indices) {
+  trace_variables <- colnames(models[[index]]$draws)
+  if (length(trace_variables) == 0L) {
+    stop("No QoL alpha or beta parameters were found for trace plotting.")
+  }
+
+  save_figure(
+    plot_traces(trace_draws(models[[index]], trace_variables), ncol = 3),
+    file.path(trace_dir, sprintf("trace-%02d.png", index)),
+    height = 1.4 * ceiling(length(trace_variables) / 3)
+  )
+}
+```
+
+## Estimand
+
+- Odds ratio for a worse state (including death), ctDNA vs usual care; below 1 favours ctDNA.
+
+```{r}
+#| label: derive-estimand
+#| include: false
+
+draws <- models |>
+  imap(\(model, index) {
+    stopifnot(
+      "The QoL model posterior does not contain the treatment coefficient `tx`." =
+        "tx" %in% colnames(model$draws)
+    )
+
+    set.seed(config$seeds$qol + (index - 1) * 1000 + 400)
+    selected <- sample.int(
+      nrow(model$draws),
+      size = config$posterior_draws$main,
+      replace = FALSE
+    )
+
+    tibble(
+      imputation = index,
+      draw = seq_len(config$posterior_draws$main),
+      log_odds_ratio_worse = model$draws[selected, "tx"],
+      odds_ratio_worse = exp(log_odds_ratio_worse)
+    )
+  }) |>
+  list_rbind()
+
+summary <- draws |>
+  summarise(
+    estimand = "proportional odds ratio for a worse six-month QoL/death state",
+    posterior_mean = mean(odds_ratio_worse),
+    posterior_median = median(odds_ratio_worse),
+    q025 = quantile(odds_ratio_worse, 0.025, names = FALSE),
+    q975 = quantile(odds_ratio_worse, 0.975, names = FALSE),
+    probability_benefit = mean(log_odds_ratio_worse < 0),
+    imputations = config$imputation$m_main,
+    posterior_draws_per_imputation = config$posterior_draws$main
+  )
+
+write_parquet(
+  draws,
+  file.path(results_dir, "estimand-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  summary,
+  file.path(results_dir, "summary.parquet"),
+  compression = "zstd"
+)
+
+writeLines(
+  as.yaml(list(
+    status = "available",
+    reason = "The prespecified OS rule selected the adjusted death-inclusive ordinal QoL analysis.",
+    artifacts = c(
+      "analysis/03-quality-of-life/02-six-month-landmark/results/adjusted/summary.parquet",
+      "analysis/03-quality-of-life/02-six-month-landmark/results/adjusted/estimand-draws.parquet"
+    )
+  )),
+  file.path(results_dir, "status.yml")
+)
+```
+
+```{r}
+#| label: tbl-adjusted-summary
+#| tbl-cap: "Adjusted proportional odds ratio for a worse six-month QoL/death state"
+#| echo: false
+
+kable(summary, digits = 3)
+```
+
+```{r}
+#| label: fig-adjusted-posterior
+#| fig-cap: "Posterior of the adjusted treatment odds ratio for a worse six-month QoL/death state, stacked across imputations (logarithmic scale)"
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+posterior_plot <- plot_posterior(
+  draws$odds_ratio_worse,
+  x_label = "Odds ratio for a worse six-month QoL/death state, ctDNA versus usual care",
+  reference = 1,
+  log_scale = TRUE
+)
+
+save_figure(posterior_plot, file.path(results_dir, "odds-ratio-posterior.png"))
+
+posterior_plot
+```

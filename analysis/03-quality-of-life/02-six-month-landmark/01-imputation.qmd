@@ -1,0 +1,313 @@
+---
+title: "QoL six-month landmark: imputation"
+subtitle: "Vital status at day 182 and MICE, one run per imputation index"
+format: html
+---
+
+- Censored before day 182: vital status drawn from the survival model, given survival to censoring.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(yaml)
+library(rstanarm)
+library(mice)
+library(tidyverse)
+source(here("R", "plot-style.R"))
+
+config <- read_yaml(here("config", "analysis.yml"))
+
+results_dir <- here(
+  "analysis", "03-quality-of-life", "02-six-month-landmark", "results"
+)
+imputation_dir <- file.path(results_dir, "imputations")
+figure_dir <- file.path(results_dir, "figures")
+dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+vital_status_model_path <- file.path(results_dir, "vital-status-model.rds")
+```
+
+## Covariates
+
+- Diagnosis lumped with `fct_lump_n()` (alphabetical levels), unlike the preparation grouping; kept as legacy.
+
+```{r}
+#| label: read-prepared
+#| include: false
+
+prepared <- read_parquet(
+  here("analysis", "03-quality-of-life", "results", "prepared.parquet")
+) |>
+  as.data.frame() |>
+  mutate(
+    gender = factor(gender),
+    age_scaled = (age - mean(age)) / sd(age),
+    ecog_fstcnt = factor(if_else(ecog_fstcnt == 4, 3, ecog_fstcnt)),
+    plan_fstcnt_coded = fct_lump_n(factor(plan_fstcnt_coded), n = 4),
+    diagnosis_group = fct_lump_n(factor(diagnosis), n = 4)
+  )
+```
+
+## Vital-status model
+
+```{r}
+#| label: fit-vital-status-model
+#| include: false
+
+if (!file.exists(vital_status_model_path)) {
+  vital_status_data <- prepared |>
+    filter(survival_time_days > 0)
+
+  vital_status_terms <- colnames(model.matrix(
+    ~ tx + age_scaled + gender + diagnosis_group + stage_binary,
+    data = vital_status_data
+  ))[-1L]
+
+  # survival::Surv stays qualified: OS 03-death-at-26-weeks predicts from this
+  # saved model without attaching survival.
+  vital_status_model <- stan_surv(
+    formula = survival::Surv(survival_time_days, event_death) ~
+      tx + age_scaled + gender + diagnosis_group + stage_binary,
+    data = vital_status_data,
+    basehaz = "ms",
+    basehaz_ops = list(df = 5),
+    prior = normal(
+      location = rep(0, length(vital_status_terms)),
+      scale = ifelse(vital_status_terms == "tx", 0.55, 2.5)
+    ),
+    prior_intercept = normal(0, 20),
+    prior_aux = dirichlet(1),
+    chains = 4L,
+    cores = 4L,
+    iter = 2000L,
+    warmup = 1000L,
+    seed = config$seeds$qol + 100
+  )
+
+  saveRDS(vital_status_model, vital_status_model_path, compress = "xz")
+}
+
+vital_status_model <- readRDS(vital_status_model_path)
+```
+
+```{r}
+#| label: check-vital-status-model
+#| include: false
+
+vital_status_diagnostics <- summary(vital_status_model) |>
+  as.data.frame() |>
+  rownames_to_column("parameter") |>
+  relocate(parameter, .after = last_col())
+
+rhat <- vital_status_diagnostics$Rhat
+n_eff <- vital_status_diagnostics$n_eff
+
+if (any(rhat[is.finite(rhat)] > config$diagnostics$max_rhat) ||
+    any(n_eff[is.finite(n_eff)] < config$diagnostics$min_ess_bulk)) {
+  stop("The dedicated QoL vital-status survival model did not converge.")
+}
+
+write_parquet(
+  vital_status_diagnostics,
+  file.path(results_dir, "vital-status-diagnostics.parquet"),
+  compression = "zstd"
+)
+```
+
+## Imputation, one index at a time
+
+- `landmark_q30` is also imputed for deaths; it only acts as a predictor, never enters `y_landmark`.
+
+```{r}
+#| label: impute
+#| include: false
+
+unresolved <- prepared |>
+  filter(
+    event_death == 0L,
+    survival_time_days < config$analysis$horizon_days
+  )
+
+for (index in seq_len(config$imputation$m_main)) {
+  mids_path <- file.path(imputation_dir, sprintf("imputation-%02d.rds", index))
+  completed_path <- file.path(imputation_dir, sprintf("completed-%02d.rds", index))
+  draws_path <- file.path(
+    imputation_dir,
+    sprintf("vital-status-draws-%02d.parquet", index)
+  )
+  if (all(file.exists(c(mids_path, completed_path, draws_path)))) next
+
+  # Day-182 survival probability for each unresolved participant, from one
+  # posterior draw, conditional on survival to the censoring day.
+  predicted_survival <- posterior_survfit(
+    vital_status_model,
+    newdata = unresolved,
+    type = "surv",
+    times = config$analysis$horizon_days,
+    condition = TRUE,
+    last_time = "survival_time_days",
+    standardise = FALSE,
+    extrapolate = FALSE,
+    draws = 1L,
+    seed = config$seeds$qol + (index - 1) * 1000 + 120,
+    return_matrix = TRUE
+  )
+  conditional_survival <- as.numeric(predicted_survival[[1L]][1L, ])
+
+  set.seed(config$seeds$qol + (index - 1) * 1000 + 140)
+  vital_status_draws <- tibble(
+    id = unresolved$id,
+    imputation = index,
+    censoring_day = unresolved$survival_time_days,
+    conditional_survival = conditional_survival,
+    death_probability = 1 - conditional_survival,
+    death_182 = rbinom(
+      n = nrow(unresolved),
+      size = 1L,
+      prob = death_probability
+    )
+  )
+
+  # Column order sets the MICE visit sequence; keep it.
+  imputation_data <- prepared |>
+    left_join(
+      vital_status_draws |> select(id, drawn_death = death_182),
+      by = "id"
+    ) |>
+    mutate(death_182 = coalesce(drawn_death, event_death)) |>
+    select(
+      id, tx, age_scaled, gender, diagnosis_group, ecog_fstcnt,
+      plan_fstcnt_coded, albumin, c_reactive_protein, baseline_q30,
+      landmark_q30, death_182
+    ) |>
+    mutate(
+      baseline_q30 = factor(baseline_q30, levels = 1:7, ordered = TRUE),
+      landmark_q30 = factor(landmark_q30, levels = 1:7, ordered = TRUE)
+    )
+
+  methods <- make.method(imputation_data)
+  predictors <- make.predictorMatrix(imputation_data)
+  predictors[, "id"] <- 0L
+
+  imputation <- mice(
+    imputation_data,
+    m = 1L,
+    maxit = config$imputation$maxit,
+    method = methods,
+    predictorMatrix = predictors,
+    donors = config$imputation$donors,
+    seed = config$seeds$imputation + (index - 1) * 1000 + 200,
+    printFlag = FALSE
+  )
+
+  completed <- complete(imputation, 1L) |>
+    mutate(
+      baseline_q30 = as.integer(as.character(baseline_q30)),
+      landmark_q30 = as.integer(as.character(landmark_q30)),
+      y_landmark = if_else(death_182 == 1L, 8L, landmark_q30)
+    )
+
+  stopifnot(
+    "QoL imputation left a substantive-model variable missing." =
+      !anyNA(completed$baseline_q30) && !anyNA(completed$y_landmark),
+    "QoL imputation produced an invalid ordinal state." =
+      all(completed$baseline_q30 %in% 1:7) && all(completed$y_landmark %in% 1:8)
+  )
+
+  write_parquet(vital_status_draws, draws_path, compression = "zstd")
+  saveRDS(imputation, mids_path, compress = "xz")
+  saveRDS(completed, completed_path, compress = "xz")
+}
+```
+
+```{r}
+#| label: read-imputations
+#| include: false
+
+indices <- seq_len(config$imputation$m_main)
+
+imputation_fits <- map(
+  indices,
+  \(index) readRDS(file.path(imputation_dir, sprintf("imputation-%02d.rds", index)))
+)
+completed_datasets <- map(
+  indices,
+  \(index) readRDS(file.path(imputation_dir, sprintf("completed-%02d.rds", index)))
+)
+
+vital_status_draws <- indices |>
+  map(\(index) {
+    read_parquet(file.path(
+      imputation_dir,
+      sprintf("vital-status-draws-%02d.parquet", index)
+    ))
+  }) |>
+  list_rbind()
+
+write_parquet(
+  vital_status_draws,
+  file.path(results_dir, "vital-status-draws.parquet"),
+  compression = "zstd"
+)
+```
+
+## MICE diagnostics
+
+```{r}
+#| label: fig-mice-convergence
+#| echo: false
+#| fig-cap: "MICE convergence traces for the six-month landmark imputation: mean and standard deviation of the imputed values, one line per completed dataset (one MICE run each). Factors are summarised by their integer codes."
+#| fig-width: 8
+#| fig-height: 9
+
+mice_stats <- mice_chain_stats(imputation_fits)
+mice_trace_plot <- plot_mice_traces(mice_stats)
+
+save_figure(
+  mice_trace_plot,
+  file.path(figure_dir, "mice-convergence-traces.png"),
+  height = 1 + 1.3 * n_distinct(mice_stats$variable)
+)
+
+mice_trace_plot
+```
+
+```{r}
+#| label: fig-observed-vs-imputed
+#| echo: false
+#| fig-cap: "Category proportions among observed values (black) and imputed values of each completed dataset (pink) for the six-month landmark imputation."
+#| fig-width: 8
+#| fig-height: 3.5
+
+diagnostic_variables <- c(
+  "Baseline Q30" = "baseline_q30",
+  "Six-month Q30" = "landmark_q30",
+  ECOG = "ecog_fstcnt"
+)
+
+# The runs differ in the drawn vital status, so ibind() cannot combine them:
+# proportions per run (one completed dataset each), observed values once (they
+# are the same in every run).
+category_proportions <- imap(imputation_fits, \(fit, index) {
+  imputed_category_proportions(fit, diagnostic_variables) |>
+    filter(source == "Imputed" | index == 1) |>
+    mutate(dataset = if_else(source == "Imputed", as.character(index), dataset))
+}) |>
+  list_rbind() |>
+  # Numeric category order across variables (ECOG starts at 0).
+  mutate(category = fct_inseq(category))
+
+category_plot <- plot_imputed_categories(category_proportions)
+
+save_figure(
+  category_plot,
+  file.path(figure_dir, "observed-vs-imputed.png"),
+  height = 3.5
+)
+
+category_plot
+```
