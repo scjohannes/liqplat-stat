@@ -241,6 +241,133 @@ estimand_summary |>
   kable()
 ```
 
+## Transition odds ratio
+
+- Transition odds ratio exp(β_tx): odds of a worse state next week, conditional on covariates, previous state(s) and the patient intercept; below 1 favours ctDNA.
+
+```{r}
+#| label: transition-odds-ratio
+#| include: false
+
+odds_ratio_draws <- indices |>
+  map(\(index) {
+    model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+    set.seed(config$seeds$supporting + (index - 1) * 1000 + 800)
+    selected <- sample.int(nrow(model$draws), n_draws)
+
+    tibble(
+      imputation = index,
+      draw = seq_len(n_draws),
+      log_odds_ratio = model$draws[selected, "tx"]
+    )
+  }) |>
+  list_rbind() |>
+  mutate(odds_ratio = exp(log_odds_ratio))
+
+odds_ratio_summary <- odds_ratio_draws |>
+  summarise(
+    median = median(odds_ratio),
+    lower_95 = quantile(odds_ratio, 0.025, names = FALSE),
+    upper_95 = quantile(odds_ratio, 0.975, names = FALSE),
+    probability_benefit = mean(odds_ratio < 1),
+    imputations = n_distinct(imputation),
+    draws_per_imputation = n_draws
+  )
+
+write_parquet(
+  odds_ratio_draws,
+  file.path(estimand_dir, "odds-ratio-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  odds_ratio_summary,
+  file.path(estimand_dir, "odds-ratio-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+## Time benefit
+
+- Per participant and week: P(better state with ctDNA) − P(worse state), from the two counterfactual state
+  distributions; summed over weeks 1–26 and averaged over participants. Positive favours ctDNA.
+- Fewer draws than the SOPs (config `time_benefit`); cached per imputation.
+
+```{r}
+#| label: time-benefit
+#| include: false
+
+tb_draws <- config$posterior_draws$time_benefit
+
+time_benefit_draws <- indices |>
+  map(\(index) {
+    path <- file.path(
+      estimand_dir,
+      sprintf("time-benefit-draws-%02d-draws-%d.parquet", index, tb_draws)
+    )
+    if (!file.exists(path)) {
+      model <- readRDS(file.path(model_dir, sprintf("model-%02d.rds", index)))
+
+      time_benefit <- avg_comparisons(
+        model = model,
+        variables = list(tx = c(0, 1)),
+        estimand = "time_benefit",
+        times = 1:26,
+        y_levels = 1:8,
+        absorb = 8L,
+        p_var = "yprev",
+        id_var = "id",
+        time_var = "week",
+        include_re = TRUE,
+        n_draws = tb_draws,
+        seed = config$seeds$supporting + (index - 1) * 1000 + 750,
+        posterior_summary = "median",
+        return_draws = TRUE
+      )
+      draws <- as.data.frame(attr(time_benefit, "draws"))
+
+      stopifnot(
+        "Time-benefit draws are incomplete" =
+          nrow(draws) == tb_draws && !anyNA(draws$estimate)
+      )
+
+      write_parquet(
+        tibble(imputation = index, draw_id = draws$draw_id, weeks = draws$estimate),
+        path,
+        compression = "zstd"
+      )
+    }
+    read_parquet(path)
+  }) |>
+  list_rbind()
+
+time_benefit_summary <- time_benefit_draws |>
+  summarise(
+    median = median(weeks),
+    lower_95 = quantile(weeks, 0.025, names = FALSE),
+    upper_95 = quantile(weeks, 0.975, names = FALSE),
+    probability_benefit = mean(weeks > 0),
+    imputations = n_distinct(imputation),
+    draws_per_imputation = tb_draws
+  )
+
+write_parquet(
+  time_benefit_summary,
+  file.path(estimand_dir, "time-benefit-summary.parquet"),
+  compression = "zstd"
+)
+
+time_benefit_plot <- plot_posterior(
+  time_benefit_draws$weeks,
+  x_label = "Time benefit over 26 weeks (ctDNA vs usual care), weeks"
+)
+
+save_figure(
+  time_benefit_plot,
+  file.path(figure_dir, "time-benefit-posterior.png"),
+  height = 5
+)
+```
+
 ## State occupancy probabilities
 
 - Ribbons: 95% credible intervals.
