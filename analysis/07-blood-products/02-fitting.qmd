@@ -3,7 +3,8 @@ title: "Blood products — model fitting"
 format: html
 ---
 
-- Prespecified: adjusted model for all blood products. All other models are additional.
+- Prespecified: adjusted model for all blood products. All other models, including the zero-inflated ones, are additional.
+- No zero-inflated thrombocyte model: sampling of the adjusted model had not finished after more than two hours.
 
 ```{r}
 #| label: setup
@@ -71,6 +72,28 @@ blood_formulas <- list(
     bf(as.formula(paste(outcome, "~", unadjusted_terms)))
   })
 )
+
+# Added zero-inflated models: same count part; the zero-inflation part has the
+# same predictors without the offset.
+zi_terms <- c(
+  adjusted = str_remove(adjusted_terms, fixed(" + offset(log(exposure_days))")),
+  unadjusted = "tx"
+)
+
+zi_formulas <- list(
+  adjusted = map(blood_outcomes, \(outcome) {
+    bf(
+      as.formula(paste(outcome, "~", adjusted_terms)),
+      as.formula(paste("zi ~", zi_terms[["adjusted"]]))
+    )
+  }),
+  unadjusted = map(blood_outcomes, \(outcome) {
+    bf(
+      as.formula(paste(outcome, "~", unadjusted_terms)),
+      as.formula(paste("zi ~", zi_terms[["unadjusted"]]))
+    )
+  })
+)
 ```
 
 ## Priors
@@ -86,6 +109,8 @@ blood_priors <- c(
   # Pre-2.21 brms default; the new default lets chains escape to the Poisson limit.
   prior(gamma(0.01, 0.01), class = "shape")
 )
+
+zi_priors <- c(blood_priors, prior(normal(0, 2.5), class = "b", dpar = "zi"))
 ```
 
 ## Fitting
@@ -93,17 +118,32 @@ blood_priors <- c(
 ```{r}
 #| label: fit-models
 
-model_grid <- expand_grid(
-  outcome = names(blood_outcomes),
-  adjustment = c("adjusted", "unadjusted")
-) |>
-  mutate(
-    seed = config$seeds$supporting + 2400L + row_number(),
-    model_path = file.path(
-      results_dir,
-      paste0("model-", outcome, "-", adjustment, ".rds")
+model_grid <- bind_rows(
+  expand_grid(
+    outcome = names(blood_outcomes),
+    adjustment = c("adjusted", "unadjusted")
+  ) |>
+    mutate(
+      zero_inflated = FALSE,
+      seed = config$seeds$supporting + 2400L + row_number(),
+      model_path = file.path(
+        results_dir,
+        paste0("model-", outcome, "-", adjustment, ".rds")
+      )
+    ),
+  expand_grid(
+    outcome = setdiff(names(blood_outcomes), "thrombocytes"),
+    adjustment = c("adjusted", "unadjusted")
+  ) |>
+    mutate(
+      zero_inflated = TRUE,
+      seed = config$seeds$supporting + 2410L + row_number(),
+      model_path = file.path(
+        results_dir,
+        paste0("model-zi-", outcome, "-", adjustment, ".rds")
+      )
     )
-  )
+)
 
 thresholds <- config$diagnostics
 
@@ -140,17 +180,21 @@ passes_thresholds <- function(diagnostics) {
   ))
 }
 
-pwalk(model_grid, \(outcome, adjustment, seed, model_path) {
+pwalk(model_grid, \(outcome, adjustment, zero_inflated, seed, model_path) {
   if (!file.exists(model_path)) {
+    formulas <- if (zero_inflated) zi_formulas else blood_formulas
+    family <- if (zero_inflated) zero_inflated_negbinomial() else negbinomial()
+    priors <- if (zero_inflated) zi_priors else blood_priors
+
     fits <- if (adjustment == "adjusted") {
       # brm_multiple() seeds only compilation; seed R's RNG for the Stan seeds.
       set.seed(seed)
 
       brm_multiple(
-        blood_formulas$adjusted[[outcome]],
+        formulas$adjusted[[outcome]],
         data = completed_datasets,
-        family = negbinomial(),
-        prior = blood_priors,
+        family = family,
+        prior = priors,
         init = 0,
         chains = 4L,
         iter = 2000L,
@@ -161,10 +205,10 @@ pwalk(model_grid, \(outcome, adjustment, seed, model_path) {
       )
     } else {
       list(brm(
-        blood_formulas$unadjusted[[outcome]],
+        formulas$unadjusted[[outcome]],
         data = blood_data,
-        family = negbinomial(),
-        prior = blood_priors,
+        family = family,
+        prior = priors,
         init = 0,
         chains = 4L,
         iter = 2000L,
@@ -201,7 +245,7 @@ blood_diagnostics <- blood_fits |>
   mutate(diagnostics = map(fits, \(fits) {
     list_rbind(map(fits, fit_diagnostics), names_to = "imputation")
   })) |>
-  select(outcome, adjustment, diagnostics) |>
+  select(outcome, adjustment, zero_inflated, diagnostics) |>
   unnest(diagnostics) |>
   mutate(passed = passes_thresholds(pick(everything())))
 ```
@@ -220,7 +264,7 @@ kable(blood_diagnostics, digits = 3)
 #| tbl-cap: "Posterior coefficients of the adjusted combined blood-product model (first imputation)"
 
 blood_fits |>
-  filter(outcome == "blood_products", adjustment == "adjusted") |>
+  filter(outcome == "blood_products", adjustment == "adjusted", !zero_inflated) |>
   pull(fits) |>
   pluck(1, 1) |>
   fixef() |>

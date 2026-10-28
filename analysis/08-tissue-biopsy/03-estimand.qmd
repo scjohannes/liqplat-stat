@@ -26,6 +26,8 @@ biopsy_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
 completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
 adjusted_fits <- readRDS(file.path(results_dir, "model-adjusted.rds"))
 unadjusted_fits <- readRDS(file.path(results_dir, "model-unadjusted.rds"))
+zi_adjusted_fits <- readRDS(file.path(results_dir, "model-zi-adjusted.rds"))
+zi_unadjusted_fits <- readRDS(file.path(results_dir, "model-zi-unadjusted.rds"))
 
 rate_days <- 30
 
@@ -204,4 +206,114 @@ save_figure(
 )
 
 marginal_rates_plot
+```
+
+## Zero-inflated models
+
+- Added analysis. Rate: expected count per 30 days, (1 − zi) × mu, the estimand of the models above.
+- Components: structural-zero probability (zi) and rate of the count part (mu), each averaged over participants.
+
+```{r}
+#| label: zero-inflated-draws
+
+zi_draws <- tibble(
+  adjustment = c(rep("adjusted", length(zi_adjusted_fits)), "unadjusted"),
+  imputation = c(seq_along(zi_adjusted_fits), 1L),
+  fit = c(zi_adjusted_fits, zi_unadjusted_fits),
+  data = c(completed_datasets, list(biopsy_data))
+) |>
+  mutate(draws = map2(fit, data, \(fit, data) {
+    fit <- set_modeldata(fit, data)
+
+    counterfactual_data <- bind_rows(
+      data |> mutate(tx = 0),
+      data |> mutate(tx = 1)
+    ) |>
+      mutate(exposure_days = rate_days)
+
+    list(
+      rate = avg_predictions(fit, newdata = counterfactual_data, by = "tx", type = "response"),
+      zero_probability = avg_predictions(fit, newdata = counterfactual_data, by = "tx", dpar = "zi"),
+      count_rate = avg_predictions(fit, newdata = counterfactual_data, by = "tx", dpar = "mu")
+    ) |>
+      map(\(prediction) {
+        get_draws(prediction) |>
+          mutate(drawid = as.integer(as.character(drawid))) |>
+          filter(drawid <= config$posterior_draws$supporting) |>
+          select(tx, drawid, draw)
+      }) |>
+      list_rbind(names_to = "part")
+  })) |>
+  select(adjustment, imputation, draws) |>
+  unnest(draws) |>
+  pivot_wider(names_from = c(part, tx), values_from = draw, names_glue = "{part}_tx{tx}") |>
+  mutate(
+    rate_ratio = rate_tx1 / rate_tx0,
+    rate_difference = rate_tx1 - rate_tx0,
+    zero_probability_difference = zero_probability_tx1 - zero_probability_tx0,
+    count_rate_ratio = count_rate_tx1 / count_rate_tx0
+  )
+
+write_parquet(
+  zi_draws,
+  file.path(results_dir, "zero-inflated-draws.parquet"),
+  compression = "zstd"
+)
+```
+
+- P(fewer with ctDNA): rate ratio or count-rate ratio below 1, rate difference below 0, zero-probability difference above 0.
+
+```{r}
+#| label: tbl-zero-inflated-summary
+#| tbl-cap: "Zero-inflated models: posterior marginal rates per 30 days, structural-zero probabilities and contrasts (ctDNA vs usual care)"
+
+zi_summary <- zi_draws |>
+  select(-drawid) |>
+  pivot_longer(-c(adjustment, imputation), names_to = "quantity", values_to = "draw") |>
+  summarise(
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    probability_fewer_with_ctdna = case_when(
+      quantity[1] %in% c("rate_ratio", "count_rate_ratio") ~ mean(draw < 1),
+      quantity[1] == "rate_difference" ~ mean(draw < 0),
+      quantity[1] == "zero_probability_difference" ~ mean(draw > 0)
+    ),
+    .by = c(adjustment, quantity)
+  )
+
+write_parquet(
+  zi_summary,
+  file.path(results_dir, "zero-inflated-summary.parquet"),
+  compression = "zstd"
+)
+
+kable(zi_summary, digits = 3)
+```
+
+```{r}
+#| label: fig-zero-inflated-rate-ratio
+#| fig-cap: "Zero-inflated models: posterior marginal rate ratio of biopsy days (ctDNA / usual care). Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Two panels, adjusted and unadjusted zero-inflated model, each with a half-eye density above a posterior dot plot of the marginal rate ratio of biopsy days, ctDNA over usual care, on a log scale, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at a ratio of one."
+#| fig-width: 8
+#| fig-height: 7
+
+zi_rate_ratio_plot <- plot_posterior(
+  zi_draws |>
+    mutate(
+      panel = factor(adjustment_labels[adjustment], levels = adjustment_labels),
+      draw = rate_ratio
+    ),
+  x_label = "Rate ratio of biopsy days (ctDNA / usual care)",
+  reference = 1,
+  log_scale = TRUE
+)
+
+save_figure(
+  zi_rate_ratio_plot,
+  file.path(figure_dir, "biopsy-zero-inflated-rate-ratio.png"),
+  height = 7
+)
+
+zi_rate_ratio_plot
 ```

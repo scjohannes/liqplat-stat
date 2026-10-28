@@ -19,6 +19,8 @@ config <- read_yaml(here("config", "analysis.yml"))
 results_dir <- here("analysis", "08-tissue-biopsy", "results")
 adjusted_model_path <- file.path(results_dir, "model-adjusted.rds")
 unadjusted_model_path <- file.path(results_dir, "model-unadjusted.rds")
+zi_adjusted_model_path <- file.path(results_dir, "model-zi-adjusted.rds")
+zi_unadjusted_model_path <- file.path(results_dir, "model-zi-unadjusted.rds")
 
 biopsy_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
 completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
@@ -148,6 +150,69 @@ if (!file.exists(unadjusted_model_path)) {
 unadjusted_fits <- readRDS(unadjusted_model_path)
 ```
 
+## Zero-inflated models
+
+- Added analysis: the models above with a zero-inflation part that has the same predictors.
+
+```{r}
+#| label: fit-zero-inflated
+
+zi_prior <- c(coefficient_prior, prior(normal(0, 2.5), class = "b", dpar = "zi"))
+
+if (!file.exists(zi_adjusted_model_path)) {
+  set.seed(config$seeds$supporting + 2703L)
+
+  zi_adjusted_fits <- brm_multiple(
+    bf(
+      unique_biopsy_days ~ tx + age + ecog_group + offset(log(exposure_days)),
+      zi ~ tx + age + ecog_group
+    ),
+    data = completed_datasets,
+    family = zero_inflated_negbinomial(),
+    prior = zi_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    init = 0,
+    seed = config$seeds$supporting + 2703L,
+    combine = FALSE,
+    refresh = 0L
+  )
+
+  zi_adjusted_fits <- refit_unconverged(
+    zi_adjusted_fits,
+    seed = config$seeds$supporting + 2703L
+  )
+
+  saveRDS(zi_adjusted_fits, zi_adjusted_model_path, compress = "xz")
+}
+
+if (!file.exists(zi_unadjusted_model_path)) {
+  zi_unadjusted_fits <- list(brm(
+    bf(unique_biopsy_days ~ tx + offset(log(exposure_days)), zi ~ tx),
+    data = biopsy_data,
+    family = zero_inflated_negbinomial(),
+    prior = zi_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    init = 0,
+    seed = config$seeds$supporting + 2704L,
+    refresh = 0L
+  ))
+
+  zi_unadjusted_fits <- refit_unconverged(
+    zi_unadjusted_fits,
+    seed = config$seeds$supporting + 2704L
+  )
+
+  saveRDS(zi_unadjusted_fits, zi_unadjusted_model_path, compress = "xz")
+}
+
+zi_adjusted_fits <- readRDS(zi_adjusted_model_path)
+zi_unadjusted_fits <- readRDS(zi_unadjusted_model_path)
+```
+
 ## Diagnostics
 
 ```{r}
@@ -156,6 +221,8 @@ unadjusted_fits <- readRDS(unadjusted_model_path)
 model_diagnostics <- bind_rows(
   adjusted = list_rbind(map(adjusted_fits, fit_diagnostics), names_to = "imputation"),
   unadjusted = list_rbind(map(unadjusted_fits, fit_diagnostics), names_to = "imputation"),
+  zi_adjusted = list_rbind(map(zi_adjusted_fits, fit_diagnostics), names_to = "imputation"),
+  zi_unadjusted = list_rbind(map(zi_unadjusted_fits, fit_diagnostics), names_to = "imputation"),
   .id = "adjustment"
 ) |>
   mutate(passed = passes_thresholds(pick(everything())))
