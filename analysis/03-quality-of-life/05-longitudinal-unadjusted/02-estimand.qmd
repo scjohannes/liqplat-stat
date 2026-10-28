@@ -25,7 +25,7 @@ config <- read_yaml(here("config", "analysis.yml"))
 
 n_imputations <- config$imputation$m_supporting
 indices <- seq_len(n_imputations)
-n_draws <- config$posterior_draws$main
+n_draws <- config$posterior_draws$supporting
 
 results_dir <- here(
   "analysis", "03-quality-of-life", "05-longitudinal-unadjusted", "results"

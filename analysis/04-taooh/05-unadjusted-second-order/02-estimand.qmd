@@ -21,7 +21,7 @@ config <- read_yaml(here("config", "analysis.yml"))
 source(here("R", "posterior.R"))
 source(here("R", "plot-style.R"))
 
-n_draws <- config$posterior_draws$main
+n_draws <- config$posterior_draws$supporting
 
 horizon_days <- config$analysis$horizon_days
 stopifnot(horizon_days %% 7 == 0)
@@ -34,7 +34,7 @@ dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Post-estimation files carry the number of draws in their name, so changing
-# posterior_draws$main recomputes them.
+# posterior_draws$supporting recomputes them.
 estimand_path <- function(kind) {
   here(estimand_dir, sprintf("%s-01-draws-%d.parquet", kind, n_draws))
 }

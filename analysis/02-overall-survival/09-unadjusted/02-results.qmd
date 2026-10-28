@@ -30,7 +30,7 @@ figure_dir <- file.path(results_dir, "figures")
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 
 horizon_days <- config$analysis$horizon_days
-n_draws <- config$posterior_draws$main
+n_draws <- config$posterior_draws$supporting
 
 cohort <- read_parquet(
   here("analysis", "00-data", "results", "analysis-cohort.parquet")

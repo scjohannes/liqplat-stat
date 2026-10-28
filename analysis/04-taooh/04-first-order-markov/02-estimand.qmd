@@ -22,7 +22,7 @@ source(here("R", "posterior.R"))
 source(here("R", "plot-style.R"))
 
 indices <- seq_len(config$imputation$m_supporting)
-n_draws <- config$posterior_draws$main
+n_draws <- config$posterior_draws$supporting
 
 horizon_days <- config$analysis$horizon_days
 stopifnot(horizon_days %% 7 == 0)
@@ -36,7 +36,7 @@ dir.create(estimand_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Per-imputation post-estimation files carry the number of draws in their
-# name, so changing posterior_draws$main recomputes them.
+# name, so changing posterior_draws$supporting recomputes them.
 estimand_path <- function(kind, index) {
   here(estimand_dir, sprintf("%s-%02d-draws-%d.parquet", kind, index, n_draws))
 }

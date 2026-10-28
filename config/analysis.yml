@@ -10,7 +10,7 @@ imputation:
   # QoL landmark, and TAOOH). Each imputation is created and fitted on its own
   # with a per-index seed, so raising m_main from 5 to 50 adds imputations
   # 6-50 and leaves 1-5 unchanged.
-  m_main: 5
+  m_main: 50
   # All other analyses use imputations 1-5 (SAP).
   m_supporting: 5
   maxit: 50
@@ -20,8 +20,13 @@ posterior_draws:
   # Posterior draws per imputation used to compute estimands. Estimands are
   # recomputed from the saved fits on every render, so changing these only
   # changes the post-estimation, not the fits.
-  main: 1000
+  # Main analyses with m_main imputations (OS RMST, QoL landmark, TAOOH; SAP).
+  main: 200
+  # All other analyses.
   supporting: 1000
+  # Time benefit of the longitudinal QoL models: participant-level SOPs are slow
+  # and need about 5 GB per process.
+  time_benefit: 200
 
 markov:
   chains: 4
