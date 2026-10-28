@@ -78,6 +78,11 @@ for (index in indices) {
     )
   )
 
+  stopifnot(
+    "A chain of the adjusted landmark model returned no draws." =
+      length(model$diagnostics$diagnostic_summary$ebfmi) == config$markov$chains
+  )
+
   saveRDS(model, model_paths[index], compress = "xz")
 }
 
