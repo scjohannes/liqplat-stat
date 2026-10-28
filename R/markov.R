@@ -1,5 +1,5 @@
 # Convergence diagnostics for Bayesian Markov models fitted with
-# mostr::blrm_markov() (rmsb::blrm() fits, cmdstan backend).
+# mostr::mostm(engine = "blrm") (rmsb::blrm() fits, cmdstan backend).
 #
 # Packages the calling notebook must attach: posterior.
 

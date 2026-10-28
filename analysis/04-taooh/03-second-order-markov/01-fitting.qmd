@@ -68,12 +68,13 @@ for (index in indices) {
   fit_seed <- config$seeds$taooh + (index - 1L) * 1000L
 
   fit <- tryCatch(
-    blrm_markov(
+    mostm(
       formula = model_formula,
-      pcontrast = treatment_prior,
       data = data,
+      engine = "blrm",
       id_var = "id",
       time_var = "week",
+      pcontrast = treatment_prior,
       chains = config$markov$chains,
       iter = config$markov$iterations,
       warmup = config$markov$warmup,
@@ -98,12 +99,13 @@ for (index in indices) {
   }
 
   if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
-    fit <- blrm_markov(
+    fit <- mostm(
       formula = model_formula,
-      pcontrast = treatment_prior,
       data = data,
+      engine = "blrm",
       id_var = "id",
       time_var = "week",
+      pcontrast = treatment_prior,
       chains = config$markov$chains,
       iter = config$markov$retry_iterations,
       warmup = config$markov$retry_iterations / 2L,

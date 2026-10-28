@@ -104,14 +104,15 @@ for (index in indices) {
       paste0("Initial fit failed diagnostics: ", failure_reason)
     }
 
-    model <- blrm_markov(
+    model <- mostm(
       formula = model_formula,
+      data = data,
+      engine = "blrm",
+      id_var = "id",
+      time_var = "week",
       pcontrast = pcontrast_tx,
       ppo = ~week,
       cppo = function(y) as.numeric(as.character(y)),
-      data = data,
-      id_var = "id",
-      time_var = "week",
       chains = config$markov$chains,
       iter = iterations,
       warmup = warmup,
@@ -193,7 +194,7 @@ for (index in indices) {
       diagnostic_failure_reason = failure_reason,
       r_version = as.character(getRversion()),
       mostr_version = as.character(packageVersion("mostr")),
-      fit_wrapper = attr(model, "markov_fit_wrapper") %||% NA_character_,
+      fit_engine = attr(model, "markov_engine") %||% NA_character_,
       starting_profile_metadata_stored =
         !is.null(attr(model, "markov_starting_profile_metadata"))
     )

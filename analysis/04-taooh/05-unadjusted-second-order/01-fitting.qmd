@@ -75,12 +75,13 @@ if (!file.exists(model_path)) {
   fit_seed <- config$seeds$taooh + 100L
 
   fit <- tryCatch(
-    blrm_markov(
+    mostm(
       formula = model_formula,
-      pcontrast = treatment_prior,
       data = data,
+      engine = "blrm",
       id_var = "id",
       time_var = "week",
+      pcontrast = treatment_prior,
       chains = config$markov$chains,
       iter = config$markov$iterations,
       warmup = config$markov$warmup,
@@ -105,12 +106,13 @@ if (!file.exists(model_path)) {
   }
 
   if (is.null(diagnostics) || !isTRUE(diagnostics$passed)) {
-    fit <- blrm_markov(
+    fit <- mostm(
       formula = model_formula,
-      pcontrast = treatment_prior,
       data = data,
+      engine = "blrm",
       id_var = "id",
       time_var = "week",
+      pcontrast = treatment_prior,
       chains = config$markov$chains,
       iter = config$markov$retry_iterations,
       warmup = config$markov$retry_iterations / 2L,
