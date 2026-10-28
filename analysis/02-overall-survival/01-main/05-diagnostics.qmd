@@ -115,6 +115,12 @@ save_figure(
   file.path(figure_dir, "kaplan-meier-vs-posterior-model.png"),
   height = 6.5
 )
+
+save_figure(
+  ggsurvfit_build(plot_km(km_fit, x_max = horizon_days, risk_every = 50)),
+  file.path(figure_dir, "kaplan-meier.png"),
+  height = 6.5
+)
 ```
 
 ```{r}

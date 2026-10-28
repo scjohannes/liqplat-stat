@@ -127,7 +127,8 @@ hr_summary <- hr_draws |>
     median = median(hazard_ratio),
     lower_95 = quantile(hazard_ratio, 0.025),
     upper_95 = quantile(hazard_ratio, 0.975),
-    probability_hr_below_one = mean(hazard_ratio < 1)
+    probability_hr_below_one = mean(hazard_ratio < 1),
+    probability_below_mcid = mean(hazard_ratio < config$analysis$hazard_ratio_mcid)
   )
 ```
 
@@ -243,7 +244,8 @@ fixed_hr <- read_parquet(
     median,
     lower_95 = ci_95_low,
     upper_95 = ci_95_high,
-    probability_hr_below_one = probability_benefit
+    probability_hr_below_one = probability_benefit,
+    probability_below_mcid
   )
 
 comparison <- bind_rows(fixed_hr, hr_summary)

@@ -119,6 +119,7 @@ hr_summary <- hr_draws |>
     ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
     ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
     probability_benefit = mean(hazard_ratio < 1),
+    probability_below_mcid = mean(hazard_ratio < config$analysis$hazard_ratio_mcid),
     posterior_draws = n(),
     .by = scenario
   )
@@ -186,10 +187,9 @@ hr_plot <- hr_draws |>
     draw = hazard_ratio,
     panel = factor(scenario, levels = scenario_names, labels = scenario_labels)
   ) |>
-  plot_posterior(
-    x_label = "Unadjusted hazard ratio, ctDNA versus usual care",
-    reference = 1,
-    log_scale = TRUE
+  plot_hazard_ratio(
+    mcid = config$analysis$hazard_ratio_mcid,
+    x_label = "Unadjusted hazard ratio, ctDNA versus usual care"
   )
 
 save_figure(

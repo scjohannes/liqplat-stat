@@ -184,6 +184,78 @@ writeLines(
 )
 ```
 
+## Hazard ratio
+
+- Conditional on the adjustment covariates; not the estimand. P(HR below the configured MCID) is reported.
+
+```{r}
+#| label: hazard-ratio
+#| include: false
+
+hr_draws <- indices |>
+  map(\(index) {
+    model <- readRDS(
+      file.path(results_dir, "models", sprintf("model-%02d.rds", index))
+    )
+    coefficient_draws <- as.matrix(model, pars = "tx")
+    set.seed(config$seeds$survival + (index - 1) * 1000 + 25)
+    selected_draws <- sample(seq_len(nrow(coefficient_draws)), n_draws)
+
+    tibble(
+      imputation = index,
+      draw = seq_len(n_draws),
+      log_hazard_ratio = coefficient_draws[selected_draws, 1],
+      hazard_ratio = exp(log_hazard_ratio)
+    )
+  }) |>
+  list_rbind()
+
+hr_summary <- hr_draws |>
+  summarise(
+    median = median(hazard_ratio),
+    ci_66_low = quantile(hazard_ratio, 0.17, names = FALSE),
+    ci_66_high = quantile(hazard_ratio, 0.83, names = FALSE),
+    ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
+    ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
+    probability_benefit = mean(hazard_ratio < 1),
+    probability_below_mcid = mean(hazard_ratio < config$analysis$hazard_ratio_mcid),
+    imputations = n_distinct(imputation),
+    draws_per_imputation = n_draws
+  )
+
+write_parquet(
+  hr_draws,
+  file.path(results_dir, "hazard-ratio-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  hr_summary,
+  file.path(results_dir, "hazard-ratio-summary.parquet"),
+  compression = "zstd"
+)
+
+hr_posterior_plot <- plot_hazard_ratio(
+  hr_draws$hazard_ratio,
+  mcid = config$analysis$hazard_ratio_mcid
+)
+
+save_figure(
+  hr_posterior_plot,
+  file.path(figure_dir, "hazard-ratio-posterior.png")
+)
+```
+
+```{r}
+#| label: fig-os-hazard-ratio-posterior
+#| fig-cap: "Posterior distribution of the treatment hazard ratio of the main model"
+#| fig-alt: "A half-eye density above a posterior dot plot of the hazard ratio of death, ctDNA versus usual care, on a log scale, with 66 and 95 percent credible intervals, a dashed vertical line at 1 and a dotted vertical line at 0.8."
+#| fig-width: 8
+#| fig-height: 5
+#| echo: false
+
+hr_posterior_plot
+```
+
 ## Posterior RMST difference
 
 ```{r}

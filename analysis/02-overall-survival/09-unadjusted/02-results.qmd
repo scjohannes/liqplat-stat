@@ -262,6 +262,7 @@ hazard_ratio_summary <- hazard_ratio_draws |>
     ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
     ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
     probability_benefit = mean(hazard_ratio < 1),
+    probability_below_mcid = mean(hazard_ratio < config$analysis$hazard_ratio_mcid),
     draws = n(),
     .by = model
   )
@@ -338,11 +339,7 @@ rmst_plot <- rmst_draws |>
 
 hazard_ratio_plot <- hazard_ratio_draws |>
   transmute(draw = hazard_ratio, panel = factor(model_labels[model], levels = models$label)) |>
-  plot_posterior(
-    x_label = "Hazard ratio, ctDNA versus usual care",
-    reference = 1,
-    log_scale = TRUE
-  )
+  plot_hazard_ratio(mcid = config$analysis$hazard_ratio_mcid)
 
 save_figure(rmst_plot, file.path(figure_dir, "rmst-difference-posterior.png"), height = 6)
 save_figure(hazard_ratio_plot, file.path(figure_dir, "hazard-ratio-posterior.png"), height = 6)

@@ -4,6 +4,9 @@
 analysis:
   data_lock: "2026-09-05"
   horizon_days: 182
+  # Hazard ratio used as minimal clinically important difference for overall
+  # survival (Sherry et al. 2024); P(HR < this value) is reported.
+  hazard_ratio_mcid: 0.8
 
 imputation:
   # Imputations for the three main analyses (overall survival, the six-month

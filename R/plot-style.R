@@ -95,6 +95,42 @@ plot_posterior <- function(draws, x_label, reference = 0, log_scale = FALSE,
 }
 
 
+# Posterior of a hazard ratio (ctDNA vs usual care) on a log scale, with a
+# dashed line at 1 and, if given, a dotted line at the clinically important
+# hazard ratio `mcid`.
+plot_hazard_ratio <- function(draws, mcid = NULL,
+                              x_label = "Hazard ratio, ctDNA versus usual care",
+                              scales = "fixed") {
+  plot <- plot_posterior(draws, x_label = x_label, reference = 1, log_scale = TRUE, scales = scales)
+  if (!is.null(mcid)) {
+    plot <- plot +
+      geom_vline(xintercept = mcid, linetype = "dotted", colour = reference_line_colour)
+  }
+  plot
+}
+
+# Kaplan–Meier estimates (solid steps, censoring marks) by randomised group,
+# with a risk table every `risk_every` days up to `x_max`. `km_fit`:
+# survfit2() fit stratified by group_factor(tx).
+plot_km <- function(km_fit, x_max, risk_every = 100,
+                    y_label = "Survival probability",
+                    event_label = "Events") {
+  risk_times <- seq(0, x_max, by = risk_every)
+  ggsurvfit::ggsurvfit(km_fit, linetype_aes = FALSE, linewidth = 0.8, theme = NULL) +
+    ggsurvfit::add_confidence_interval(alpha = 0.16) +
+    ggsurvfit::add_censor_mark(size = 1.8) +
+    scale_colour_group() +
+    scale_fill_group() +
+    scale_x_continuous(breaks = risk_times) +
+    coord_cartesian(xlim = c(0, x_max), ylim = c(0, 1)) +
+    labs(x = "Days since random selection", y = y_label, colour = NULL, fill = NULL) +
+    ggsurvfit::add_risktable(
+      times = risk_times,
+      risktable_stats = c("n.risk", "cum.event"),
+      stats_label = list(n.risk = "At risk", cum.event = event_label)
+    )
+}
+
 # Kaplan–Meier estimates (dashed steps, censoring marks) and model curves
 # (solid median, 95% band) by randomised group, with a risk table every
 # `risk_every` days up to `x_max`. `km_fit`: survfit2() fit stratified by

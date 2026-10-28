@@ -141,6 +141,7 @@ hr_summary <- pooled_hr |>
     ci_95_low = quantile(hazard_ratio, 0.025, names = FALSE),
     ci_95_high = quantile(hazard_ratio, 0.975, names = FALSE),
     probability_benefit = mean(hazard_ratio < 1),
+    probability_below_mcid = mean(hazard_ratio < config$analysis$hazard_ratio_mcid),
     imputations = n_distinct(imputation),
     draws_per_imputation = n_draws
   )
@@ -184,11 +185,9 @@ km_fit <- survfit2(
 
 survival_plot <- plot_km_model(km_fit, curve_summary, x_max = max_follow_up)
 
-hr_plot <- plot_posterior(
+hr_plot <- plot_hazard_ratio(
   pooled_hr$hazard_ratio,
-  x_label = "Hazard ratio, ctDNA versus usual care",
-  reference = 1,
-  log_scale = TRUE
+  mcid = config$analysis$hazard_ratio_mcid
 )
 
 save_figure(
@@ -197,6 +196,11 @@ save_figure(
   height = 6.5
 )
 save_figure(hr_plot, file.path(figure_dir, "hazard-ratio-posterior.png"))
+save_figure(
+  ggsurvfit_build(plot_km(km_fit, x_max = max_follow_up)),
+  file.path(figure_dir, "kaplan-meier.png"),
+  height = 6.5
+)
 ```
 
 ```{r}
