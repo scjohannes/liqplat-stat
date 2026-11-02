@@ -1,0 +1,306 @@
+---
+title: "Weekly treatment — data and descriptive summaries"
+format: html
+---
+
+- Treated week: any day between the first and last administration of a line; untreated weeks are observed, not missing.
+- Follow-up is unrestricted (to death, last known alive or the data lock), as exported; no 182-day cap.
+- State occupancy plots (untreated, treated, dead), weeks 1-26: the death week is dead (as in TAOOH) and death is carried forward to week 26; censored patients leave the denominator.
+
+```{r}
+#| label: setup
+
+library(mostr)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+horizon_weeks <- as.integer(config$analysis$horizon_days / 7)
+
+results_dir <- here("analysis", "11-weekly-treatment", "results")
+figure_dir <- file.path(results_dir, "figures")
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+)
+therapy_weekly <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-therapy-weekly.parquet")
+) |>
+  left_join(
+    cohort |> select(id, tx, survival_time_days_unrestricted, status_death_unrestricted),
+    by = "id",
+    relationship = "many-to-one"
+  )
+```
+
+## Analysis data
+
+```{r}
+#| label: treatment-data
+
+treatment_data <- therapy_weekly |>
+  summarise(
+    weeks_treated = sum(treated),
+    exposure_weeks = n(),
+    first_treated_week = if (any(treated == 1L)) min(week[treated == 1L]) else NA_integer_,
+    .by = id
+  ) |>
+  right_join(cohort, by = "id", relationship = "one-to-one") |>
+  mutate(
+    ecog_group = case_when(
+      ecog_fstcnt >= 3 ~ "3+",
+      .default = as.character(ecog_fstcnt)
+    ),
+    ecog_group = factor(
+      ecog_group,
+      levels = c("0", "1", "2", "3+"),
+      ordered = TRUE
+    )
+  ) |>
+  select(
+    id,
+    tx,
+    weeks_treated,
+    exposure_weeks,
+    first_treated_week,
+    days_treated,
+    ever_treated,
+    n_treatment_lines,
+    survival_time_days_unrestricted,
+    age,
+    ecog_group
+  )
+
+n_zero_exposure <- sum(is.na(treatment_data$exposure_weeks))
+
+# Zero follow-up means no time at risk, so no rate: excluded.
+treatment_data <- treatment_data |>
+  filter(!is.na(exposure_weeks))
+
+stopifnot(
+  all(treatment_data$exposure_weeks ==
+        ceiling(treatment_data$survival_time_days_unrestricted / 7)),
+  all((treatment_data$weeks_treated > 0) == (treatment_data$ever_treated == 1L))
+)
+
+write_parquet(
+  treatment_data,
+  file.path(results_dir, "analysis-data.parquet"),
+  compression = "zstd"
+)
+
+n_zero_exposure
+```
+
+## Descriptive summary
+
+```{r}
+#| label: tbl-treatment-descriptive
+#| tbl-cap: "Treatment over unrestricted follow-up by randomized group"
+
+descriptive_summary <- treatment_data |>
+  mutate(group = group_factor(tx)) |>
+  summarise(
+    patients = n(),
+    ever_treated = sum(ever_treated),
+    with_second_line = sum(n_treatment_lines >= 2),
+    follow_up_weeks = sum(exposure_weeks),
+    treated_weeks = sum(weeks_treated),
+    proportion_weeks_treated = treated_weeks / follow_up_weeks,
+    proportion_days_treated = sum(days_treated) / sum(survival_time_days_unrestricted),
+    first_treated_week_median = median(first_treated_week, na.rm = TRUE),
+    first_treated_week_q1 = quantile(first_treated_week, 0.25, na.rm = TRUE),
+    first_treated_week_q3 = quantile(first_treated_week, 0.75, na.rm = TRUE),
+    .by = group
+  ) |>
+  arrange(group)
+
+write_parquet(
+  descriptive_summary,
+  file.path(results_dir, "descriptive-summary.parquet"),
+  compression = "zstd"
+)
+
+kable(descriptive_summary, digits = 3)
+```
+
+## State occupancy, weeks 1-26
+
+```{r}
+#| label: state-occupancy-data
+
+state_labels <- c("Untreated", "Treated", "Dead")
+
+# construct three state outcome (no ordinal ranking)
+alive_weeks <- therapy_weekly |>
+  filter(week <= horizon_weeks) |>
+  mutate(
+    death_week = status_death_unrestricted == 1L &
+      week == ceiling(survival_time_days_unrestricted / 7),
+    state = if_else(death_week, 3L, treated + 1L)
+  )
+
+# carry forward
+dead_weeks <- alive_weeks |>
+  filter(death_week, week < horizon_weeks) |>
+  reframe(week = seq.int(week + 1L, horizon_weeks), state = 3L, .by = c(id, tx))
+
+state_data <- bind_rows(
+  alive_weeks |> select(id, tx, week, state),
+  dead_weeks
+) |>
+  mutate(
+    state = factor(state, levels = 1:3, labels = state_labels),
+    tx = group_factor(tx)
+  )
+
+stopifnot(!anyDuplicated(state_data[c("id", "week")]))
+```
+
+```{r}
+#| label: fig-treatment-state-occupancy
+#| fig-cap: "Observed proportion of patients untreated, treated or dead in each week after random selection. Death is carried forward; censored patients leave the denominator."
+#| fig-alt: "Line plot over weeks 1 to 26 of the observed proportions of untreated, treated and dead patients, with solid lines for ctDNA and dashed lines for usual care. Fewer ctDNA patients are treated in the first weeks."
+#| fig-width: 8
+#| fig-height: 5
+
+state_line_plot <- plot_sops(
+  state_data,
+  time_var = "week",
+  y_var = "state",
+  facet_var = NULL,
+  linetype_var = "tx"
+) +
+  scale_colour_state() +
+  scale_fill_state() +
+  scale_linetype_group() +
+  labs(
+    x = "Week after random selection",
+    y = "Proportion of patients",
+    colour = "State",
+    linetype = NULL,
+    title = NULL
+  )
+
+save_figure(
+  state_line_plot,
+  file.path(figure_dir, "state-occupancy-lines.png"),
+  height = 5
+)
+
+state_line_plot
+```
+
+```{r}
+#| label: fig-treatment-state-occupancy-bars
+#| fig-cap: "Observed proportion of patients untreated, treated or dead in each week after random selection, by randomized group."
+#| fig-alt: "Stacked bar chart with one bar per week from 1 to 26 and one panel per randomized group, showing the proportions of untreated, treated and dead patients."
+#| fig-width: 8
+#| fig-height: 5
+
+state_bar_plot <- plot_sops(
+  state_data,
+  time_var = "week",
+  y_var = "state",
+  facet_var = "tx",
+  geom = "bar"
+) +
+  scale_colour_state() +
+  scale_fill_state() +
+  labs(
+    x = "Week after random selection",
+    y = "Proportion of patients",
+    fill = "State",
+    title = NULL
+  )
+
+save_figure(
+  state_bar_plot,
+  file.path(figure_dir, "state-occupancy-bars.png"),
+  height = 5
+)
+
+state_bar_plot
+```
+
+## Proportion treated among patients alive, full follow-up
+
+- Shown up to week 104 (about 10 patients per group left); no death state, so censoring does not bias the denominator.
+
+```{r}
+#| label: treated-among-alive
+
+# rows after death are missing --> therefore among alive
+# but I'm not sure sure what this plots actually shows, difficult selecton mechanism might be going on
+treated_among_alive <- therapy_weekly |>
+  filter(week <= 104L) |>
+  summarise(
+    patients = n(),
+    treated = sum(treated),
+    .by = c(tx, week)
+  ) |>
+  mutate(
+    proportion = treated / patients,
+    # Jeffreys interval.
+    lower_95 = qbeta(0.025, treated + 0.5, patients - treated + 0.5),
+    upper_95 = qbeta(0.975, treated + 0.5, patients - treated + 0.5),
+    group = group_factor(tx)
+  )
+
+write_parquet(
+  treated_among_alive |> select(-group),
+  file.path(results_dir, "treated-among-alive.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: fig-treated-among-alive
+#| fig-cap: "Proportion of patients alive and under follow-up who were treated in each week, with 95% Jeffreys intervals"
+#| fig-alt: "Line plot over weeks 1 to 104 of the proportion of patients alive and under follow-up who were treated, one line with a shaded interval per randomized group."
+#| fig-width: 8
+#| fig-height: 5
+
+treated_plot <- ggplot(
+  treated_among_alive,
+  aes(week, proportion, colour = group, fill = group)
+) +
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), alpha = 0.15, colour = NA) +
+  geom_line() +
+  scale_colour_group() +
+  scale_fill_group() +
+  scale_x_continuous(breaks = seq(0, 104, by = 13)) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::label_percent()) +
+  labs(
+    x = "Week after random selection",
+    y = "Treated among patients alive",
+    colour = NULL,
+    fill = NULL
+  )
+
+save_figure(
+  treated_plot,
+  file.path(figure_dir, "treated-among-alive.png"),
+  height = 5
+)
+
+treated_plot
+```
+
+```{r}
+#| label: tbl-treated-among-alive
+#| tbl-cap: "Patients alive and under follow-up and proportion treated at selected weeks"
+
+treated_among_alive |>
+  filter(week %in% c(1, 2, 4, 8, 13, 26, 52, 78, 104)) |>
+  select(group, week, patients, proportion) |>
+  pivot_wider(names_from = group, values_from = c(patients, proportion)) |>
+  kable(digits = 3)
+```
