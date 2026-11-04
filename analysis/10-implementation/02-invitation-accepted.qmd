@@ -208,100 +208,71 @@ save_figure(
 gender_predictions_plot
 ```
 
-## Predictions by age
+## Predictions by age and sex
 
-- Standardized: every patient is set to each age and keeps the observed sex; ages span the 10th to 90th percentile.
-- The age difference compares each patient's prediction at the observed age plus 10 years with that at the observed age.
+- Predicted at each age and sex, not standardized.
 
 ```{r}
-#| label: accepted-age-predictions
+#| label: accepted-age-sex-predictions
 
-age_grid <- c(50, 60, 70, 80)
-
-age_draws <- avg_predictions(
+age_sex_summary <- predictions(
   fit,
-  variables = list(age = age_grid),
-  by = "age",
+  newdata = expand.grid(age = 50:80, gender = levels(model_data$gender)),
   type = "response"
 ) |>
-  get_draws() |>
-  select(age, drawid, draw)
-
-age_summary <- age_draws |>
-  group_by(age) |>
-  summarise(
-    posterior_mean = mean(draw),
-    posterior_median = median(draw),
-    lower_95 = quantile(draw, 0.025),
-    upper_95 = quantile(draw, 0.975),
-    .groups = "drop"
+  as_tibble() |>
+  transmute(
+    outcome = "Invitation accepted",
+    age,
+    gender = as.character(gender),
+    posterior_median = estimate,
+    lower_95 = conf.low,
+    upper_95 = conf.high
   )
 
-age_difference_draws <- avg_comparisons(
-  fit,
-  variables = list(age = 10),
-  type = "response"
-) |>
-  get_draws() |>
-  select(drawid, draw)
+age_odds_ratio_draws <- exp(10 * as_draws_df(fit)$b_age)
 
-age_difference_summary <- age_difference_draws |>
-  summarise(
-    contrast = "age_plus_10_years",
-    posterior_median = median(draw),
-    lower_95 = quantile(draw, 0.025),
-    upper_95 = quantile(draw, 0.975),
-    prob_lower_when_older = mean(draw < 0)
-  )
+age_odds_ratio_summary <- tibble(
+  posterior_median = median(age_odds_ratio_draws),
+  lower_95 = quantile(age_odds_ratio_draws, 0.025, names = FALSE),
+  upper_95 = quantile(age_odds_ratio_draws, 0.975, names = FALSE),
+  prob_lower_when_older = mean(age_odds_ratio_draws < 1)
+)
 
 write_parquet(
-  age_draws,
-  file.path(results_dir, "invitation-accepted-age-draws.parquet"),
+  age_sex_summary,
+  file.path(results_dir, "invitation-accepted-age-sex-summary.parquet"),
   compression = "zstd"
 )
 write_parquet(
-  age_summary,
-  file.path(results_dir, "invitation-accepted-age-summary.parquet"),
-  compression = "zstd"
-)
-write_parquet(
-  age_difference_draws,
-  file.path(results_dir, "invitation-accepted-age-difference-draws.parquet"),
-  compression = "zstd"
-)
-write_parquet(
-  age_difference_summary,
-  file.path(results_dir, "invitation-accepted-age-difference-summary.parquet"),
+  age_odds_ratio_summary,
+  file.path(results_dir, "invitation-accepted-age-odds-ratio-summary.parquet"),
   compression = "zstd"
 )
 ```
 
 ```{r}
-#| label: tbl-accepted-age-summary
-#| tbl-cap: "Standardized probability of invitation acceptance by age and difference per 10 years of age"
+#| label: tbl-accepted-age-sex-summary
+#| tbl-cap: "Predicted probability by age and sex, and odds ratio per 10 years of age: Invitation accepted"
 #| echo: false
 
-kable(age_summary)
-kable(age_difference_summary)
+kable(filter(age_sex_summary, age %in% c(50, 60, 70, 80)))
+kable(age_odds_ratio_summary)
 ```
 
 ```{r}
-#| label: fig-accepted-age-predictions
-#| fig-cap: "Standardized posterior probability of invitation acceptance by age. Thick and thin intervals show 66% and 95% credible intervals."
-#| fig-alt: "Posterior half-eye densities and dot plots of the standardized probability of invitation acceptance among offered patients, in percent, shown in separate panels for ages 50, 60, 70 and 80 years, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| label: fig-accepted-age-sex-predictions
+#| fig-cap: "Predicted probability by age and sex with 95% credible intervals: Invitation accepted"
+#| fig-alt: "Line with a credible band of the predicted probability against age from 50 to 80 years, in separate panels for women and men."
 #| fig-width: 8
-#| fig-height: 8
+#| fig-height: 4
 
-age_predictions_plot <- plot_posterior(
-  age_draws |> mutate(draw = 100 * draw, panel = paste(age, "years")),
-  x_label = "Probability of invitation acceptance, %",
-  reference = NULL
-)
+age_sex_plot <- plot_age_predictions(age_sex_summary)
 
 save_figure(
-  age_predictions_plot,
-  file.path(figures_dir, "invitation-accepted-age-predictions.png"),
-  height = 8
+  age_sex_plot,
+  file.path(figures_dir, "invitation-accepted-age-sex-predictions.png"),
+  height = 4
 )
-age_predictions_plot
+age_sex_plot
 ```

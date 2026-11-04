@@ -365,3 +365,23 @@ plot_imputed_categories <- function(proportions) {
     scale_y_continuous(labels = scales::label_percent()) +
     labs(x = NULL, y = "Proportion", colour = NULL)
 }
+
+# Predicted probability by age with its 95% CrI: one row per outcome, one column
+# per sex. Expects outcome, age, gender, posterior_median, lower_95 and upper_95.
+plot_age_predictions <- function(predictions) {
+  predictions |>
+    mutate(
+      outcome = factor(outcome, levels = unique(outcome)),
+      sex = factor(gender, levels = c("female", "male"), labels = c("Women", "Men"))
+    ) |>
+    ggplot(aes(age, 100 * posterior_median)) +
+    geom_ribbon(
+      aes(ymin = 100 * lower_95, ymax = 100 * upper_95),
+      fill = group_colours[["ctDNA"]],
+      alpha = 0.3
+    ) +
+    geom_line(colour = group_colours[["ctDNA"]]) +
+    facet_grid(rows = vars(outcome), cols = vars(sex)) +
+    coord_cartesian(ylim = c(0, 100)) +
+    labs(x = "Age (years)", y = "Probability (%)")
+}
