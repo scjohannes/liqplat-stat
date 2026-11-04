@@ -199,6 +199,7 @@ pwalk(model_grid, \(outcome, adjustment, zero_inflated, seed, model_path) {
         chains = 4L,
         iter = 2000L,
         cores = 1L,
+        backend = "cmdstanr",
         seed = seed,
         combine = FALSE,
         refresh = 0L
@@ -213,6 +214,7 @@ pwalk(model_grid, \(outcome, adjustment, zero_inflated, seed, model_path) {
         chains = 4L,
         iter = 2000L,
         cores = 1L,
+        backend = "cmdstanr",
         seed = seed,
         refresh = 0L
       ))
