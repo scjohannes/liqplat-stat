@@ -48,15 +48,16 @@ selected_ids <- cohort |>
   filter(tx == 1) |>
   pull(id)
 
-# Earliest valid sample taken before treatment start (or any valid sample if no
-# treatment start is recorded); ties on date are broken by sample_id.
+# Earliest valid sample taken on or before treatment start (blood is drawn before the
+# first infusion on that day), or any valid sample if no treatment start is recorded;
+# ties on date are broken by sample_id.
 baseline <- samples |>
   filter(id %in% selected_ids) |>
   left_join(select(cohort, id, treatment_start_date), by = "id") |>
   filter(
     !is.na(sample_date),
     valid_ctdna_result %in% TRUE,
-    is.na(treatment_start_date) | sample_date < treatment_start_date
+    is.na(treatment_start_date) | sample_date <= treatment_start_date
   ) |>
   arrange(id, sample_date, sample_id) |>
   distinct(id, .keep_all = TRUE) |>
@@ -110,6 +111,7 @@ if (!file.exists(detection_model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
+    backend = "cmdstanr",
     seed = config$seeds$supporting + 3L,
     refresh = 0L
   )
@@ -295,6 +297,7 @@ if (!file.exists(ordinal_model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
+    backend = "cmdstanr",
     seed = config$seeds$supporting + 4L,
     refresh = 0L
   )

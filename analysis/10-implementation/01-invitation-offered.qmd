@@ -60,6 +60,7 @@ if (!file.exists(model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
+    backend = "cmdstanr",
     seed = config$seeds$supporting,
     refresh = 0L
   )
@@ -198,4 +199,102 @@ save_figure(
   height = 7
 )
 gender_predictions_plot
+```
+
+## Predictions by age
+
+- Standardized: every patient is set to each age and keeps the observed sex; ages span the 10th to 90th percentile.
+- The age difference compares each patient's prediction at the observed age plus 10 years with that at the observed age.
+
+```{r}
+#| label: offered-age-predictions
+
+age_grid <- c(50, 60, 70, 80)
+
+age_draws <- avg_predictions(
+  fit,
+  variables = list(age = age_grid),
+  by = "age",
+  type = "response"
+) |>
+  get_draws() |>
+  select(age, drawid, draw)
+
+age_summary <- age_draws |>
+  group_by(age) |>
+  summarise(
+    posterior_mean = mean(draw),
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    .groups = "drop"
+  )
+
+age_difference_draws <- avg_comparisons(
+  fit,
+  variables = list(age = 10),
+  type = "response"
+) |>
+  get_draws() |>
+  select(drawid, draw)
+
+age_difference_summary <- age_difference_draws |>
+  summarise(
+    contrast = "age_plus_10_years",
+    posterior_median = median(draw),
+    lower_95 = quantile(draw, 0.025),
+    upper_95 = quantile(draw, 0.975),
+    prob_lower_when_older = mean(draw < 0)
+  )
+
+write_parquet(
+  age_draws,
+  file.path(results_dir, "invitation-offered-age-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  age_summary,
+  file.path(results_dir, "invitation-offered-age-summary.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  age_difference_draws,
+  file.path(results_dir, "invitation-offered-age-difference-draws.parquet"),
+  compression = "zstd"
+)
+write_parquet(
+  age_difference_summary,
+  file.path(results_dir, "invitation-offered-age-difference-summary.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: tbl-offered-age-summary
+#| tbl-cap: "Standardized probability of invitation being offered by age and difference per 10 years of age"
+#| echo: false
+
+kable(age_summary)
+kable(age_difference_summary)
+```
+
+```{r}
+#| label: fig-offered-age-predictions
+#| fig-cap: "Standardized posterior probability of invitation being offered by age. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Posterior half-eye densities and dot plots of the standardized probability of invitation being offered, in percent, shown in separate panels for ages 50, 60, 70 and 80 years, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-width: 8
+#| fig-height: 8
+
+age_predictions_plot <- plot_posterior(
+  age_draws |> mutate(draw = 100 * draw, panel = paste(age, "years")),
+  x_label = "Probability of invitation being offered, %",
+  reference = NULL
+)
+
+save_figure(
+  age_predictions_plot,
+  file.path(figures_dir, "invitation-offered-age-predictions.png"),
+  height = 8
+)
+age_predictions_plot
 ```
