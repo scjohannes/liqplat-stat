@@ -1,0 +1,135 @@
+---
+title: "Second-line treatment — endpoint preparation"
+format: html
+---
+
+- Added analysis: time from random selection to the start of line 2; the SAP endpoint (switch or stop from first-line start) is not analysed
+- Time starts at randomization; follow-up runs to the data lock, no 182-day cap
+- Cause-specific second-line hazard: death before line 2 is censoring
+- Composite: first of line 2 or death (time to next treatment or death)
+
+```{r}
+#| label: setup
+#| include: false
+library(here)
+library(arrow)
+library(yaml)
+library(knitr)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "survival.R"))
+
+results_dir <- here("analysis", "12-second-line", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- read_parquet(here("analysis", "00-data", "results", "analysis-cohort.parquet"))
+```
+
+## Endpoint derivation
+
+```{r}
+#| label: derive-endpoint
+#| include: false
+endpoint <- derive_dated_event_endpoints(
+  cohort,
+  event_date_col = "second_line_start_date",
+  event_indicator_col = "status_second_line",
+  event_label = "second-line",
+  data_lock = config$analysis$data_lock
+) |>
+  rename(
+    second_line_origin_date = origin_date,
+    second_line_follow_up_limit = follow_up_limit,
+    second_line_extends_recorded_follow_up = extends_recorded_follow_up,
+    second_line_after_follow_up_limit = after_follow_up_limit,
+    second_line_event_or_censor_date = event_or_censor_date,
+    event_second_line = event_first,
+    event_death_before_second_line = event_death_before_first,
+    event_second_line_or_death = event_composite,
+    second_line_censor_reason = censor_reason,
+    derived_time_to_second_line_days = time_days,
+    second_line_exclusion_reason = exclusion_reason,
+    second_line_in_analysis = in_analysis
+  ) |>
+  mutate(
+    second_line_censor_reason = replace_values(
+      second_line_censor_reason,
+      "event_observed" ~ "second_line_observed",
+      "death_before_event" ~ "death_before_second_line"
+    ),
+    second_line_exclusion_reason = replace_values(
+      second_line_exclusion_reason,
+      "event_before_randomization" ~ "second_line_before_randomization"
+    )
+  )
+
+included <- filter(endpoint, second_line_in_analysis)
+
+stopifnot(
+  all(endpoint$second_line_exclusion_reason %in% c(
+    "included", "second_line_before_randomization", "no_positive_follow_up"
+  )),
+  all(endpoint$event_second_line_or_death ==
+        endpoint$event_second_line + endpoint$event_death_before_second_line),
+  all(endpoint$second_line_event_or_censor_date <= endpoint$second_line_follow_up_limit),
+  all(endpoint$data_lock == config$analysis$data_lock),
+  # The derivation must reproduce the exported endpoint.
+  all(included$derived_time_to_second_line_days == included$time_to_second_line_days),
+  all(included$event_second_line == included$status_second_line),
+  all(included$event_death_before_second_line ==
+        (included$second_line_competing_status == 2L))
+)
+```
+
+## Analysis dataset
+
+```{r}
+#| label: prepare-analysis-data
+#| include: false
+prepared <- included |>
+  # The column order sets the MICE visit sequence; diagnosis is joined later.
+  select(
+    id, tx, time_to_second_line_days, event_second_line,
+    event_death_before_second_line, event_second_line_or_death, ecog_fstcnt,
+    stage_binary, lung, age, gender, albumin, bilirubin, c_reactive_protein,
+    lactate_dehydrogenase
+  )
+
+stopifnot(
+  nrow(prepared) > 0L,
+  all(prepared$time_to_second_line_days > 0)
+)
+
+endpoint_audit <- endpoint |>
+  count(tx, second_line_exclusion_reason, name = "participants")
+
+event_counts <- prepared |>
+  summarise(
+    participants = n(),
+    second_line_events = sum(event_second_line),
+    death_before_second_line = sum(event_death_before_second_line),
+    composite_events = sum(event_second_line_or_death),
+    censored_without_either = sum(event_second_line_or_death == 0),
+    .by = tx
+  )
+
+write_parquet(endpoint, file.path(results_dir, "endpoint.parquet"))
+write_parquet(prepared, file.path(results_dir, "prepared.parquet"))
+write_parquet(endpoint_audit, file.path(results_dir, "endpoint-audit.parquet"))
+write_parquet(event_counts, file.path(results_dir, "event-counts.parquet"))
+```
+
+```{r}
+#| label: tbl-second-line-endpoint-audit
+#| tbl-cap: "Second-line analysis population and exclusions"
+#| echo: false
+kable(endpoint_audit)
+```
+
+```{r}
+#| label: tbl-second-line-event-counts
+#| tbl-cap: "Observed second-line starts and competing deaths by randomized group"
+#| echo: false
+kable(event_counts)
+```

@@ -1,0 +1,95 @@
+---
+title: "Weekly treatment — imputation"
+format: html
+---
+
+```{r}
+#| label: setup
+
+library(mice)
+library(arrow)
+library(here)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "11-weekly-treatment", "results")
+imputation_path <- file.path(results_dir, "imputation.rds")
+completed_path <- file.path(results_dir, "completed-datasets.rds")
+
+treatment_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
+```
+
+## Imputation of baseline covariates
+
+```{r}
+#| label: missing-covariates
+
+treatment_data |>
+  summarise(across(c(age, ecog_group), \(x) sum(is.na(x))))
+```
+
+```{r}
+#| label: impute-covariates
+
+# Column order sets the mice visit sequence; keep it.
+imputation_data <- treatment_data |>
+  mutate(log_exposure = log(exposure_weeks)) |>
+  select(tx, weeks_treated, log_exposure, age, ecog_group)
+
+methods <- make.method(imputation_data)
+methods[] <- ""
+methods["ecog_group"] <- "polr"
+
+if (!file.exists(imputation_path)) {
+  imputation <- mice(
+    imputation_data,
+    method = methods,
+    m = config$imputation$m_supporting,
+    maxit = config$imputation$maxit,
+    donors = config$imputation$donors,
+    seed = config$seeds$supporting + 3600L,
+    printFlag = FALSE
+  )
+
+  saveRDS(imputation, imputation_path, compress = "xz")
+}
+
+imputation <- readRDS(imputation_path)
+
+c(m = imputation$m, iterations = imputation$iteration)
+```
+
+```{r}
+#| label: fig-imputation-traces
+#| fig-cap: "MICE trace plots for imputed ECOG"
+#| fig-width: 8
+#| fig-height: 3
+
+plot_mice_traces(mice_chain_stats(imputation))
+```
+
+## Completed datasets
+
+```{r}
+#| label: completed-datasets
+
+completed_datasets <- complete(imputation, action = "all") |>
+  map(\(data) {
+    data |>
+      mutate(
+        exposure_weeks = round(exp(log_exposure)),
+        ecog_group = factor(ecog_group, ordered = FALSE)
+      ) |>
+      select(-log_exposure)
+  })
+
+stopifnot(map_lgl(completed_datasets, \(data) {
+  !anyNA(data) && all(data$exposure_weeks == treatment_data$exposure_weeks)
+}))
+
+saveRDS(completed_datasets, completed_path, compress = "xz")
+```

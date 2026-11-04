@@ -27,6 +27,7 @@ domains <- c(
   "cohort_follow_up",
   "qol",
   "taooh",
+  "therapy_weekly",
   "ctdna_samples",
   "ctdna_analyses",
   "alterations"
@@ -43,7 +44,7 @@ manifest <- read_yaml(here(private_dir, "manifest.yml"))
 stopifnot(
   "The manifest data lock differs from config/analysis.yml." =
     identical(as.character(manifest$data_lock), config$analysis$data_lock),
-  "The manifest must describe exactly the eight analysis datasets." =
+  "The manifest must describe exactly the nine analysis datasets." =
     setequal(names(manifest$domains), domains),
   "The manifest marks a dataset as unavailable." =
     all(map_lgl(manifest$domains, \(record) isTRUE(record$available)))
@@ -96,11 +97,18 @@ build_columns <- list(
     "status_death_unrestricted", "potential_follow_up_days",
     "invitation_offered", "invitation_accepted", "enrolled_date",
     "last_known_alive_date", "mtb_date_first", "mtb_n_reports",
+    "other_trial_recruited",
     "n_blood_products", "n_erythrocyte_concentrates",
-    "n_thrombocyte_concentrates"
+    "n_thrombocyte_concentrates", "days_treated", "n_treatment_lines",
+    "ever_treated", "second_line_start_date", "status_second_line",
+    "time_to_second_line_days", "second_line_competing_status"
   ),
   qol = c("id", "assessment_id", "day", "q30", "baseline_q30"),
   taooh = c("id", "week", "y_taooh"),
+  therapy_weekly = c(
+    "id", "week", "day", "days_observed", "days_treated", "treated",
+    "treatment_line"
+  ),
   ctdna_samples = c("sample_id", "id", "sample_date", "valid_ctdna_result"),
   ctdna_analyses = c(
     "analysis_id", "sample_id", "id", "analysis_date", "lod_q1", "lod_q3",
@@ -140,6 +148,7 @@ recruitment <- private$recruitment
 cohort <- private$cohort_follow_up
 qol <- private$qol
 taooh <- private$taooh
+therapy_weekly <- private$therapy_weekly
 ctdna_samples <- private$ctdna_samples
 ctdna_analyses <- private$ctdna_analyses
 alterations <- private$alterations
@@ -153,7 +162,9 @@ alterations <- private$alterations
 
 stopifnot(
   "Recruitment group_assignment must be 0/1 or missing." =
-    is.na(recruitment$group_assignment) | recruitment$group_assignment %in% 0:1
+    is.na(recruitment$group_assignment) | recruitment$group_assignment %in% 0:1,
+  "other_trial_recruited must be 0/1." =
+    cohort$other_trial_recruited %in% 0:1
 )
 
 validate_taooh_follow_up(taooh, cohort)
@@ -383,6 +394,46 @@ alterations <- merge(
   select(-ctdna_detected_from_sample)
 ```
 
+## Weekly treatment
+
+```{r}
+#| label: therapy-weekly
+
+therapy_patient <- match(therapy_weekly$id, cohort$id)
+therapy_end_week <- ceiling(cohort$survival_time_days_unrestricted / 7)
+therapy_totals <- therapy_weekly |>
+  summarise(days_treated = sum(days_treated), .by = id)
+therapy_totals <- cohort |>
+  select(id, cohort_days = days_treated) |>
+  left_join(therapy_totals, by = "id")
+
+stopifnot(
+  "Weekly treatment contains an unknown participant." = !anyNA(therapy_patient),
+  "Weekly treatment rows lie outside weeks 1 to the end of follow-up." =
+    therapy_weekly$week >= 1L &
+      therapy_weekly$week <= therapy_end_week[therapy_patient],
+  "Weekly treatment must cover every follow-up week." =
+    nrow(therapy_weekly) == sum(therapy_end_week),
+  "Treated days must lie within the observed days of a week." =
+    therapy_weekly$days_treated >= 0L &
+      therapy_weekly$days_treated <= therapy_weekly$days_observed,
+  "treated must equal days_treated > 0." =
+    therapy_weekly$treated == as.integer(therapy_weekly$days_treated > 0L),
+  "treatment_line must be recorded exactly in treated weeks." =
+    is.na(therapy_weekly$treatment_line) == (therapy_weekly$treated == 0L),
+  "Weekly and participant-level treated days differ." =
+    coalesce(therapy_totals$days_treated, 0L) == therapy_totals$cohort_days,
+  "ever_treated must equal days_treated > 0." =
+    cohort$ever_treated == as.integer(cohort$days_treated > 0L),
+  "second_line_competing_status must agree with the line-2 and death status." =
+    cohort$second_line_competing_status == case_when(
+      cohort$status_second_line == 1L ~ 1L,
+      cohort$status_death_unrestricted == 1L ~ 2L,
+      .default = 0L
+    )
+)
+```
+
 ## Write
 
 ```{r}
@@ -393,6 +444,7 @@ analysis_datasets <- list(
   "analysis-cohort" = cohort,
   "analysis-qol" = qol,
   "analysis-taooh" = taooh,
+  "analysis-therapy-weekly" = therapy_weekly,
   "analysis-ctdna-samples" = ctdna_samples,
   "analysis-ctdna-analyses" = ctdna_analyses,
   "analysis-alterations" = alterations

@@ -1,0 +1,94 @@
+---
+title: "Recruitment to another trial"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+- The export has no recruitment date, so recruitment is not restricted to a follow-up window.
+- Added: the difference in proportions (ctDNA − Usual care) from independent Jeffreys Beta(0.5, 0.5) posteriors.
+
+```{r}
+#| label: setup
+
+library(here)
+library(arrow)
+library(knitr)
+library(yaml)
+library(tidyverse)
+
+config <- read_yaml(here("config", "analysis.yml"))
+source(here("R", "plot-style.R"))
+
+results_dir <- here("analysis", "13-other-trial", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+cohort <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-cohort.parquet")
+)
+```
+
+## Patients recruited by randomized group
+
+```{r}
+#| label: recruitment-summary
+
+recruitment_summary <- cohort |>
+  summarise(
+    patients = n(),
+    recruited = sum(other_trial_recruited),
+    .by = tx
+  ) |>
+  mutate(
+    proportion = recruited / patients,
+    lower_95 = qbeta(0.025, recruited + 0.5, patients - recruited + 0.5),
+    upper_95 = qbeta(0.975, recruited + 0.5, patients - recruited + 0.5)
+  ) |>
+  arrange(desc(tx))
+
+write_parquet(
+  recruitment_summary,
+  file.path(results_dir, "recruitment-summary.parquet"),
+  compression = "zstd"
+)
+
+recruitment_summary |>
+  mutate(group = group_factor(tx), .before = 1) |>
+  select(-tx) |>
+  kable(digits = 3)
+```
+
+## Difference in proportions
+
+```{r}
+#| label: recruitment-difference
+
+set.seed(config$seeds$supporting + 7000L)
+
+beta_draws <- \(group) {
+  counts <- filter(recruitment_summary, tx == group)
+  rbeta(
+    config$posterior_draws$supporting * 4L,
+    counts$recruited + 0.5,
+    counts$patients - counts$recruited + 0.5
+  )
+}
+
+difference_draws <- beta_draws(1L) - beta_draws(0L)
+
+recruitment_difference <- tibble(
+  difference_median = median(difference_draws),
+  difference_low = quantile(difference_draws, 0.025),
+  difference_high = quantile(difference_draws, 0.975),
+  prob_higher_ctdna = mean(difference_draws > 0)
+)
+
+write_parquet(
+  recruitment_difference,
+  file.path(results_dir, "recruitment-difference.parquet"),
+  compression = "zstd"
+)
+
+kable(recruitment_difference, digits = 3)
+```

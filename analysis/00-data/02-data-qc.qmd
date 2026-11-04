@@ -24,6 +24,7 @@ input_paths <- c(
   cohort_follow_up = here(results_dir, "analysis-cohort.parquet"),
   qol = here(results_dir, "analysis-qol.parquet"),
   taooh = here(results_dir, "analysis-taooh.parquet"),
+  therapy_weekly = here(results_dir, "analysis-therapy-weekly.parquet"),
   ctdna_samples = here(results_dir, "analysis-ctdna-samples.parquet"),
   ctdna_analyses = here(results_dir, "analysis-ctdna-analyses.parquet"),
   alterations = here(results_dir, "analysis-alterations.parquet")

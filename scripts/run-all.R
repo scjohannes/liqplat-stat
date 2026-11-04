@@ -47,7 +47,10 @@ run_order <- c(
   "analysis/07-blood-products",
   "analysis/08-tissue-biopsy",
   "analysis/09-imaging",
-  "analysis/10-implementation"
+  "analysis/10-implementation",
+  "analysis/11-weekly-treatment",
+  "analysis/12-second-line",
+  "analysis/13-other-trial"
 )
 
 notebooks <- unlist(lapply(run_order, function(entry) {
