@@ -33,13 +33,14 @@ model_path <- file.path(models_dir, "technical-validity.rds")
 ```
 
 ```{r}
-#| label: attempted-samples
+#| label: samples
 
-attempted <- read_parquet(
+samples <- read_parquet(
   here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet")
 ) |>
-  as.data.frame() |>
-  filter(attempted_sample)
+  as.data.frame()
+
+stopifnot("Every sample must have a date." = all(samples$attempted_sample))
 ```
 
 ## Model fit
@@ -50,7 +51,7 @@ attempted <- read_parquet(
 if (!file.exists(model_path)) {
   fit <- brm(
     ctdna_error_derived ~ 1 + (1 | id),
-    data = attempted,
+    data = samples,
     family = bernoulli("logit"),
     iter = 2000L,
     chains = 4L,
@@ -72,14 +73,14 @@ fit <- readRDS(model_path)
 
 technical_draws <- avg_predictions(
   fit,
-  newdata = attempted,
+  newdata = samples,
   type = "response",
   re_formula = NULL
 ) |>
   get_draws() |>
   select(draw)
 
-qc_observed <- !is.na(attempted$ctdna_error_qc)
+qc_observed <- !is.na(samples$ctdna_error_qc)
 
 technical_summary <- technical_draws |>
   summarise(
@@ -88,14 +89,14 @@ technical_summary <- technical_draws |>
     posterior_median = median(draw),
     lower_95 = quantile(draw, 0.025),
     upper_95 = quantile(draw, 0.975),
-    n_attempted_samples = nrow(attempted),
-    n_attempted_patients = n_distinct(attempted$id),
-    n_derived_errors = sum(attempted$ctdna_error_derived == 1L),
-    n_derived_no_error = sum(attempted$ctdna_error_derived == 0L),
+    n_attempted_samples = nrow(samples),
+    n_attempted_patients = n_distinct(samples$id),
+    n_derived_errors = sum(samples$ctdna_error_derived == 1L),
+    n_derived_no_error = sum(samples$ctdna_error_derived == 0L),
     qc_flag_observed = sum(qc_observed),
     qc_flag_discordant = sum(
       qc_observed &
-        attempted$ctdna_error_qc != attempted$ctdna_error_derived
+        samples$ctdna_error_qc != samples$ctdna_error_derived
     )
   )
 
@@ -121,15 +122,15 @@ kable(technical_summary)
 
 ```{r}
 #| label: fig-technical-error-posterior
-#| fig-cap: "Posterior probability of a technical error among attempted ctDNA samples. Thick and thin intervals show 66% and 95% credible intervals."
-#| fig-alt: "A half-eye density above a posterior dot plot of the probability that an attempted ctDNA sample had a technical error, in percent, averaged over this trial's attempted samples, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-cap: "Posterior probability of a technical error among ctDNA samples. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "A half-eye density above a posterior dot plot of the probability that a ctDNA sample had a technical error, in percent, averaged over this trial's samples, with thick and thin intervals for the 66 and 95 percent credible intervals."
 #| fig-width: 8
 #| fig-height: 5
 
 # No reference line: a probability has no natural reference value.
 technical_posterior_plot <- plot_posterior(
   100 * technical_draws$draw,
-  x_label = "Probability of technical error per attempted sample, %",
+  x_label = "Probability of technical error per sample, %",
   reference = NULL
 )
 
