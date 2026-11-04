@@ -38,6 +38,9 @@ markov:
   # A Markov model that fails the diagnostic thresholds is refitted once with
   # this many iterations.
   retry_iterations: 2000
+  # A longitudinal QoL model that still fails is refitted once more with this
+  # many iterations.
+  final_retry_iterations: 4000
 
 seeds:
   # Seed families. Per-imputation seeds are family + (imputation - 1) * 1000,

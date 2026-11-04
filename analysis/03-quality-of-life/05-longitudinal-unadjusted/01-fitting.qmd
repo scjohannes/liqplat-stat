@@ -46,8 +46,11 @@ dir.create(model_dir, recursive = TRUE, showWarnings = FALSE)
 default_warmup <- as.integer(3000L / config$markov$chains)
 default_iterations <- 2L * default_warmup
 
-retry_iterations <- config$markov$retry_iterations
-retry_warmup <- retry_iterations / 2L
+attempt_iterations <- c(
+  default_iterations,
+  config$markov$retry_iterations,
+  config$markov$final_retry_iterations
+)
 
 pcontrast_tx <- list(
   c1 = list(tx = 1),
@@ -96,13 +99,14 @@ for (index in indices) {
   fit_attempts <- list()
   failure_reason <- NULL
 
-  for (attempt in 1:2) {
-    iterations <- if (attempt == 1L) default_iterations else retry_iterations
-    warmup <- if (attempt == 1L) default_warmup else retry_warmup
+  for (attempt in seq_along(attempt_iterations)) {
+    iterations <- attempt_iterations[attempt]
+    warmup <- as.integer(iterations / 2L)
     refit_reason <- if (attempt == 1L) {
       "Initial fit"
     } else {
-      paste0("Initial fit failed diagnostics: ", failure_reason)
+      previous_fit <- if (attempt == 2L) "Initial fit" else "Refit"
+      paste0(previous_fit, " failed diagnostics: ", failure_reason)
     }
 
     model <- mostm(
@@ -121,7 +125,7 @@ for (index in indices) {
       backend = "cmdstan",
       loo = FALSE,
       sampling.args = list(
-        seed = if (attempt == 1L) fit_seed else fit_seed + 500000,
+        seed = fit_seed + (attempt - 1L) * 500000,
         parallel_chains = config$markov$chains
       )
     )
