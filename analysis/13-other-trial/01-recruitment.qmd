@@ -7,13 +7,15 @@ execute:
 ---
 
 - The export has no recruitment date, so recruitment is not restricted to a follow-up window.
-- Added: the difference in proportions (ctDNA − Usual care) from independent Jeffreys Beta(0.5, 0.5) posteriors.
+- Added: logistic regression on randomized group, unadjusted, for the probabilities, their difference (ctDNA − Usual care) and the odds ratio.
 
 ```{r}
 #| label: setup
 
 library(here)
 library(arrow)
+library(brms)
+library(marginaleffects)
 library(knitr)
 library(yaml)
 library(tidyverse)
@@ -22,11 +24,44 @@ config <- read_yaml(here("config", "analysis.yml"))
 source(here("R", "plot-style.R"))
 
 results_dir <- here("analysis", "13-other-trial", "results")
-dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+models_dir <- file.path(results_dir, "models")
+dir.create(models_dir, recursive = TRUE, showWarnings = FALSE)
+
+model_path <- file.path(models_dir, "recruitment.rds")
 
 cohort <- read_parquet(
   here("analysis", "00-data", "results", "analysis-cohort.parquet")
 )
+```
+
+## Model fit
+
+```{r}
+#| label: fit
+
+model_data <- cohort |>
+  select(other_trial_recruited, tx) |>
+  as.data.frame()
+
+if (!file.exists(model_path)) {
+  fit <- brm(
+    other_trial_recruited ~ tx,
+    data = model_data,
+    family = bernoulli("logit"),
+    iter = 2000L,
+    chains = 4L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 7000L,
+    refresh = 0L
+  )
+  saveRDS(fit, model_path, compress = "xz")
+}
+
+fit <- readRDS(model_path)
+fit <- set_modeldata(fit, fit$data)
+
+summary(fit)
 ```
 
 ## Patients recruited by randomized group
@@ -34,17 +69,27 @@ cohort <- read_parquet(
 ```{r}
 #| label: recruitment-summary
 
-recruitment_summary <- cohort |>
+probability_draws <- avg_predictions(fit, by = "tx", type = "response") |>
+  get_draws() |>
+  select(tx, drawid, draw)
+
+recruitment_summary <- model_data |>
   summarise(
     patients = n(),
     recruited = sum(other_trial_recruited),
     .by = tx
   ) |>
-  mutate(
-    proportion = recruited / patients,
-    lower_95 = qbeta(0.025, recruited + 0.5, patients - recruited + 0.5),
-    upper_95 = qbeta(0.975, recruited + 0.5, patients - recruited + 0.5)
+  left_join(
+    probability_draws |>
+      summarise(
+        posterior_median = median(draw),
+        lower_95 = quantile(draw, 0.025),
+        upper_95 = quantile(draw, 0.975),
+        .by = tx
+      ),
+    by = "tx"
   ) |>
+  mutate(proportion = recruited / patients, .after = recruited) |>
   arrange(desc(tx))
 
 write_parquet(
@@ -59,29 +104,26 @@ recruitment_summary |>
   kable(digits = 3)
 ```
 
-## Difference in proportions
+## Difference and odds ratio
 
 ```{r}
 #| label: recruitment-difference
 
-set.seed(config$seeds$supporting + 7000L)
+difference_draws <- probability_draws |>
+  pivot_wider(names_from = tx, values_from = draw, names_prefix = "tx_") |>
+  mutate(difference = tx_1 - tx_0) |>
+  pull(difference)
 
-beta_draws <- \(group) {
-  counts <- filter(recruitment_summary, tx == group)
-  rbeta(
-    config$posterior_draws$supporting * 4L,
-    counts$recruited + 0.5,
-    counts$patients - counts$recruited + 0.5
-  )
-}
-
-difference_draws <- beta_draws(1L) - beta_draws(0L)
+odds_ratio_draws <- exp(as_draws_df(fit)$b_tx)
 
 recruitment_difference <- tibble(
   difference_median = median(difference_draws),
-  difference_low = quantile(difference_draws, 0.025),
-  difference_high = quantile(difference_draws, 0.975),
-  prob_higher_ctdna = mean(difference_draws > 0)
+  difference_low = quantile(difference_draws, 0.025, names = FALSE),
+  difference_high = quantile(difference_draws, 0.975, names = FALSE),
+  prob_higher_ctdna = mean(difference_draws > 0),
+  odds_ratio_median = median(odds_ratio_draws),
+  odds_ratio_low = quantile(odds_ratio_draws, 0.025, names = FALSE),
+  odds_ratio_high = quantile(odds_ratio_draws, 0.975, names = FALSE)
 )
 
 write_parquet(
