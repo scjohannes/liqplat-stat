@@ -99,31 +99,13 @@ scenario_records <- cross_join(
         (assumption == assumptions[[1]] &
            chip_classification == "ctdna_only_unknown"),
       alteration_type %in% c("cnv", "fusion")
-    ),
-    sensitivity = trimws(as.character(sensitivity)),
-    resistance = trimws(as.character(resistance))
+    )
   ) |>
   filter(
     as.logical(valid_ctdna_result) %in% TRUE,
     non_chip,
     alteration_type %in% c("mutation", "cnv", "fusion")
   )
-```
-
-```{r}
-#| label: evidence-rule
-
-is_recorded_actionability_evidence <- function(level) {
-  values <- trimws(as.character(level))
-  non_evidence <- c(
-    "unknown", "not_assessed", "not assessed", "not available",
-    "not_applicable", "not applicable", "not tested", "not_tested",
-    "not performed", "not_performed", "not reported", "not_reported",
-    "pending", "no evidence", "no_evidence", "no level", "no_level",
-    "none", "na", "n/a"
-  )
-  !(is.na(values) | !nzchar(values) | tolower(values) %in% non_evidence)
-}
 ```
 
 ## Long actionability table
@@ -138,10 +120,6 @@ long <- scenario_records |>
     values_to = "actionability_level",
     cols_vary = "slowest"
   ) |>
-  mutate(
-    recorded_exact_level = !is.na(actionability_level) &
-      nzchar(actionability_level)
-  ) |>
   select(
     id,
     alteration_id,
@@ -151,13 +129,12 @@ long <- scenario_records |>
     actionability_level,
     onkb_version,
     onkb_updated_date,
-    recorded_exact_level,
     non_chip,
     valid_ctdna_result
   )
 
 long_evidence <- long |>
-  filter(is_recorded_actionability_evidence(actionability_level))
+  filter(!is.na(actionability_level))
 
 write_parquet(
   long,
@@ -172,19 +149,10 @@ write_parquet(
 #| label: completeness
 
 actionability_qc <- long |>
-  filter(!is_recorded_actionability_evidence(actionability_level)) |>
-  mutate(
-    recorded_value = trimws(as.character(actionability_level)),
-    recorded_value = case_when(
-      is.na(recorded_value) ~ "<missing>",
-      !nzchar(recorded_value) ~ "<blank>",
-      .default = recorded_value
-    )
-  ) |>
+  filter(is.na(actionability_level)) |>
   group_by(
     assumption,
-    evidence_direction = actionability_type,
-    recorded_value
+    evidence_direction = actionability_type
   ) |>
   summarise(
     alteration_records_n = n(),
@@ -269,7 +237,7 @@ observed_levels <- long_evidence |>
     .groups = "drop"
   ) |>
   mutate(
-    level_code = sub("^LEVEL[ _-]*", "", toupper(trimws(actionability_level)))
+    level_code = sub("^LEVEL_", "", actionability_level)
   )
 
 zero_levels <- cross_join(
@@ -353,8 +321,8 @@ write_parquet(
 
 patient_evidence <- scenario_records |>
   summarise(
-    any_sensitivity = any(is_recorded_actionability_evidence(sensitivity)),
-    any_resistance = any(is_recorded_actionability_evidence(resistance)),
+    any_sensitivity = any(!is.na(sensitivity)),
+    any_resistance = any(!is.na(resistance)),
     .by = c(assumption, id)
   )
 
@@ -435,7 +403,7 @@ actionability_levels |>
 
 ```{r}
 #| label: actionability-completeness
-#| tbl-cap: "Missing and non-evidence OncoKB level values retained for completeness checks"
+#| tbl-cap: "Non-CHIP alteration records without an OncoKB level"
 
 kable(actionability_qc)
 ```
