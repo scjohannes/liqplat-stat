@@ -29,6 +29,7 @@ blood_fits <- expand_grid(
   outcome = c("blood_products", "erythrocytes", "thrombocytes"),
   adjustment = c("adjusted", "unadjusted")
 ) |>
+  filter(!(outcome == "thrombocytes" & adjustment == "adjusted")) |>
   mutate(fits = map2(outcome, adjustment, \(outcome, adjustment) {
     readRDS(file.path(
       results_dir,
@@ -104,8 +105,6 @@ write_parquet(
 
 ## Summary
 
-- Adjusted rates and differences have extreme right tails (tiny shape); the rate ratio does not.
-
 ```{r}
 #| label: tbl-blood-summary
 #| tbl-cap: "Posterior marginal rates per 30 days, rate ratio, and rate difference (ctDNA - usual care)"
@@ -153,8 +152,8 @@ plot_draws <- blood_draws |>
 
 ```{r}
 #| label: fig-blood-rate-ratio
-#| fig-cap: "Posterior marginal rate ratio (ctDNA / usual care), adjusted and unadjusted, for all blood products and for erythrocyte and thrombocyte concentrates separately. Thick and thin intervals show 66% and 95% credible intervals."
-#| fig-alt: "Six panels, one row per outcome (all blood products, erythrocyte concentrates, thrombocyte concentrates) and one column per model (adjusted, unadjusted), each with a half-eye density above a posterior dot plot of the marginal rate ratio, ctDNA over usual care, on a log scale, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at a ratio of one."
+#| fig-cap: "Posterior marginal rate ratio (ctDNA / usual care), adjusted and unadjusted for all blood products and erythrocyte concentrates, unadjusted for thrombocyte concentrates. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Five panels, adjusted and unadjusted for all blood products and erythrocyte concentrates and unadjusted for thrombocyte concentrates, each with a half-eye density above a posterior dot plot of the marginal rate ratio, ctDNA over usual care, on a log scale, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at a ratio of one."
 #| fig-width: 8
 #| fig-height: 9
 
@@ -177,8 +176,8 @@ rate_ratio_plot
 
 ```{r}
 #| label: fig-blood-rate-difference
-#| fig-cap: "Posterior marginal difference in products per 30 days (ctDNA − usual care), adjusted and unadjusted, for all blood products and for erythrocyte and thrombocyte concentrates separately. Thick and thin intervals show 66% and 95% credible intervals."
-#| fig-alt: "Six panels, one row per outcome (all blood products, erythrocyte concentrates, thrombocyte concentrates) and one column per model (adjusted, unadjusted), each with its own horizontal axis and a half-eye density above a posterior dot plot of the marginal difference in products per 30 days, ctDNA minus usual care, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at zero."
+#| fig-cap: "Posterior marginal difference in products per 30 days (ctDNA − usual care), adjusted and unadjusted for all blood products and erythrocyte concentrates, unadjusted for thrombocyte concentrates. Thick and thin intervals show 66% and 95% credible intervals."
+#| fig-alt: "Five panels, adjusted and unadjusted for all blood products and erythrocyte concentrates and unadjusted for thrombocyte concentrates, each with its own horizontal axis and a half-eye density above a posterior dot plot of the marginal difference in products per 30 days, ctDNA minus usual care, with thick and thin intervals for the 66 and 95 percent credible intervals and a dashed vertical line at zero."
 #| fig-width: 8
 #| fig-height: 9
 
@@ -201,7 +200,7 @@ rate_difference_plot
 ```{r}
 #| label: fig-blood-marginal-rates
 #| fig-cap: "Posterior marginal rate per 30 days by randomized group from the adjusted models. Thick and thin intervals show 66% and 95% credible intervals."
-#| fig-alt: "Six panels, one row per outcome (all blood products, erythrocyte concentrates, thrombocyte concentrates) and one column per randomized group (ctDNA, usual care), each with its own horizontal axis and a half-eye density above a posterior dot plot of the marginal number of products per 30 days from the adjusted model, with thick and thin intervals for the 66 and 95 percent credible intervals."
+#| fig-alt: "Four panels, one row per outcome (all blood products, erythrocyte concentrates) and one column per randomized group (ctDNA, usual care), each with its own horizontal axis and a half-eye density above a posterior dot plot of the marginal number of products per 30 days from the adjusted model, with thick and thin intervals for the 66 and 95 percent credible intervals."
 #| fig-width: 8
 #| fig-height: 9
 

@@ -4,6 +4,10 @@ format: html
 ---
 
 - Prespecified: adjusted model for all blood products. All other models, including the zero-inflated ones, are additional.
+- `ns(x, df = 2)` has three knots (minimum, median, maximum), the flexibility of the SAP's three-knot restricted cubic spline; the SAP gives no knot positions.
+- ECOG in four categories, as in the other count models; the two ECOG terms in the SAP's formula are an error.
+- Creatinine on the log scale (SAP: original scale): on the original scale, one patient's extreme value dominated the extreme draws of the marginal rates.
+- No adjusted thrombocyte model: no thrombocyte transfusions at ECOG 3+; with normal(0, 10) priors, the 95% CrI of its rate ratio was 0.0008 to 567.
 - No zero-inflated thrombocyte model: sampling of the adjusted model had not finished after more than two hours.
 
 ```{r}
@@ -23,133 +27,29 @@ results_dir <- here("analysis", "07-blood-products", "results")
 
 blood_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
 completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
-spline_knots <- readRDS(file.path(results_dir, "spline-knots.rds"))
-
-blood_outcomes <- c(
-  blood_products = "n_blood_products",
-  erythrocytes = "n_erythrocyte_concentrates",
-  thrombocytes = "n_thrombocyte_concentrates"
-)
-```
-
-## Model formulas
-
-```{r}
-#| label: model-formulas
-
-# Knots are written into the formula as numbers so predictions on new data
-# use the same basis.
-ns_call <- function(variable) {
-  knots <- spline_knots[[variable]]
-
-  sprintf(
-    "splines::ns(%s, knots = %s, Boundary.knots = c(%s, %s))",
-    variable,
-    knots[2],
-    knots[1],
-    knots[3]
-  )
-}
-
-adjusted_terms <- paste(
-  "tx",
-  ns_call("hemoglobin"),
-  ns_call("platelet_count"),
-  ns_call("age"),
-  ns_call("creatinine"),
-  "ecog_group",
-  "offset(log(exposure_days))",
-  sep = " + "
-)
-
-unadjusted_terms <- "tx + offset(log(exposure_days))"
-
-blood_formulas <- list(
-  adjusted = map(blood_outcomes, \(outcome) {
-    bf(as.formula(paste(outcome, "~", adjusted_terms)))
-  }),
-  unadjusted = map(blood_outcomes, \(outcome) {
-    bf(as.formula(paste(outcome, "~", unadjusted_terms)))
-  })
-)
-
-# Added zero-inflated models: same count part; the zero-inflation part has the
-# same predictors without the offset.
-zi_terms <- c(
-  adjusted = str_remove(adjusted_terms, fixed(" + offset(log(exposure_days))")),
-  unadjusted = "tx"
-)
-
-zi_formulas <- list(
-  adjusted = map(blood_outcomes, \(outcome) {
-    bf(
-      as.formula(paste(outcome, "~", adjusted_terms)),
-      as.formula(paste("zi ~", zi_terms[["adjusted"]]))
-    )
-  }),
-  unadjusted = map(blood_outcomes, \(outcome) {
-    bf(
-      as.formula(paste(outcome, "~", unadjusted_terms)),
-      as.formula(paste("zi ~", zi_terms[["unadjusted"]]))
-    )
-  })
-)
 ```
 
 ## Priors
 
-- Alternative priors tested: adjusted all-product rate ratio stayed 0.67–0.70.
-
 ```{r}
 #| label: priors
 
-blood_priors <- c(
-  # Flat default is improper: no thrombocyte transfusions at ECOG 3+.
-  prior(normal(0, 10), class = "b"),
-  # Pre-2.21 brms default; the new default lets chains escape to the Poisson limit.
-  prior(gamma(0.01, 0.01), class = "shape")
-)
+coefficient_prior <- prior(normal(0, 2.5), class = "b")
 
-zi_priors <- c(blood_priors, prior(normal(0, 2.5), class = "b", dpar = "zi"))
+# For models whose chains drift to the Poisson limit (shape -> infinity) with the
+# default shape prior, also after the refit.
+gamma_shape_prior <- c(coefficient_prior, prior(gamma(0.01, 0.01), class = "shape"))
+
+zi_prior <- c(coefficient_prior, prior(normal(0, 2.5), class = "b", dpar = "zi"))
 ```
 
-## Fitting
+## Convergence rule
 
 ```{r}
-#| label: fit-models
-
-model_grid <- bind_rows(
-  expand_grid(
-    outcome = names(blood_outcomes),
-    adjustment = c("adjusted", "unadjusted")
-  ) |>
-    mutate(
-      zero_inflated = FALSE,
-      seed = config$seeds$supporting + 2400L + row_number(),
-      model_path = file.path(
-        results_dir,
-        paste0("model-", outcome, "-", adjustment, ".rds")
-      )
-    ),
-  expand_grid(
-    outcome = setdiff(names(blood_outcomes), "thrombocytes"),
-    adjustment = c("adjusted", "unadjusted")
-  ) |>
-    mutate(
-      zero_inflated = TRUE,
-      seed = config$seeds$supporting + 2410L + row_number(),
-      model_path = file.path(
-        results_dir,
-        paste0("model-zi-", outcome, "-", adjustment, ".rds")
-      )
-    )
-)
+#| label: convergence-rule
 
 thresholds <- config$diagnostics
 
-# Convergence diagnostics of one fit: R-hat and bulk and tail ESS over all
-# parameters (including lp__), divergences, transitions at the maximum tree
-# depth, and the smallest E-BFMI across chains.
 fit_diagnostics <- function(fit) {
   draw_summary <- summarise_draws(fit, "rhat", "ess_bulk", "ess_tail")
   nuts <- nuts_params(fit)
@@ -180,62 +80,301 @@ passes_thresholds <- function(diagnostics) {
   ))
 }
 
-pwalk(model_grid, \(outcome, adjustment, zero_inflated, seed, model_path) {
-  if (!file.exists(model_path)) {
-    formulas <- if (zero_inflated) zi_formulas else blood_formulas
-    family <- if (zero_inflated) zero_inflated_negbinomial() else negbinomial()
-    priors <- if (zero_inflated) zi_priors else blood_priors
-
-    fits <- if (adjustment == "adjusted") {
-      # brm_multiple() seeds only compilation; seed R's RNG for the Stan seeds.
-      set.seed(seed)
-
-      brm_multiple(
-        formulas$adjusted[[outcome]],
-        data = completed_datasets,
-        family = family,
-        prior = priors,
-        init = 0,
-        chains = 4L,
-        iter = 2000L,
-        cores = 1L,
-        backend = "cmdstanr",
-        seed = seed,
-        combine = FALSE,
-        refresh = 0L
-      )
-    } else {
-      list(brm(
-        formulas$unadjusted[[outcome]],
-        data = blood_data,
-        family = family,
-        prior = priors,
-        init = 0,
-        chains = 4L,
-        iter = 2000L,
-        cores = 1L,
-        backend = "cmdstanr",
-        seed = seed,
-        refresh = 0L
-      ))
+refit_unconverged <- function(fits, seed) {
+  imap(fits, \(fit, index) {
+    if (passes_thresholds(fit_diagnostics(fit))) {
+      return(fit)
     }
+    update(fit, iter = 4000L, seed = seed + 500000L + index, refresh = 0L)
+  })
+}
+```
 
-    # A fit that misses a diagnostic threshold is refitted once with twice
-    # the iterations and a new seed, the rule used for the Markov and BSC
-    # models.
-    fits <- imap(fits, \(fit, index) {
-      if (passes_thresholds(fit_diagnostics(fit))) {
-        return(fit)
-      }
-      update(fit, iter = 4000L, seed = seed + 500000L + index, refresh = 0L)
-    })
+## All blood products
 
-    saveRDS(fits, model_path, compress = "xz")
-  }
-})
+```{r}
+#| label: fit-blood-products
 
-blood_fits <- model_grid |>
-  mutate(fits = map(model_path, readRDS))
+blood_products_adjusted_path <- file.path(results_dir, "model-blood_products-adjusted.rds")
+blood_products_unadjusted_path <- file.path(results_dir, "model-blood_products-unadjusted.rds")
+
+if (!file.exists(blood_products_adjusted_path)) {
+  # brm_multiple() seeds only compilation; seed R's RNG for the Stan seeds.
+  set.seed(config$seeds$supporting + 2401L)
+
+  blood_products_adjusted_fits <- brm_multiple(
+    bf(
+      n_blood_products ~ tx + splines::ns(hemoglobin, df = 2) +
+        splines::ns(platelet_count, df = 2) + splines::ns(age, df = 2) +
+        splines::ns(log(creatinine), df = 2) + ecog_group +
+        offset(log(exposure_days))
+    ),
+    data = completed_datasets,
+    family = negbinomial(),
+    prior = gamma_shape_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2401L,
+    combine = FALSE,
+    refresh = 0L
+  )
+
+  blood_products_adjusted_fits <- refit_unconverged(
+    blood_products_adjusted_fits,
+    seed = config$seeds$supporting + 2401L
+  )
+
+  saveRDS(blood_products_adjusted_fits, blood_products_adjusted_path, compress = "xz")
+}
+
+if (!file.exists(blood_products_unadjusted_path)) {
+  blood_products_unadjusted_fits <- list(brm(
+    bf(n_blood_products ~ tx + offset(log(exposure_days))),
+    data = blood_data,
+    family = negbinomial(),
+    prior = coefficient_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2402L,
+    refresh = 0L
+  ))
+
+  blood_products_unadjusted_fits <- refit_unconverged(
+    blood_products_unadjusted_fits,
+    seed = config$seeds$supporting + 2402L
+  )
+
+  saveRDS(blood_products_unadjusted_fits, blood_products_unadjusted_path, compress = "xz")
+}
+
+blood_products_adjusted_fits <- readRDS(blood_products_adjusted_path)
+blood_products_unadjusted_fits <- readRDS(blood_products_unadjusted_path)
+```
+
+## Erythrocyte concentrates
+
+```{r}
+#| label: fit-erythrocytes
+
+erythrocytes_adjusted_path <- file.path(results_dir, "model-erythrocytes-adjusted.rds")
+erythrocytes_unadjusted_path <- file.path(results_dir, "model-erythrocytes-unadjusted.rds")
+
+if (!file.exists(erythrocytes_adjusted_path)) {
+  set.seed(config$seeds$supporting + 2403L)
+
+  erythrocytes_adjusted_fits <- brm_multiple(
+    bf(
+      n_erythrocyte_concentrates ~ tx + splines::ns(hemoglobin, df = 2) +
+        splines::ns(platelet_count, df = 2) + splines::ns(age, df = 2) +
+        splines::ns(log(creatinine), df = 2) + ecog_group +
+        offset(log(exposure_days))
+    ),
+    data = completed_datasets,
+    family = negbinomial(),
+    prior = coefficient_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2403L,
+    combine = FALSE,
+    refresh = 0L
+  )
+
+  erythrocytes_adjusted_fits <- refit_unconverged(
+    erythrocytes_adjusted_fits,
+    seed = config$seeds$supporting + 2403L
+  )
+
+  saveRDS(erythrocytes_adjusted_fits, erythrocytes_adjusted_path, compress = "xz")
+}
+
+if (!file.exists(erythrocytes_unadjusted_path)) {
+  erythrocytes_unadjusted_fits <- list(brm(
+    bf(n_erythrocyte_concentrates ~ tx + offset(log(exposure_days))),
+    data = blood_data,
+    family = negbinomial(),
+    prior = gamma_shape_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2404L,
+    refresh = 0L
+  ))
+
+  erythrocytes_unadjusted_fits <- refit_unconverged(
+    erythrocytes_unadjusted_fits,
+    seed = config$seeds$supporting + 2404L
+  )
+
+  saveRDS(erythrocytes_unadjusted_fits, erythrocytes_unadjusted_path, compress = "xz")
+}
+
+erythrocytes_adjusted_fits <- readRDS(erythrocytes_adjusted_path)
+erythrocytes_unadjusted_fits <- readRDS(erythrocytes_unadjusted_path)
+```
+
+## Thrombocyte concentrates
+
+```{r}
+#| label: fit-thrombocytes
+
+thrombocytes_unadjusted_path <- file.path(results_dir, "model-thrombocytes-unadjusted.rds")
+
+if (!file.exists(thrombocytes_unadjusted_path)) {
+  thrombocytes_unadjusted_fits <- list(brm(
+    bf(n_thrombocyte_concentrates ~ tx + offset(log(exposure_days))),
+    data = blood_data,
+    family = negbinomial(),
+    prior = coefficient_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2406L,
+    refresh = 0L
+  ))
+
+  thrombocytes_unadjusted_fits <- refit_unconverged(
+    thrombocytes_unadjusted_fits,
+    seed = config$seeds$supporting + 2406L
+  )
+
+  saveRDS(thrombocytes_unadjusted_fits, thrombocytes_unadjusted_path, compress = "xz")
+}
+
+thrombocytes_unadjusted_fits <- readRDS(thrombocytes_unadjusted_path)
+```
+
+## Zero-inflated models
+
+```{r}
+#| label: fit-zero-inflated
+
+zi_blood_products_adjusted_path <- file.path(results_dir, "model-zi-blood_products-adjusted.rds")
+zi_blood_products_unadjusted_path <- file.path(results_dir, "model-zi-blood_products-unadjusted.rds")
+zi_erythrocytes_adjusted_path <- file.path(results_dir, "model-zi-erythrocytes-adjusted.rds")
+zi_erythrocytes_unadjusted_path <- file.path(results_dir, "model-zi-erythrocytes-unadjusted.rds")
+
+if (!file.exists(zi_blood_products_adjusted_path)) {
+  set.seed(config$seeds$supporting + 2411L)
+
+  zi_blood_products_adjusted_fits <- brm_multiple(
+    bf(
+      n_blood_products ~ tx + splines::ns(hemoglobin, df = 2) +
+        splines::ns(platelet_count, df = 2) + splines::ns(age, df = 2) +
+        splines::ns(log(creatinine), df = 2) + ecog_group +
+        offset(log(exposure_days)),
+      zi ~ tx + splines::ns(hemoglobin, df = 2) +
+        splines::ns(platelet_count, df = 2) + splines::ns(age, df = 2) +
+        splines::ns(log(creatinine), df = 2) + ecog_group
+    ),
+    data = completed_datasets,
+    family = zero_inflated_negbinomial(),
+    prior = zi_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2411L,
+    combine = FALSE,
+    refresh = 0L
+  )
+
+  zi_blood_products_adjusted_fits <- refit_unconverged(
+    zi_blood_products_adjusted_fits,
+    seed = config$seeds$supporting + 2411L
+  )
+
+  saveRDS(zi_blood_products_adjusted_fits, zi_blood_products_adjusted_path, compress = "xz")
+}
+
+if (!file.exists(zi_blood_products_unadjusted_path)) {
+  zi_blood_products_unadjusted_fits <- list(brm(
+    bf(n_blood_products ~ tx + offset(log(exposure_days)), zi ~ tx),
+    data = blood_data,
+    family = zero_inflated_negbinomial(),
+    prior = zi_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2412L,
+    refresh = 0L
+  ))
+
+  zi_blood_products_unadjusted_fits <- refit_unconverged(
+    zi_blood_products_unadjusted_fits,
+    seed = config$seeds$supporting + 2412L
+  )
+
+  saveRDS(zi_blood_products_unadjusted_fits, zi_blood_products_unadjusted_path, compress = "xz")
+}
+
+if (!file.exists(zi_erythrocytes_adjusted_path)) {
+  set.seed(config$seeds$supporting + 2413L)
+
+  zi_erythrocytes_adjusted_fits <- brm_multiple(
+    bf(
+      n_erythrocyte_concentrates ~ tx + splines::ns(hemoglobin, df = 2) +
+        splines::ns(platelet_count, df = 2) + splines::ns(age, df = 2) +
+        splines::ns(log(creatinine), df = 2) + ecog_group +
+        offset(log(exposure_days)),
+      zi ~ tx + splines::ns(hemoglobin, df = 2) +
+        splines::ns(platelet_count, df = 2) + splines::ns(age, df = 2) +
+        splines::ns(log(creatinine), df = 2) + ecog_group
+    ),
+    data = completed_datasets,
+    family = zero_inflated_negbinomial(),
+    prior = zi_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2413L,
+    combine = FALSE,
+    refresh = 0L
+  )
+
+  zi_erythrocytes_adjusted_fits <- refit_unconverged(
+    zi_erythrocytes_adjusted_fits,
+    seed = config$seeds$supporting + 2413L
+  )
+
+  saveRDS(zi_erythrocytes_adjusted_fits, zi_erythrocytes_adjusted_path, compress = "xz")
+}
+
+if (!file.exists(zi_erythrocytes_unadjusted_path)) {
+  zi_erythrocytes_unadjusted_fits <- list(brm(
+    bf(n_erythrocyte_concentrates ~ tx + offset(log(exposure_days)), zi ~ tx),
+    data = blood_data,
+    family = zero_inflated_negbinomial(),
+    prior = zi_prior,
+    chains = 4L,
+    iter = 2000L,
+    cores = 1L,
+    backend = "cmdstanr",
+    seed = config$seeds$supporting + 2414L,
+    refresh = 0L
+  ))
+
+  zi_erythrocytes_unadjusted_fits <- refit_unconverged(
+    zi_erythrocytes_unadjusted_fits,
+    seed = config$seeds$supporting + 2414L
+  )
+
+  saveRDS(zi_erythrocytes_unadjusted_fits, zi_erythrocytes_unadjusted_path, compress = "xz")
+}
+
+zi_blood_products_adjusted_fits <- readRDS(zi_blood_products_adjusted_path)
+zi_blood_products_unadjusted_fits <- readRDS(zi_blood_products_unadjusted_path)
+zi_erythrocytes_adjusted_fits <- readRDS(zi_erythrocytes_adjusted_path)
+zi_erythrocytes_unadjusted_fits <- readRDS(zi_erythrocytes_unadjusted_path)
 ```
 
 ## Diagnostics
@@ -243,12 +382,19 @@ blood_fits <- model_grid |>
 ```{r}
 #| label: model-diagnostics
 
-blood_diagnostics <- blood_fits |>
-  mutate(diagnostics = map(fits, \(fits) {
-    list_rbind(map(fits, fit_diagnostics), names_to = "imputation")
-  })) |>
-  select(outcome, adjustment, zero_inflated, diagnostics) |>
-  unnest(diagnostics) |>
+blood_diagnostics <- list(
+  "All blood products, adjusted" = blood_products_adjusted_fits,
+  "All blood products, unadjusted" = blood_products_unadjusted_fits,
+  "Erythrocytes, adjusted" = erythrocytes_adjusted_fits,
+  "Erythrocytes, unadjusted" = erythrocytes_unadjusted_fits,
+  "Thrombocytes, unadjusted" = thrombocytes_unadjusted_fits,
+  "All blood products, zero-inflated, adjusted" = zi_blood_products_adjusted_fits,
+  "All blood products, zero-inflated, unadjusted" = zi_blood_products_unadjusted_fits,
+  "Erythrocytes, zero-inflated, adjusted" = zi_erythrocytes_adjusted_fits,
+  "Erythrocytes, zero-inflated, unadjusted" = zi_erythrocytes_unadjusted_fits
+) |>
+  map(\(fits) list_rbind(map(fits, fit_diagnostics), names_to = "imputation")) |>
+  list_rbind(names_to = "model") |>
   mutate(passed = passes_thresholds(pick(everything())))
 ```
 
@@ -265,10 +411,7 @@ kable(blood_diagnostics, digits = 3)
 #| label: tbl-combined-coefficients
 #| tbl-cap: "Posterior coefficients of the adjusted combined blood-product model (first imputation)"
 
-blood_fits |>
-  filter(outcome == "blood_products", adjustment == "adjusted", !zero_inflated) |>
-  pull(fits) |>
-  pluck(1, 1) |>
+blood_products_adjusted_fits[[1]] |>
   fixef() |>
   kable(digits = 3)
 ```
