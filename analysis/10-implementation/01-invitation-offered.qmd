@@ -39,7 +39,7 @@ model_path <- file.path(models_dir, "invitation-offered.rds")
 
 cohort <- read_parquet(
   here("analysis", "00-data", "results", "analysis-cohort.parquet")
-)
+) 
 
 model_data <- cohort |>
   filter(tx == 1) |>

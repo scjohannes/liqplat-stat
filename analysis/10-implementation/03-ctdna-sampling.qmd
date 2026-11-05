@@ -70,8 +70,7 @@ patient_data <- cohort |>
       tx == 0L ~ "Usual care",
       tx == 1L ~ "ctDNA"
     )
-  ) |>
-  filter(!is.na(randomized_group))
+  )
 ```
 
 ## Summary by randomized group
