@@ -19,6 +19,7 @@ source(here("R", "plot-style.R"))
 results_dir <- here("analysis", "11-weekly-treatment", "results")
 imputation_path <- file.path(results_dir, "imputation.rds")
 completed_path <- file.path(results_dir, "completed-datasets.rds")
+dir.create(file.path(results_dir, "figures"), recursive = TRUE, showWarnings = FALSE)
 
 treatment_data <- read_parquet(file.path(results_dir, "analysis-data.parquet"))
 ```
@@ -70,6 +71,25 @@ c(m = imputation$m, iterations = imputation$iteration)
 #| fig-height: 3
 
 plot_mice_traces(mice_chain_stats(imputation))
+```
+
+```{r}
+#| label: fig-imputation-distributions-ecog
+#| fig-cap: "Category proportions of ECOG among observed values (black) and imputed values of each completed dataset (pink)"
+#| fig-alt: "Proportions of the ECOG categories among observed values and among the imputed values of each completed dataset."
+#| fig-width: 8
+#| fig-height: 3.5
+
+ecog_imputation_plot <- imputation |>
+  imputed_category_proportions(c(ECOG = "ecog_group")) |>
+  plot_imputed_categories()
+
+save_figure(
+  ecog_imputation_plot,
+  file.path(results_dir, "figures", "imputation-distributions-ecog.png"),
+  height = 3.5
+)
+ecog_imputation_plot
 ```
 
 ## Completed datasets
