@@ -1,16 +1,16 @@
 ---
-title: "Second-line treatment — fixed and hierarchical imputations"
+title: "Second-line treatment — imputation"
 format: html
 ---
 
 - Event indicators and both Nelson–Aalen hazards inform imputation [@Bonneville2022, sec. 4.1]
 - Not SMC-FCS: compatibility with the survival model is approximate
+- The hierarchical model uses these completed datasets; few values are imputed, so it needs no separate two-level imputation.
 
 ```{r}
 #| label: setup
 #| include: false
 library(mice)
-library(miceadds)
 library(here)
 library(arrow)
 library(yaml)
@@ -25,13 +25,15 @@ source(here("R", "plot-style.R"))
 results_dir <- here("analysis", "12-second-line", "results")
 imputation_dir <- file.path(results_dir, "imputations")
 dir.create(imputation_dir, recursive = TRUE, showWarnings = FALSE)
+figures_dir <- file.path(results_dir, "figures")
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
 
 m <- config$imputation$m_supporting
 
 prepared <- read_parquet(file.path(results_dir, "prepared.parquet"))
 ```
 
-## Adjusted (fixed)
+## Imputation
 
 ```{r}
 #| label: impute-fixed
@@ -99,7 +101,7 @@ for (index in seq_len(m)) {
 
 ```{r}
 #| label: fig-second-line-imputation-traces
-#| fig-cap: "MICE traces for the five Adjusted (fixed) second-line imputations"
+#| fig-cap: "MICE traces for the five second-line imputations"
 #| fig-width: 8
 #| fig-height: 9
 #| echo: false
@@ -107,8 +109,27 @@ plot_mice_traces(mice_chain_stats(fixed_imputation))
 ```
 
 ```{r}
+#| label: fig-second-line-imputation-ecog
+#| fig-cap: "Category proportions of ECOG among observed values (black) and imputed values of each completed dataset (pink), second-line imputation"
+#| fig-alt: "Proportions of the ECOG categories among observed values and among the imputed values of each completed dataset."
+#| fig-width: 8
+#| fig-height: 3.5
+#| echo: false
+fixed_ecog_plot <- fixed_imputation |>
+  imputed_category_proportions(c(ECOG = "ecog_fstcnt")) |>
+  plot_imputed_categories()
+
+save_figure(
+  fixed_ecog_plot,
+  file.path(figures_dir, "imputation-ecog-fixed.png"),
+  height = 3.5
+)
+fixed_ecog_plot
+```
+
+```{r}
 #| label: fig-second-line-imputation-distributions
-#| fig-cap: "Observed and imputed laboratory measurements for the Adjusted (fixed) second-line branch"
+#| fig-cap: "Observed and imputed laboratory measurements for the second-line imputation"
 #| fig-width: 8
 #| fig-height: 5
 #| echo: false
@@ -128,151 +149,10 @@ plot_imputed_densities(
 
 ```{r}
 #| label: tbl-second-line-imputation-events
-#| tbl-cap: "Logged MICE events for the Adjusted (fixed) branch, if any"
+#| tbl-cap: "Logged MICE events, if any"
 #| echo: false
 if (!is.null(fixed_imputation$loggedEvents)) {
   fixed_imputation$loggedEvents |>
-    count(dep, meth, out, name = "logged_events") |>
-    kable()
-}
-```
-
-## Adjusted (hierarchical)
-
-```{r}
-#| label: impute-hierarchical
-#| include: false
-diagnoses <- here("analysis", "00-data", "results", "analysis-cohort.parquet") |>
-  read_parquet() |>
-  select(id, diagnosis)
-
-hierarchical_prepared <- prepared |>
-  select(-lung) |>
-  left_join(diagnoses, by = "id", relationship = "one-to-one") |>
-  mutate(
-    diagnosis = factor(diagnosis),
-    diagnosis_id = as.integer(diagnosis),
-    gender = factor(gender)
-  )
-
-stopifnot(
-  !anyNA(hierarchical_prepared$diagnosis),
-  nrow(hierarchical_prepared) > 0L,
-  !anyDuplicated(hierarchical_prepared$id)
-)
-
-hierarchical_data <- hierarchical_prepared |>
-  mutate(
-    na_second_line = nelsonaalen(hierarchical_prepared, time_to_second_line_days, event_second_line),
-    na_death = nelsonaalen(
-      hierarchical_prepared,
-      time_to_second_line_days,
-      event_death_before_second_line
-    )
-  ) |>
-  select(-diagnosis)
-
-hierarchical_incomplete <- names(which(colSums(is.na(hierarchical_data)) > 0))
-
-hierarchical_methods <- make.method(hierarchical_data)
-hierarchical_methods[] <- ""
-# ECOG is imputed with a numeric working model.
-hierarchical_methods[hierarchical_incomplete] <- "2l.pmm"
-
-hierarchical_predictors <- make.predictorMatrix(hierarchical_data)
-hierarchical_predictors[, c("id", "time_to_second_line_days", "event_second_line_or_death")] <- 0
-hierarchical_predictors[!names(hierarchical_methods) %in% hierarchical_incomplete, ] <- 0
-# -2 marks diagnosis_id as the cluster variable.
-hierarchical_predictors[hierarchical_incomplete, "diagnosis_id"] <- -2
-
-hierarchical_path <- file.path(imputation_dir, "hierarchical.rds")
-
-if (!file.exists(hierarchical_path)) {
-  imputation <- mice(
-    hierarchical_data,
-    method = hierarchical_methods,
-    predictorMatrix = hierarchical_predictors,
-    m = m,
-    maxit = config$imputation$maxit,
-    donors = config$imputation$donors,
-    seed = config$seeds$supporting + 5701L,
-    printFlag = FALSE
-  )
-  saveRDS(imputation, hierarchical_path)
-}
-
-hierarchical_imputation <- readRDS(hierarchical_path)
-
-stopifnot(
-  hierarchical_imputation$m == m,
-  all(
-    hierarchical_imputation$predictorMatrix[hierarchical_incomplete, "diagnosis_id"] == -2
-  )
-)
-```
-
-```{r}
-#| label: complete-hierarchical
-#| include: false
-hierarchical_completed <- map(seq_len(m), function(index) {
-  completed <- complete(hierarchical_imputation, index) |>
-    mutate(
-      diagnosis = hierarchical_prepared$diagnosis,
-      ecog_binary = derive_ecog_binary(ecog_fstcnt),
-      mgps = factor(derive_mgps(albumin, c_reactive_protein), levels = 0:2)
-    )
-
-  stopifnot(
-    !anyNA(completed),
-    all(completed$ecog_fstcnt %in% 0:4),
-    all(as.integer(as.character(completed$ecog_binary)) ==
-          derive_ecog_binary(completed$ecog_fstcnt)),
-    all(as.integer(as.character(completed$mgps)) ==
-          derive_mgps(completed$albumin, completed$c_reactive_protein))
-  )
-
-  completed
-})
-
-saveRDS(
-  hierarchical_completed,
-  file.path(imputation_dir, "hierarchical-completed.rds")
-)
-```
-
-```{r}
-#| label: fig-second-line-diagnosis-imputation-traces
-#| fig-cap: "MICE traces for the Adjusted (hierarchical) second-line imputations"
-#| fig-alt: "Means and standard deviations of imputed ECOG and laboratory values over 50 MICE iterations, with a separate trace for each of five diagnosis-level imputations."
-#| fig-width: 8
-#| fig-height: 9
-#| echo: false
-plot_mice_traces(mice_chain_stats(hierarchical_imputation))
-```
-
-```{r}
-#| label: fig-second-line-diagnosis-imputation-distributions
-#| fig-cap: "Observed and imputed laboratory measurements for the Adjusted (hierarchical) second-line branch"
-#| fig-alt: "Density curves compare observed laboratory measurements with each of the five completed diagnosis-level imputations for albumin, bilirubin, CRP, and LDH."
-#| fig-width: 8
-#| fig-height: 5
-#| echo: false
-hierarchical_laboratory_values <- imputed_values(
-  hierarchical_imputation,
-  laboratory_variables
-)
-plot_imputed_densities(
-  hierarchical_laboratory_values$observed,
-  hierarchical_laboratory_values$imputed
-)
-```
-
-```{r}
-#| label: tbl-second-line-diagnosis-imputation-events
-#| tbl-cap: "Logged MICE events for the Adjusted (hierarchical) branch, if any"
-#| echo: false
-if (!is.null(hierarchical_imputation$loggedEvents)) {
-  hierarchical_imputation$loggedEvents |>
     count(dep, meth, out, name = "logged_events") |>
     kable()
 }

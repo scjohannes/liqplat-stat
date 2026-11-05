@@ -167,22 +167,26 @@ for (endpoint_name in names(event_columns)) {
 #| include: false
 hierarchical_seed_offset <- c(cause_specific = 5800L, composite = 5900L)
 
-hierarchical_completed <- readRDS(file.path(imputation_dir, "hierarchical-completed.rds"))
-stopifnot(length(hierarchical_completed) == m)
+diagnoses <- here("analysis", "00-data", "results", "analysis-cohort.parquet") |>
+  read_parquet() |>
+  select(id, diagnosis)
 
 for (index in seq_len(m)) {
-  completed <- hierarchical_completed[[index]]
-
-  stopifnot(
-    all(as.integer(as.character(completed$ecog_binary)) ==
-          derive_ecog_binary(completed$ecog_fstcnt)),
-    all(as.integer(as.character(completed$mgps)) ==
-          derive_mgps(completed$albumin, completed$c_reactive_protein))
-  )
+  completed <- complete(fixed_imputation, index) |>
+    left_join(diagnoses, by = "id", relationship = "one-to-one")
 
   for (endpoint_name in names(event_columns)) {
     fitting_data <- completed |>
-      mutate(event = .data[[event_columns[[endpoint_name]]]])
+      transmute(
+        id,
+        tx,
+        time_to_second_line_days,
+        event = .data[[event_columns[[endpoint_name]]]],
+        ecog_binary,
+        stage_binary,
+        mgps = factor(mgps, levels = 0:2),
+        diagnosis = factor(diagnosis)
+      )
 
     stopifnot(!anyNA(fitting_data), all(fitting_data$time_to_second_line_days > 0))
 
