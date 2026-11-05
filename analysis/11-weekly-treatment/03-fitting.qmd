@@ -31,12 +31,11 @@ completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
 ```{r}
 #| label: prior
 
-coefficient_prior <- c(
-  prior(normal(0, 2.5), class = "b"),
-  # Exponential tail: the brms default shape prior lets a chain drift to the
-  # Poisson limit (shape -> infinity). Same shape prior as the other count models.
-  prior(gamma(0.01, 0.01), class = "shape")
-)
+coefficient_prior <- prior(normal(0, 2.5), class = "b")
+
+# With the default shape prior, chains of the unadjusted model drift to the Poisson
+# limit (shape -> infinity), also after the refit.
+unadjusted_prior <- c(coefficient_prior, prior(gamma(0.01, 0.01), class = "shape"))
 ```
 
 ## Convergence rule
@@ -104,7 +103,6 @@ if (!file.exists(adjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 3601L,
     combine = FALSE,
     refresh = 0L
@@ -131,12 +129,11 @@ if (!file.exists(unadjusted_model_path)) {
     bf(weeks_treated ~ tx + offset(log(exposure_weeks))),
     data = treatment_data,
     family = negbinomial(),
-    prior = coefficient_prior,
+    prior = unadjusted_prior,
     chains = 4L,
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 3602L,
     refresh = 0L
   ))
@@ -176,7 +173,6 @@ if (!file.exists(zi_adjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 3603L,
     combine = FALSE,
     refresh = 0L
@@ -200,7 +196,6 @@ if (!file.exists(zi_unadjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 3604L,
     refresh = 0L
   ))

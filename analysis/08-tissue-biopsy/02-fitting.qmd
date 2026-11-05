@@ -31,12 +31,7 @@ completed_datasets <- readRDS(file.path(results_dir, "completed-datasets.rds"))
 ```{r}
 #| label: prior
 
-coefficient_prior <- c(
-  prior(normal(0, 2.5), class = "b"),
-  # Exponential tail: the brms default shape prior lets a chain drift to the
-  # Poisson limit (shape -> infinity). Same shape prior as the blood products.
-  prior(gamma(0.01, 0.01), class = "shape")
-)
+coefficient_prior <- prior(normal(0, 2.5), class = "b")
 ```
 
 ## Convergence rule
@@ -104,7 +99,6 @@ if (!file.exists(adjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 2701L,
     combine = FALSE,
     refresh = 0L
@@ -136,7 +130,6 @@ if (!file.exists(unadjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 2702L,
     refresh = 0L
   ))
@@ -176,7 +169,6 @@ if (!file.exists(zi_adjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 2703L,
     combine = FALSE,
     refresh = 0L
@@ -200,7 +192,6 @@ if (!file.exists(zi_unadjusted_model_path)) {
     iter = 2000L,
     cores = 1L,
     backend = "cmdstanr",
-    init = 0,
     seed = config$seeds$supporting + 2704L,
     refresh = 0L
   ))
