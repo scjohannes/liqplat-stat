@@ -1,16 +1,17 @@
+Type: project
 Package: liqplat.stat
 Title: LIQPLAT Statistical Analysis Pipeline
 Version: 0.0.0.9000
 Authors@R: person("LIQPLAT", "Analysis Team", role = c("aut", "cre"), email = "analysis@example.invalid")
 Description: Source-oriented statistical analysis plan, schemas, diagnostics,
-    and artifact-only reporting infrastructure for the LIQPLAT trial.
+    and artifact-only reporting infrastructure for the LIQPLAT trial. The
+    analysis packages are pinned in renv.lock; Imports lists the packages
+    that renv cannot find in the code (svglite is the SVG device of ggsave()).
 License: file LICENSE
 Depends:
     R (>= 4.6.1)
-Suggests:
-    arrow,
-    here,
+Imports:
     knitr,
     rmarkdown,
-    yaml
+    svglite
 Encoding: UTF-8

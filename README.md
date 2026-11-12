@@ -44,10 +44,35 @@ never be committed.
 
 ## Requirements
 
-- R 4.6.1 with Rtools45, Quarto 1.9.37 and CmdStan (via cmdstanr)
-- R packages: tidyverse, here, arrow, yaml, mice, miceadds, rstanarm, brms,
-  rmsb, rms, posterior, marginaleffects, ggsurvfit, ggdist, survival, loo, tinytable,
-  patchwork, and `mostr` (<https://github.com/scjohannes/mostr>)
+- R 4.6.1 with Rtools45, Quarto 1.10.19 and CmdStan 2.39.0 (via cmdstanr)
+- R packages: pinned with [renv](https://rstudio.github.io/renv/) in
+  `renv.lock` (CRAN, the Stan R-universe for rstanarm, posterior and cmdstanr,
+  and GitHub for [`mostr`](https://github.com/scjohannes/mostr))
+
+### R packages (renv)
+
+The project `.Rprofile` activates renv, so every R session started in the
+repository, including the ones Quarto starts for the notebooks, uses the project
+library in `renv/library/` instead of the user library. On a new machine,
+install the locked versions once:
+
+```r
+renv::restore()
+```
+
+To add or update a package, install it in the project
+(`renv::install("pkg")`), use it in the code, and record it with
+`renv::snapshot()`; commit `renv.lock` together with the code that needs it.
+`renv::status()` shows whether the library and the lockfile agree. renv finds
+the packages in the code; `.renvignore` excludes data, renders and the
+historical notebooks in `sap/development/`, and `DESCRIPTION` lists the
+packages that the code uses only indirectly (svglite for SVG figures).
+
+rstanarm is a development build (branch `survival-rstantools`, commit
+`5f9a4e43`) from the Stan R-universe. If R-universe no longer serves that
+version, install it from GitHub with
+`renv::install("stan-dev/rstanarm@5f9a4e43a3f57c2661d5943e475fb02bbde99e02")`
+(a long source build). CmdStan itself is not managed by renv.
 
 ## Running the analyses
 

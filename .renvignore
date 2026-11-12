@@ -1,0 +1,17 @@
+# Folders renv does not scan for package dependencies. This file replaces
+# .gitignore for renv, so local-only folders are listed again here.
+
+# Data, renders and caches
+/data/
+/_site/
+/_freeze/
+/.quarto/
+results/
+*_files/
+/reports/rendered/
+
+# Historical SAP notebooks (not rendered; they use legacy packages such as
+# markov.misc)
+/sap/development/
+
+/renv/
