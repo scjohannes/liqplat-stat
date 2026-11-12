@@ -109,3 +109,49 @@ write_parquet(
 
 kable(sampling_summary)
 ```
+
+## Timing of valid samples
+
+- No fixed sampling windows: valid samples of the patients who accepted are numbered by sample date, in weeks
+  from the start of treatment.
+
+```{r}
+#| label: sample-timing
+
+accepted <- cohort |>
+  filter(invitation_accepted %in% 1) |>
+  select(id, treatment_start_date)
+
+sample_timing <- samples |>
+  filter(valid_ctdna_result %in% TRUE, !is.na(sample_date)) |>
+  inner_join(accepted, by = "id") |>
+  arrange(id, sample_date, sample_id) |>
+  mutate(
+    sample_number = row_number(),
+    weeks = as.numeric(sample_date - treatment_start_date) / 7,
+    .by = id
+  ) |>
+  summarise(
+    patients = n(),
+    patients_with_start = sum(!is.na(weeks)),
+    median_weeks = median(weeks, na.rm = TRUE),
+    q1_weeks = quantile(weeks, 0.25, na.rm = TRUE, names = FALSE),
+    q3_weeks = quantile(weeks, 0.75, na.rm = TRUE, names = FALSE),
+    .by = sample_number
+  ) |>
+  mutate(accepted_patients = nrow(accepted))
+
+write_parquet(
+  sample_timing,
+  file.path(results_dir, "ctdna-sample-timing.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: sample-timing-table
+#| tbl-cap: "Valid samples of the patients who accepted, by sample number"
+#| echo: false
+
+kable(sample_timing, digits = 1)
+```
