@@ -255,6 +255,43 @@ save_figure(
   height = 5
 )
 
+# Manuscript figure: observed next to model-derived state occupancy.
+sop_panels <- c("Observed", "Second-order Markov model")
+observed_vs_model_plot <- bind_rows(
+  read_parquet(here("analysis", "04-taooh", "results", "empirical-state-occupancy.parquet")) |>
+    filter(time <= horizon_weeks) |>
+    mutate(source = sop_panels[1]),
+  pooled_sop_summary |> mutate(source = sop_panels[2])
+) |>
+  mutate(
+    tx = factor(as.character(tx), levels = c("ctDNA", "Usual care")),
+    state = factor(as.character(state), levels = state_labels),
+    source = factor(source, levels = sop_panels)
+  ) |>
+  plot_sops(time_var = "time", facet_var = "source", linetype_var = "tx") +
+  scale_colour_state() +
+  scale_fill_state() +
+  scale_linetype_group() +
+  guides(
+    colour = guide_legend(nrow = 2),
+    fill = guide_legend(nrow = 2),
+    linetype = guide_legend(override.aes = list(fill = NA))
+  ) +
+  labs(
+    x = "Week after random selection",
+    y = "State occupancy probability",
+    colour = "TAOOH state",
+    fill = "TAOOH state",
+    linetype = NULL,
+    title = NULL
+  )
+
+save_figure(
+  observed_vs_model_plot,
+  here(figure_dir, "observed-vs-model-state-occupancy.png"),
+  height = 5
+)
+
 home_time_posterior_plot <- plot_posterior(
   pooled,
   x_label = paste0(

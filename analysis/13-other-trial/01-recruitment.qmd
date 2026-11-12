@@ -132,5 +132,14 @@ write_parquet(
   compression = "zstd"
 )
 
+dir.create(file.path(results_dir, "figures"), showWarnings = FALSE)
+save_figure(
+  plot_posterior(
+    100 * difference_draws,
+    "Difference in recruitment to another trial (ctDNA − usual care), percentage points"
+  ),
+  file.path(results_dir, "figures", "recruitment-difference-posterior.png")
+)
+
 kable(recruitment_difference, digits = 3)
 ```

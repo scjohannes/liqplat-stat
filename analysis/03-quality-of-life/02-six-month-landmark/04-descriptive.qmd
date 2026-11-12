@@ -248,6 +248,39 @@ save_figure(
   adjusted_plot,
   file.path(results_dir, "adjusted-state-distributions.png")
 )
+
+# Manuscript figure: completed datasets only, as horizontal (Grotta) bars.
+state_names <- c(
+  "Excellent", "Very good", "Good", "Average", "Below average", "Poor",
+  "Very poor", "Death"
+)
+grotta_plot <- imputed_probabilities |>
+  filter(imputation <= m_main) |>
+  summarise(proportion = mean(proportion), .by = c(tx, state)) |>
+  mutate(
+    state = factor(state, levels = state_levels, labels = paste(state_levels, state_names)),
+    tx = fct_rev(group_factor(tx)),
+    label = if_else(proportion >= 0.04, label_percent(accuracy = 1)(proportion), "")
+  ) |>
+  ggplot(aes(x = proportion, y = tx, fill = state)) +
+  geom_col(width = 0.6, colour = "white", linewidth = 0.3, position = position_stack(reverse = TRUE)) +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    size = 3,
+    colour = "white"
+  ) +
+  scale_fill_state(drop = FALSE) +
+  scale_x_continuous(labels = label_percent(), expand = expansion(mult = c(0, 0.01))) +
+  labs(x = "Proportion of patients", y = NULL, fill = "Six-month state") +
+  guides(fill = guide_legend(nrow = 2)) +
+  theme(panel.grid.major.y = element_blank(), legend.position = "bottom")
+
+save_figure(
+  grotta_plot,
+  file.path(results_dir, "imputed-state-distribution-grotta.png"),
+  height = 3.5
+)
 save_figure(
   unadjusted_plot,
   file.path(results_dir, "unadjusted-state-distributions.png")

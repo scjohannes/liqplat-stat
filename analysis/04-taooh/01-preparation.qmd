@@ -104,6 +104,19 @@ save_figure(
   here(figure_dir, "empirical-state-occupancy.png"),
   height = 5
 )
+
+# Aggregate observed proportions, for the figure next to the model-derived ones.
+empirical_sop_summary <- empirical_sop_data |>
+  filter(!is.na(y_taooh)) |>
+  count(tx, time = week, state = y_taooh, .drop = FALSE) |>
+  mutate(estimate = n / sum(n), .by = c(tx, time)) |>
+  select(-n)
+
+write_parquet(
+  empirical_sop_summary,
+  here(results_dir, "empirical-state-occupancy.parquet"),
+  compression = "zstd"
+)
 ```
 
 - Baseline weeks -1 and 0 supply the lags for week 1
