@@ -1,0 +1,305 @@
+---
+title: "Model summaries, stacked over completed datasets"
+format: html
+---
+
+- Model-level parameters only, as in `summary()`: patient- and diagnosis-level effects are left out, their SDs kept
+- Each fit is thinned to the smallest number of draws of the model, so every completed dataset has equal weight
+- R-hat: largest over fits; bulk and tail ESS: summed over fits (within-fit values, not those of the stacked draws)
+
+```{r}
+#| label: setup
+#| include: false
+
+library(here)
+library(arrow)
+library(posterior)
+library(knitr)
+library(tidyverse)
+
+# Saved fits are rstanarm, brms and rmsb objects; their methods need the
+# namespaces loaded.
+loadNamespace("rstanarm")
+loadNamespace("brms")
+loadNamespace("rmsb")
+
+results_dir <- here("analysis", "14-model-summaries", "results")
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: model-files
+#| include: false
+
+fits_in <- function(..., pattern = "^model-[0-9]+\\.rds$") {
+  paths <- list.files(here("analysis", ...), pattern = pattern, full.names = TRUE)
+  stopifnot("No saved fits." = length(paths) > 0)
+  paths
+}
+os <- function(...) here("analysis", "02-overall-survival", ...)
+count_dir <- function(analysis) here("analysis", analysis, "results")
+
+# File-name prefixes of the PFS, BSC and second-line fits.
+adjustment_names <- c(
+  unadjusted = "unadjusted",
+  fixed = "adjusted (fixed)",
+  os_adjusted = "adjusted (fixed)",
+  hierarchical = "adjusted (hierarchical)",
+  diagnosis = "adjusted (hierarchical)"
+)
+survival_models <- function(analysis, outcome_names, section) {
+  tibble(path = fits_in(analysis, "results", "models", pattern = "\\.rds$")) |>
+    mutate(
+      outcome = str_extract(basename(path), "cause_specific|composite") |> coalesce("pfs"),
+      adjustment = adjustment_names[str_extract(basename(path), "^[a-z_]+")],
+      model = str_glue("{outcome_names[outcome]}, {adjustment}"),
+      section = section
+    ) |>
+    arrange(match(outcome, names(outcome_names)), match(adjustment, unique(adjustment_names)))
+}
+
+count_models <- tribble(
+  ~analysis, ~title, ~file,
+  "07-blood-products", "Blood products", "model-blood_products-adjusted.rds",
+  "07-blood-products", "Blood products", "model-blood_products-unadjusted.rds",
+  "07-blood-products", "Erythrocyte concentrates", "model-erythrocytes-adjusted.rds",
+  "07-blood-products", "Erythrocyte concentrates", "model-erythrocytes-unadjusted.rds",
+  "07-blood-products", "Thrombocyte concentrates", "model-thrombocytes-unadjusted.rds",
+  "07-blood-products", "Blood products", "model-zi-blood_products-adjusted.rds",
+  "07-blood-products", "Blood products", "model-zi-blood_products-unadjusted.rds",
+  "07-blood-products", "Erythrocyte concentrates", "model-zi-erythrocytes-adjusted.rds",
+  "07-blood-products", "Erythrocyte concentrates", "model-zi-erythrocytes-unadjusted.rds",
+  "08-tissue-biopsy", "Days with a tissue biopsy", "model-adjusted.rds",
+  "08-tissue-biopsy", "Days with a tissue biopsy", "model-unadjusted.rds",
+  "08-tissue-biopsy", "Days with a tissue biopsy", "model-zi-adjusted.rds",
+  "08-tissue-biopsy", "Days with a tissue biopsy", "model-zi-unadjusted.rds",
+  "09-imaging", "Imaging examinations", "model-adjusted.rds",
+  "09-imaging", "Imaging examinations", "model-unadjusted.rds",
+  "09-imaging", "Imaging examinations", "model-zi-adjusted.rds",
+  "09-imaging", "Imaging examinations", "model-zi-unadjusted.rds",
+  "11-weekly-treatment", "Weeks with anticancer treatment", "model-adjusted.rds",
+  "11-weekly-treatment", "Weeks with anticancer treatment", "model-unadjusted.rds",
+  "11-weekly-treatment", "Weeks with anticancer treatment", "model-zi-adjusted.rds",
+  "11-weekly-treatment", "Weeks with anticancer treatment", "model-zi-unadjusted.rds"
+) |>
+  mutate(
+    path = here("analysis", analysis, "results", file),
+    model = str_glue(
+      "{title}, {str_extract(file, 'unadjusted|adjusted')}",
+      "{if_else(str_detect(file, '-zi-'), ', zero-inflated', '')}"
+    ),
+    section = "Count outcomes"
+  )
+
+implementation_models <- c(
+  "Invitation offered" = "invitation-offered",
+  "Invitation accepted" = "invitation-accepted",
+  "Technical error" = "technical-validity",
+  "ctDNA detection at baseline" = "baseline-detection",
+  "Number of mutations at baseline" = "baseline-mutations-ordinal"
+)
+
+# One row per saved file; the count files hold a list of fits, one per
+# completed dataset.
+model_files <- bind_rows(
+  tibble(
+    section = "Overall survival",
+    model = c(
+      "Main analysis (182 days)",
+      "Time-varying effect (182 days)",
+      "Death by 26 weeks, logistic model",
+      "Data lock, proportional hazards",
+      "Data lock, time-varying effect",
+      "Diagnosis random intercept (data lock)"
+    ),
+    path = list(
+      fits_in("02-overall-survival", "01-main", "results", "models"),
+      fits_in("02-overall-survival", "02-non-proportional-hazards", "results", "models"),
+      fits_in("02-overall-survival", "03-death-at-26-weeks", "results", "models"),
+      fits_in("02-overall-survival", "04-unrestricted-follow-up", "results", "ph", "models"),
+      fits_in("02-overall-survival", "04-unrestricted-follow-up", "results", "nph", "models"),
+      fits_in("02-overall-survival", "05-unrestricted-hierarchical", "results", "models")
+    )
+  ) |>
+    unnest(path),
+  tibble(
+    section = "Overall survival",
+    model = c(
+      "Censoring model, observed follow-up",
+      "Censoring model, administrative-only",
+      "Best-case scenario",
+      "Worst-case scenario",
+      "Unadjusted, proportional hazards (182 days)",
+      "Unadjusted, time-varying effect (182 days)",
+      "Unadjusted, data lock, proportional hazards",
+      "Unadjusted, data lock, time-varying effect"
+    ),
+    path = c(
+      os("06-censoring", "results", "adjusted-censoring", "observed", "models", "model-01.rds"),
+      os("06-censoring", "results", "adjusted-censoring", "administrative", "models", "model-01.rds"),
+      os("06-censoring", "results", "scenarios", "models", "best-case-model.rds"),
+      os("06-censoring", "results", "scenarios", "models", "worst-case-model.rds"),
+      os("09-unadjusted", "results", "models", str_glue("model-{c('ph-182', 'nph-182', 'ph-unrestricted', 'nph-unrestricted')}.rds"))
+    )
+  ),
+  tibble(
+    section = "Quality of life",
+    model = c(
+      "Vital status at day 182 (proportional hazards)",
+      "Six-month state, adjusted for baseline QoL",
+      "Six-month state, unadjusted",
+      "Longitudinal transition model with death",
+      "Longitudinal transition model with death, unadjusted"
+    ),
+    path = list(
+      here("analysis", "03-quality-of-life", "02-six-month-landmark", "results", "vital-status-model.rds"),
+      fits_in("03-quality-of-life", "02-six-month-landmark", "results", "adjusted", "models"),
+      fits_in("03-quality-of-life", "02-six-month-landmark", "results", "unadjusted", "models"),
+      fits_in("03-quality-of-life", "03-longitudinal-with-death", "results", "models"),
+      fits_in("03-quality-of-life", "05-longitudinal-unadjusted", "results", "models")
+    )
+  ) |>
+    unnest(path),
+  tibble(
+    section = "Time alive and out of hospital",
+    model = c("Second-order model", "Unadjusted second-order model", "First-order model"),
+    path = list(
+      fits_in("04-taooh", "03-second-order-markov", "results", "models"),
+      fits_in("04-taooh", "05-unadjusted-second-order", "results", "models"),
+      fits_in("04-taooh", "04-first-order-markov", "results", "models")
+    )
+  ) |>
+    unnest(path),
+  survival_models(
+    "05-progression-free-survival", c(pfs = "Progression-free survival"), "Progression-free survival"
+  ),
+  survival_models(
+    "06-best-supportive-care",
+    c(cause_specific = "BSC cause-specific", composite = "BSC or death"),
+    "Best supportive care"
+  ),
+  survival_models(
+    "12-second-line",
+    c(cause_specific = "Second line cause-specific", composite = "Second line or death"),
+    "Second-line treatment"
+  ),
+  select(count_models, section, model, path),
+  tibble(
+    section = "Implementation",
+    model = c(names(implementation_models), "Recruitment to another trial"),
+    path = c(
+      here("analysis", "10-implementation", "results", "models", str_glue("{implementation_models}.rds")),
+      here("analysis", "13-other-trial", "results", "models", "recruitment.rds")
+    )
+  )
+) |>
+  select(section, model, path) |>
+  mutate(model = as.character(model))
+
+stopifnot(
+  "A saved fit is missing." = all(file.exists(model_files$path)),
+  "A fit file is listed twice." = !anyDuplicated(model_files$path)
+)
+```
+
+```{r}
+#| label: stacked-summaries
+#| include: false
+
+# Patient-level (rmsb gammas are not in the draws, brms r_ and z_, rstanarm
+# b[...]) and diagnosis-level effects, brms centred intercepts and sampler
+# quantities are dropped.
+dropped <- "^(r_|z_|zs_|s_|L_|Intercept|b\\[|lp__|lprior|log-posterior|mean_PPD)"
+
+parameter_draws <- function(fit) {
+  draws <- if (inherits(fit, "blrm")) {
+    # rmsb stacks the chains (chain 1 first); the random-intercept SD is in omega.
+    stacked <- cbind(fit$draws, fit$omega)
+    n_chains <- as.integer(fit$chains)
+    array(
+      stacked,
+      dim = c(nrow(stacked) / n_chains, n_chains, ncol(stacked)),
+      dimnames = list(NULL, NULL, colnames(stacked))
+    )
+  } else {
+    as.array(fit)
+  }
+  draws <- as_draws_array(draws)
+  subset_draws(draws, variable = str_subset(variables(draws), dropped, negate = TRUE))
+}
+
+read_fits <- function(path) {
+  object <- readRDS(path)
+  if (inherits(object, c("brmsfit", "stanreg", "blrm"))) list(object) else object
+}
+
+fit_draws <- model_files |>
+  mutate(
+    draws = map(path, \(path) {
+      out <- map(read_fits(path), parameter_draws)
+      invisible(gc(verbose = FALSE))
+      out
+    })
+  ) |>
+  select(section, model, draws) |>
+  unnest(draws)
+
+stack_model <- function(draws) {
+  stopifnot("The fits of a model have different parameters." = length(unique(map(draws, variables))) == 1L)
+  within_fit <- imap(draws, \(d, fit) summarise_draws(d, "rhat", "ess_bulk", "ess_tail") |> mutate(fit = fit)) |>
+    list_rbind() |>
+    summarise(
+      rhat = max(rhat),
+      ess_bulk = sum(ess_bulk),
+      ess_tail = sum(ess_tail),
+      .by = variable
+    )
+  n_draws <- min(map_int(draws, ndraws))
+  stacked <- draws |>
+    map(\(d) {
+      matrix <- unclass(as_draws_matrix(d))
+      matrix[round(seq(1, nrow(matrix), length.out = n_draws)), , drop = FALSE]
+    }) |>
+    reduce(rbind) |>
+    as_draws_matrix()
+  # Constants (brms disc of the ordinal model) are not parameters.
+  summarise_draws(stacked, mean, sd, ~ quantile2(.x, probs = c(0.025, 0.975))) |>
+    filter(sd > 0) |>
+    left_join(within_fit, by = "variable") |>
+    mutate(
+      order = row_number(),
+      fits = length(draws),
+      draws_per_fit = n_draws
+    )
+}
+
+model_summaries <- fit_draws |>
+  summarise(summary = list(stack_model(draws)), .by = c(section, model)) |>
+  mutate(model_order = row_number()) |>
+  unnest(summary) |>
+  select(
+    section, model, model_order, order, parameter = variable,
+    estimate = mean, est_error = sd, lower = q2.5, upper = q97.5,
+    rhat, ess_bulk, ess_tail, fits, draws_per_fit
+  )
+
+write_parquet(
+  model_summaries,
+  here(results_dir, "model-summaries.parquet"),
+  compression = "zstd"
+)
+```
+
+```{r}
+#| label: overview
+
+model_summaries |>
+  summarise(
+    parameters = n(),
+    fits = first(fits),
+    draws_per_fit = first(draws_per_fit),
+    max_rhat = max(rhat, na.rm = TRUE),
+    .by = c(section, model)
+  ) |>
+  kable(digits = 3)
+```

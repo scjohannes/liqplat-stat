@@ -50,7 +50,10 @@ run_order <- c(
   "analysis/10-implementation",
   "analysis/11-weekly-treatment",
   "analysis/12-second-line",
-  "analysis/13-other-trial"
+  "analysis/13-other-trial",
+
+  # Reads the saved fits of all analyses above.
+  "analysis/14-model-summaries"
 )
 
 notebooks <- unlist(lapply(run_order, function(entry) {
