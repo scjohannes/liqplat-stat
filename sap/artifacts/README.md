@@ -12,11 +12,11 @@ $env:QUARTO_PROJECT_DIR = (Resolve-Path sap).Path
 $env:R_HOME = 'C:\Program Files\R\R-4.6.1'
 $env:LC_ALL = 'C'
 quarto render sap/SAP.qmd --to typst --no-clean --no-execute
-Copy-Item _site/sap/SAP.pdf sap/SAP-v1.1.pdf -Force
+Copy-Item _site/sap/SAP.pdf sap/SAP-v1.2.pdf -Force
 ```
 
 The render writes `_site/sap/SAP.pdf`; after verifying the output, place the
-current document at `sap/SAP-v1.1.pdf`. Historical analysis code is retained under
+current document at `sap/SAP-v1.2.pdf`. Historical analysis code is retained under
 `sap/development/` but remains non-evaluated when rendering `sap/SAP.qmd`.
 
 `operating-characteristics.csv` contains the compact, non-confidential values
