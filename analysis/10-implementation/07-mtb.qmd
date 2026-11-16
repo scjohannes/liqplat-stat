@@ -16,6 +16,8 @@ library(arrow)
 library(knitr)
 library(tidyverse)
 
+source(here("R", "plot-style.R"))
+
 results_dir <- here("analysis", "10-implementation", "results")
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 ```
@@ -28,10 +30,20 @@ dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 cohort <- read_parquet(
   here("analysis", "00-data", "results", "analysis-cohort.parquet")
 )
+all_discussions <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-mtb-discussions.parquet")
+) |>
+  left_join(select(cohort, id, tx), by = "id") |>
+  mutate(group = group_factor(tx))
 
 accepted <- cohort |>
   filter(invitation_accepted == 1L) |>
+  left_join(
+    all_discussions |> filter(status == "discussed") |> count(id, name = "n_discussed"),
+    by = "id"
+  ) |>
   mutate(
+    n_discussed = if_else(is.na(n_mtb), NA_integer_, coalesce(n_discussed, 0L)),
     # Missing vital status gives a missing endpoint date, not a censored one.
     endpoint_date = if_else(
       status_death_unrestricted == 1L,
@@ -73,7 +85,7 @@ mtb_summary <- bind_rows(
     patients = n(),
     registered = sum(mtb_reg == 1L, na.rm = TRUE),
     registered_percent = 100 * registered / patients,
-    discussed = sum(n_mtb >= 1, na.rm = TRUE),
+    discussed = sum(n_discussed >= 1, na.rm = TRUE),
     discussed_percent = 100 * discussed / patients,
     recommendation_report_sent = sum(mtb_n_reports >= 1, na.rm = TRUE),
     recommendation_report_sent_percent =
@@ -90,7 +102,7 @@ mtb_summary <- bind_rows(
   )
 
 distribution <- accepted |>
-  count(n_mtb, name = "patients")
+  count(n_mtb = n_discussed, name = "patients")
 
 write_parquet(
   mtb_summary,
@@ -124,4 +136,429 @@ mtb_summary |>
     missing_recommendation_report
   ) |>
   kable()
+```
+
+## MTB discussions
+
+- Content summaries: discussions with status "discussed" on or after randomization; postponed and cancelled
+  ones count only in the volume summary.
+- Sample of a discussion: the latest valid ctDNA sample on or before the discussion date (both dates are
+  shifted by the same participant offset).
+- First discussion: the first held discussion on or after randomization; all later ones are subsequent.
+- Clinical situation collapsed into progression (progression under therapy or watch-and-wait, relapse),
+  response (complete, partial or spontaneous remission), stable (stable or persistent disease), new
+  diagnosis and unclear.
+
+```{r}
+#| label: mtb-discussions
+
+appraisal_flags <- c(
+  "ctdna_first_determination", "ctdna_rising", "ctdna_stable",
+  "ctdna_declining", "ctdna_not_detectable", "ctdna_new_alterations",
+  "ctdna_unclear"
+)
+recommended <- c("yes", "yes_with_reservations")
+
+discussed <- all_discussions |>
+  filter(status == "discussed", day >= 0) |>
+  arrange(id, day, discussion_number) |>
+  mutate(
+    order = row_number(),
+    situation_group = case_when(
+      clinical_situation %in% c(
+        "progression_under_therapy", "progression_under_watch_and_wait", "relapse"
+      ) ~ "progression",
+      clinical_situation %in% c(
+        "complete_remission", "partial_remission", "spontaneous_remission"
+      ) ~ "response",
+      clinical_situation %in% c("stable_disease", "persistent_disease") ~ "stable",
+      clinical_situation %in% c("new_diagnosis", "unclear") ~ clinical_situation
+    ),
+    .by = id
+  )
+
+stopifnot(
+  "Every clinical situation needs a group." =
+    !any(is.na(discussed$situation_group) & !is.na(discussed$clinical_situation))
+)
+
+with_results <- discussed |>
+  filter(ctdna_results_available %in% 1L) |>
+  mutate(
+    n_appraisals = rowSums(pick(all_of(appraisal_flags))),
+    appraisal_combination = pick(all_of(appraisal_flags)) |>
+      as.matrix() |>
+      apply(1, \(ticked) str_flatten(appraisal_flags[ticked == 1L], " + ")) |>
+      na_if("")
+  )
+```
+
+### Volume and timing
+
+```{r}
+#| label: mtb-volume
+
+group_sizes <- cohort |>
+  mutate(group = group_factor(tx)) |>
+  summarise(
+    patients = n(),
+    accepted = sum(invitation_accepted %in% 1L),
+    .by = group
+  )
+
+volume <- all_discussions |>
+  summarise(
+    participants_with_record = n_distinct(id),
+    records = n(),
+    discussed_any_time = sum(status == "discussed"),
+    postponed = sum(status == "postponed"),
+    cancelled = sum(status == "cancelled"),
+    before_randomization = sum(before_randomization == 1L),
+    .by = group
+  ) |>
+  left_join(
+    discussed |>
+      summarise(
+        participants_discussed = n_distinct(id),
+        discussions = n(),
+        report_sent = sum(report_sent == 1L),
+        first_day_median = median(day[order == 1]),
+        first_day_q1 = quantile(day[order == 1], 0.25),
+        first_day_q3 = quantile(day[order == 1], 0.75),
+        first_day_min = min(day[order == 1]),
+        first_day_max = max(day[order == 1]),
+        day_median = median(day),
+        day_q1 = quantile(day, 0.25),
+        day_q3 = quantile(day, 0.75),
+        day_max = max(day),
+        .by = group
+      ),
+    by = "group"
+  ) |>
+  right_join(group_sizes, by = "group") |>
+  arrange(group)
+
+discussions_per_participant <- discussed |>
+  count(group, id, name = "discussions") |>
+  count(group, discussions, name = "participants")
+
+valid_samples <- read_parquet(
+  here("analysis", "00-data", "results", "analysis-ctdna-samples.parquet"),
+  col_select = c("id", "sample_date", "baseline", "valid_ctdna_result")
+) |>
+  filter(valid_ctdna_result)
+
+sample_delays <- with_results |>
+  select(discussion_id, id, group, mtb_date) |>
+  inner_join(valid_samples, by = "id", relationship = "many-to-many") |>
+  filter(sample_date <= mtb_date) |>
+  slice_max(sample_date, by = discussion_id, with_ties = FALSE) |>
+  mutate(days = as.numeric(mtb_date - sample_date))
+
+sample_delay <- sample_delays |>
+  summarise(
+    discussions_with_sample = n(),
+    median_days = median(days),
+    q1_days = quantile(days, 0.25),
+    q3_days = quantile(days, 0.75),
+    p10_days = quantile(days, 0.1),
+    p90_days = quantile(days, 0.9),
+    min_days = min(days),
+    max_days = max(days),
+    .by = group
+  ) |>
+  left_join(count(with_results, group, name = "discussions_with_results"), by = "group")
+
+timing_plot <- discussed |>
+  mutate(
+    order = factor(
+      pmin(order, 3),
+      levels = 1:3,
+      labels = c("First discussion", "Second discussion", "Third or later discussion")
+    )
+  ) |>
+  ggplot(aes(day / 7, fill = group)) +
+  geom_histogram(binwidth = 4, boundary = 0, colour = "white") +
+  facet_wrap(vars(order), ncol = 1) +
+  scale_fill_group(name = NULL) +
+  scale_x_continuous(breaks = seq(0, 156, 12)) +
+  labs(x = "Weeks from randomization", y = "Discussions")
+
+save_figure(timing_plot, file.path(results_dir, "mtb-discussion-timing.png"), height = 6)
+timing_plot
+```
+
+### Valid ctDNA samples and discussion
+
+- Invitation accepters; valid samples over the whole follow-up (3 or more pooled).
+
+```{r}
+#| label: mtb-samples
+
+first_discussions <- discussed |>
+  filter(order == 1) |>
+  select(id, mtb_date)
+
+samples_by_discussion <- accepted |>
+  select(id, status_death_unrestricted) |>
+  left_join(count(valid_samples, id, name = "valid_samples"), by = "id") |>
+  left_join(first_discussions, by = "id") |>
+  mutate(
+    valid_samples = pmin(coalesce(valid_samples, 0L), 3L),
+    discussed = !is.na(mtb_date),
+    died = status_death_unrestricted %in% 1L
+  ) |>
+  count(valid_samples, discussed, died, name = "patients")
+
+samples_before_first <- valid_samples |>
+  inner_join(filter(first_discussions, id %in% accepted$id), by = "id") |>
+  filter(sample_date <= mtb_date) |>
+  summarise(
+    valid_samples = pmin(n(), 3L),
+    latest_baseline = baseline[which.max(sample_date)] == 1L,
+    .by = id
+  ) |>
+  count(valid_samples, latest_baseline, name = "patients")
+
+stopifnot(
+  "Every first discussion of an accepter needs a valid sample before it." =
+    sum(samples_before_first$patients) ==
+      sum(filter(samples_by_discussion, discussed)$patients)
+)
+```
+
+### Discussion content
+
+```{r}
+#| label: mtb-content
+
+# Discussions per level of each variable and group; NA is kept as its own level.
+count_levels <- function(data, variables, population) {
+  data |>
+    select(group, all_of(variables)) |>
+    mutate(across(all_of(variables), as.character)) |>
+    pivot_longer(-group, names_to = "variable", values_to = "level") |>
+    count(group, variable, level) |>
+    mutate(population = population, denominator = sum(n), .by = c(group, variable))
+}
+
+categories <- bind_rows(
+  count_levels(
+    discussed,
+    c(
+      "report_sent", "relevant_marker", "ctdna_results_available",
+      "clinical_situation", "situation_group", "targeted_therapy_recommended",
+      "escat_tier", "cellular_therapy_recommended", "trial_recommended",
+      "n_recommended_drugs",
+      str_subset(names(discussed), "^(diag|step)_"),
+      "n_oncologists", "n_molecular_pathologists", "n_pathologists", "n_geneticists"
+    ),
+    "discussed"
+  ),
+  count_levels(
+    with_results,
+    c("ctdna_timing", appraisal_flags, "n_appraisals", "appraisal_combination"),
+    "ctdna_results"
+  ),
+  count_levels(
+    filter(with_results, order == 1),
+    c("ctdna_timing", appraisal_flags),
+    "ctdna_results_first"
+  ),
+  count_levels(
+    filter(with_results, order > 1),
+    c("ctdna_timing", appraisal_flags),
+    "ctdna_results_subsequent"
+  ),
+  count_levels(
+    filter(discussed, targeted_therapy_recommended %in% recommended),
+    c("strategy_context", "recommended_line", "escat_tier"),
+    "targeted_therapy"
+  ),
+  count_levels(
+    filter(discussed, diag_liquid_biopsy == 1L),
+    c("next_ctdna_weeks", "next_ctdna_in_liqplat"),
+    "liquid_biopsy"
+  )
+)
+
+next_ctdna_weeks <- discussed |>
+  filter(diag_liquid_biopsy == 1L) |>
+  summarise(
+    scheduled = n(),
+    weeks_recorded = sum(!is.na(next_ctdna_weeks)),
+    median_weeks = median(next_ctdna_weeks, na.rm = TRUE),
+    q1_weeks = quantile(next_ctdna_weeks, 0.25, na.rm = TRUE),
+    q3_weeks = quantile(next_ctdna_weeks, 0.75, na.rm = TRUE),
+    min_weeks = min(next_ctdna_weeks, na.rm = TRUE),
+    max_weeks = max(next_ctdna_weeks, na.rm = TRUE),
+    .by = group
+  )
+
+participant_ever <- discussed |>
+  summarise(
+    ctdna_rising = any(ctdna_rising %in% 1L),
+    targeted_therapy = any(targeted_therapy_recommended %in% recommended),
+    liquid_biopsy = any(diag_liquid_biopsy == 1L),
+    report_sent = any(report_sent == 1L),
+    .by = c(group, id)
+  ) |>
+  pivot_longer(-c(group, id), names_to = "item", values_to = "ever") |>
+  summarise(participants = sum(ever), denominator = n(), .by = c(group, item))
+```
+
+### ctDNA appraisal and clinical situation
+
+```{r}
+#| label: mtb-appraisal-situation
+
+appraisal_by_situation <- with_results |>
+  select(group, situation_group, all_of(appraisal_flags)) |>
+  pivot_longer(all_of(appraisal_flags), names_to = "appraisal", values_to = "ticked") |>
+  filter(ticked == 1L) |>
+  count(group, appraisal, situation_group) |>
+  bind_rows(
+    count(with_results, group, situation_group) |> mutate(appraisal = "discussions")
+  )
+```
+
+### Rising ctDNA
+
+```{r}
+#| label: mtb-rising
+
+rising <- with_results |>
+  mutate(rising = if_else(ctdna_rising == 1L, "rising", "not_rising")) |>
+  summarise(
+    discussions = n(),
+    targeted_therapy = sum(targeted_therapy_recommended %in% recommended),
+    change_of_strategy = sum(strategy_context %in% "change_of_strategy"),
+    new_strategy = sum(strategy_context %in% "new_strategy"),
+    liquid_biopsy = sum(diag_liquid_biopsy == 1L),
+    weeks_recorded = sum(!is.na(next_ctdna_weeks)),
+    median_weeks = median(next_ctdna_weeks, na.rm = TRUE),
+    q1_weeks = quantile(next_ctdna_weeks, 0.25, na.rm = TRUE),
+    q3_weeks = quantile(next_ctdna_weeks, 0.75, na.rm = TRUE),
+    .by = c(group, rising)
+  )
+```
+
+### Recommended drugs
+
+```{r}
+#| label: mtb-atc
+
+recommended_drugs <- discussed |>
+  select(group, id, discussion_id, starts_with("recommended_atc_")) |>
+  pivot_longer(starts_with("recommended_atc_"), values_to = "atc", values_drop_na = TRUE)
+
+atc_subgroups <- tribble(
+  ~subgroup, ~subgroup_name,
+  "L01EA", "BCR-ABL tyrosine kinase inhibitors",
+  "L01EB", "EGFR tyrosine kinase inhibitors",
+  "L01EC", "BRAF inhibitors",
+  "L01ED", "ALK inhibitors",
+  "L01EE", "MEK inhibitors",
+  "L01EF", "CDK inhibitors",
+  "L01EG", "mTOR kinase inhibitors",
+  "L01EH", "HER2 tyrosine kinase inhibitors",
+  "L01EJ", "JAK inhibitors",
+  "L01EK", "VEGFR tyrosine kinase inhibitors",
+  "L01EL", "BTK inhibitors",
+  "L01EM", "PI3K inhibitors",
+  "L01EN", "FGFR tyrosine kinase inhibitors",
+  "L01EX", "Other protein kinase inhibitors",
+  "L01FD", "HER2 antibodies",
+  "L01FE", "EGFR antibodies",
+  "L01FF", "PD-1/PD-L1 inhibitors",
+  "L01XK", "PARP inhibitors",
+  "L01XX", "Other antineoplastic agents"
+)
+
+atc_summary <- recommended_drugs |>
+  mutate(subgroup = str_sub(atc, 1, 5)) |>
+  left_join(atc_subgroups, by = "subgroup") |>
+  summarise(
+    drugs = n(),
+    discussions = n_distinct(discussion_id),
+    participants = n_distinct(id),
+    .by = c(group, subgroup, subgroup_name)
+  ) |>
+  arrange(group, desc(drugs), subgroup)
+
+stopifnot(
+  "Recommended drugs must be 7-character ATC codes." =
+    all(str_detect(recommended_drugs$atc, "^[A-Z][0-9]{2}[A-Z]{2}[0-9]{2}$")),
+  "Every ATC subgroup needs a name." = !anyNA(atc_summary$subgroup_name)
+)
+```
+
+### Attendance
+
+- Pre-filled defaults: three oncologists and one molecular pathologist.
+
+```{r}
+#| label: mtb-attendance
+
+attendance <- discussed |>
+  select(group, n_oncologists, n_molecular_pathologists, n_pathologists, n_geneticists) |>
+  pivot_longer(-group, names_to = "specialty", values_to = "attendees") |>
+  summarise(
+    discussions = n(),
+    documented = sum(!is.na(attendees)),
+    at_least_one = sum(attendees >= 1, na.rm = TRUE),
+    median = median(attendees, na.rm = TRUE),
+    q1 = quantile(attendees, 0.25, na.rm = TRUE),
+    q3 = quantile(attendees, 0.75, na.rm = TRUE),
+    min = min(attendees, na.rm = TRUE),
+    max = max(attendees, na.rm = TRUE),
+    .by = c(group, specialty)
+  )
+```
+
+```{r}
+#| label: mtb-discussion-write
+
+list(
+  "mtb-volume" = volume,
+  "mtb-discussions-per-participant" = discussions_per_participant,
+  "mtb-sample-delay" = sample_delay,
+  "mtb-categories" = categories,
+  "mtb-next-ctdna-weeks" = next_ctdna_weeks,
+  "mtb-samples-by-discussion" = samples_by_discussion,
+  "mtb-samples-before-first" = samples_before_first,
+  "mtb-participant-ever" = participant_ever,
+  "mtb-appraisal-by-situation" = appraisal_by_situation,
+  "mtb-rising" = rising,
+  "mtb-atc" = atc_summary,
+  "mtb-attendance" = attendance
+) |>
+  iwalk(\(data, name) {
+    write_parquet(
+      mutate(data, across(where(is.factor), as.character)),
+      file.path(results_dir, paste0(name, ".parquet")),
+      compression = "zstd"
+    )
+  })
+```
+
+```{r}
+#| label: tbl-mtb-volume
+#| tbl-cap: "MTB discussions by randomised group"
+#| echo: false
+
+volume |>
+  select(
+    group, patients, participants_discussed, discussions, postponed, cancelled,
+    before_randomization, report_sent
+  ) |>
+  kable()
+```
+
+```{r}
+#| label: tbl-mtb-rising
+#| tbl-cap: "Discussions with ctDNA results by rising ctDNA"
+#| echo: false
+
+kable(rising)
 ```

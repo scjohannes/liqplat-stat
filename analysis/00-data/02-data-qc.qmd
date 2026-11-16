@@ -27,7 +27,8 @@ input_paths <- c(
   therapy_weekly = here(results_dir, "analysis-therapy-weekly.parquet"),
   ctdna_samples = here(results_dir, "analysis-ctdna-samples.parquet"),
   ctdna_analyses = here(results_dir, "analysis-ctdna-analyses.parquet"),
-  alterations = here(results_dir, "analysis-alterations.parquet")
+  alterations = here(results_dir, "analysis-alterations.parquet"),
+  mtb_discussions = here(results_dir, "analysis-mtb-discussions.parquet")
 )
 
 if (!all(file.exists(input_paths))) {
@@ -121,7 +122,21 @@ endpoint_checks <- tibble(
   )
 )
 
-logic_summary <- bind_rows(key_checks, endpoint_checks) |>
+mtb_rows <- cohort |>
+  select(id, n_mtb) |>
+  left_join(count(datasets$mtb_discussions, id, name = "n_rows"), by = "id") |>
+  mutate(n_rows = coalesce(n_rows, 0L))
+
+mtb_checks <- tibble(
+  domain = "mtb_discussions",
+  check = c("participant_not_in_cohort", "rows_differ_from_n_mtb"),
+  n_violations = c(
+    sum(!datasets$mtb_discussions$id %in% cohort$id),
+    sum(mtb_rows$n_rows != mtb_rows$n_mtb, na.rm = TRUE)
+  )
+)
+
+logic_summary <- bind_rows(key_checks, endpoint_checks, mtb_checks) |>
   mutate(status = if_else(n_violations == 0L, "pass", "fail"))
 ```
 
@@ -148,7 +163,9 @@ if (nrow(failed_checks) > 0) {
 #| echo: false
 
 qc_summary |>
-  filter(!column %in% c("id", "sample_id", "alteration_id", "assessment_id")) |>
+  filter(!column %in% c(
+    "id", "sample_id", "alteration_id", "assessment_id", "discussion_id"
+  )) |>
   mutate(missing_proportion = round(missing_proportion, 4)) |>
   kable()
 ```

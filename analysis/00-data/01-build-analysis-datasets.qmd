@@ -30,7 +30,8 @@ domains <- c(
   "therapy_weekly",
   "ctdna_samples",
   "ctdna_analyses",
-  "alterations"
+  "alterations",
+  "mtb_discussions"
 )
 ```
 
@@ -44,7 +45,7 @@ manifest <- read_yaml(here(private_dir, "manifest.yml"))
 stopifnot(
   "The manifest data lock differs from config/analysis.yml." =
     identical(as.character(manifest$data_lock), config$analysis$data_lock),
-  "The manifest must describe exactly the nine analysis datasets." =
+  "The manifest must describe exactly the ten analysis datasets." =
     setequal(names(manifest$domains), domains),
   "The manifest marks a dataset as unavailable." =
     all(map_lgl(manifest$domains, \(record) isTRUE(record$available)))
@@ -152,6 +153,7 @@ therapy_weekly <- private$therapy_weekly
 ctdna_samples <- private$ctdna_samples
 ctdna_analyses <- private$ctdna_analyses
 alterations <- private$alterations
+mtb_discussions <- private$mtb_discussions
 ```
 
 ## Content checks
@@ -434,6 +436,50 @@ stopifnot(
 )
 ```
 
+## MTB discussions
+
+```{r}
+#| label: mtb-discussions
+
+mtb_patient <- match(mtb_discussions$id, cohort$id)
+mtb_rows <- cohort |>
+  select(id, n_mtb) |>
+  left_join(count(mtb_discussions, id, name = "n_rows"), by = "id") |>
+  mutate(n_rows = coalesce(n_rows, 0L))
+appraisal_flags <- c(
+  "ctdna_first_determination", "ctdna_rising", "ctdna_stable",
+  "ctdna_declining", "ctdna_not_detectable", "ctdna_new_alterations",
+  "ctdna_unclear"
+)
+without_ctdna <- !mtb_discussions$ctdna_results_available %in% 1L
+without_liquid_biopsy <- mtb_discussions$diag_liquid_biopsy != 1L
+
+stopifnot(
+  "MTB discussions contain an unknown participant." = !anyNA(mtb_patient),
+  "MTB discussion numbers are duplicated within a participant." =
+    !anyDuplicated(mtb_discussions[c("id", "discussion_number")]),
+  "MTB rows per participant differ from n_mtb." =
+    all(mtb_rows$n_rows == mtb_rows$n_mtb, na.rm = TRUE),
+  "MTB day differs from the discussion and randomization dates." =
+    mtb_discussions$day == as.numeric(
+      mtb_discussions$mtb_date - cohort$randomization_date[mtb_patient]
+    ),
+  "before_randomization must equal day < 0." =
+    mtb_discussions$before_randomization == as.integer(mtb_discussions$day < 0),
+  "Unknown MTB status." =
+    mtb_discussions$status %in% c("discussed", "cancelled", "postponed"),
+  "ctDNA appraisal is recorded without ctDNA results." =
+    all(is.na(as.matrix(mtb_discussions[without_ctdna, c("ctdna_timing", appraisal_flags)]))),
+  "Next ctDNA measurement is recorded without a liquid biopsy recommendation." =
+    all(is.na(mtb_discussions$next_ctdna_weeks[without_liquid_biopsy])) &&
+      all(is.na(mtb_discussions$next_ctdna_in_liqplat[without_liquid_biopsy])),
+  "n_recommended_drugs differs from the recorded ATC codes." =
+    mtb_discussions$n_recommended_drugs == rowSums(
+      !is.na(mtb_discussions[paste0("recommended_atc_", 1:4)])
+    )
+)
+```
+
 ## Write
 
 ```{r}
@@ -447,7 +493,8 @@ analysis_datasets <- list(
   "analysis-therapy-weekly" = therapy_weekly,
   "analysis-ctdna-samples" = ctdna_samples,
   "analysis-ctdna-analyses" = ctdna_analyses,
-  "analysis-alterations" = alterations
+  "analysis-alterations" = alterations,
+  "analysis-mtb-discussions" = mtb_discussions
 )
 
 iwalk(analysis_datasets, \(data, name) {
