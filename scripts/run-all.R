@@ -13,6 +13,11 @@ if (getRversion() != "4.6.1") {
   stop("LIQPLAT requires R 4.6.1; this is R ", getRversion(), ".")
 }
 
+# R sessions skip renv's startup check (see .Rprofile), so check here.
+if (!renv::status()$synchronized) {
+  stop("The project library differs from renv.lock; see renv::status().")
+}
+
 library(here)
 
 run_order <- c(

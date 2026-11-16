@@ -63,7 +63,9 @@ renv::restore()
 To add or update a package, install it in the project
 (`renv::install("pkg")`), use it in the code, and record it with
 `renv::snapshot()`; commit `renv.lock` together with the code that needs it.
-`renv::status()` shows whether the library and the lockfile agree. renv finds
+`renv::status()` shows whether the library and the lockfile agree. R sessions
+skip renv's own check at startup (it takes about 15 s, and Quarto starts R once
+per notebook); `scripts/run-all.R` runs it once and stops if they differ. renv finds
 the packages in the code; `.renvignore` excludes data, renders and the
 historical notebooks in `sap/development/`, and `DESCRIPTION` lists the
 packages that the code uses only indirectly (svglite for SVG figures).
