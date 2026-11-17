@@ -115,7 +115,7 @@ if (!file.exists(blood_products_adjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2401L,
     combine = FALSE,
     refresh = 0L
@@ -138,7 +138,7 @@ if (!file.exists(blood_products_unadjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2402L,
     refresh = 0L
   ))
@@ -179,7 +179,7 @@ if (!file.exists(erythrocytes_adjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2403L,
     combine = FALSE,
     refresh = 0L
@@ -202,7 +202,7 @@ if (!file.exists(erythrocytes_unadjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2404L,
     refresh = 0L
   ))
@@ -235,7 +235,7 @@ if (!file.exists(thrombocytes_unadjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2406L,
     refresh = 0L
   ))
@@ -280,7 +280,7 @@ if (!file.exists(zi_blood_products_adjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2411L,
     combine = FALSE,
     refresh = 0L
@@ -303,7 +303,7 @@ if (!file.exists(zi_blood_products_unadjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2412L,
     refresh = 0L
   ))
@@ -335,7 +335,7 @@ if (!file.exists(zi_erythrocytes_adjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2413L,
     combine = FALSE,
     refresh = 0L
@@ -358,7 +358,7 @@ if (!file.exists(zi_erythrocytes_unadjusted_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2414L,
     refresh = 0L
   ))

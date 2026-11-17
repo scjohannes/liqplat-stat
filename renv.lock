@@ -1,6 +1,6 @@
 {
   "R": {
-    "Version": "4.6.1",
+    "Version": "4.6.2",
     "Repositories": [
       {
         "Name": "CRAN",
@@ -1201,13 +1201,13 @@
     },
     "brms": {
       "Package": "brms",
-      "Version": "2.23.0",
-      "Source": "Repository",
+      "Version": "2.23.2",
+      "Source": "GitHub",
       "Encoding": "UTF-8",
       "Type": "Package",
       "Title": "Bayesian Regression Models using 'Stan'",
-      "Date": "2025-09-08",
-      "Authors@R": "c(person(\"Paul-Christian\", \"Bürkner\", email = \"paul.buerkner@gmail.com\", role = c(\"aut\", \"cre\")), person(\"Jonah\", \"Gabry\", role = c(\"ctb\")), person(\"Sebastian\", \"Weber\", role = c(\"ctb\")), person(\"Andrew\", \"Johnson\", role = c(\"ctb\")), person(\"Martin\", \"Modrak\", role = c(\"ctb\")), person(\"Hamada S.\", \"Badr\", role = c(\"ctb\")), person(\"Frank\", \"Weber\", role = c(\"ctb\")), person(\"Aki\", \"Vehtari\", role = c(\"ctb\")), person(\"Mattan S.\", \"Ben-Shachar\", role = c(\"ctb\")), person(\"Hayden\", \"Rabel\", role = c(\"ctb\")), person(\"Simon C.\", \"Mills\", role = c(\"ctb\")), person(\"Stephen\", \"Wild\", role = c(\"ctb\")), person(\"Ven\", \"Popov\", role = c(\"ctb\")), person(\"Ioannis\", \"Kosmidis\", role = c(\"ctb\")), person(\"Ben\", \"Schneider\", role = c(\"ctb\")), person(\"Noa\", \"Kallioinen\", role = c(\"ctb\")), person(\"Wellington J.\", \"Silva\", role = c(\"ctb\")), person(\"Luiz\", \"Carvalho\", role = c(\"ctb\")), person(\"Sermet\", \"Pekin\", role = c(\"ctb\")))",
+      "Date": "2025-09-12",
+      "Authors@R": "c(person(\"Paul-Christian\", \"Bürkner\", email = \"paul.buerkner@gmail.com\", role = c(\"aut\", \"cre\")), person(\"Jonah\", \"Gabry\", role = c(\"ctb\")), person(\"Sebastian\", \"Weber\", role = c(\"ctb\")), person(\"Andrew\", \"Johnson\", role = c(\"ctb\")), person(\"Martin\", \"Modrak\", role = c(\"ctb\")), person(\"Hamada S.\", \"Badr\", role = c(\"ctb\")), person(\"Frank\", \"Weber\", role = c(\"ctb\")), person(\"Aki\", \"Vehtari\", role = c(\"ctb\")), person(\"Mattan S.\", \"Ben-Shachar\", role = c(\"ctb\")), person(\"Hayden\", \"Rabel\", role = c(\"ctb\")), person(\"Simon C.\", \"Mills\", role = c(\"ctb\")), person(\"Stephen\", \"Wild\", role = c(\"ctb\")), person(\"Ven\", \"Popov\", role = c(\"ctb\")), person(\"Ioannis\", \"Kosmidis\", role = c(\"ctb\")), person(\"Ben\", \"Schneider\", role = c(\"ctb\")), person(\"Noa\", \"Kallioinen\", role = c(\"ctb\")), person(\"Wellington J.\", \"Silva\", role = c(\"ctb\")), person(\"Luiz\", \"Carvalho\", role = c(\"ctb\")), person(\"Sermet\", \"Pekin\", role = c(\"ctb\")), person(\"Florence\", \"Bockting\", role = c(\"ctb\")))",
       "Depends": [
         "R (>= 3.6.0)",
         "Rcpp (>= 0.12.0)",
@@ -1225,7 +1225,7 @@
         "bridgesampling (>= 0.3-0)",
         "glue (>= 1.3.0)",
         "rlang (>= 1.0.0)",
-        "future (>= 1.19.0)",
+        "future (>= 1.80.0)",
         "future.apply (>= 1.0.0)",
         "matrixStats",
         "nleqslv",
@@ -1242,6 +1242,7 @@
         "testthat (>= 3.1.9)",
         "emmeans (>= 1.4.2)",
         "cmdstanr (>= 0.5.0)",
+        "stanli (>= 0.25.0)",
         "projpred (>= 2.0.0)",
         "priorsense (>= 1.0.0)",
         "shinystan (>= 2.4.0)",
@@ -1271,19 +1272,24 @@
         "mirai",
         "future.mirai"
       ],
-      "Description": "Fit Bayesian generalized (non-)linear multivariate multilevel models using 'Stan' for full Bayesian inference. A wide range of distributions and link functions are supported, allowing users to fit -- among others -- linear, robust linear, count data, survival, response times, ordinal, zero-inflated, hurdle, and even self-defined mixture models all in a multilevel context. Further modeling options include both theory-driven and data-driven non-linear terms, auto-correlation structures, censoring and  truncation, meta-analytic standard errors, and quite a few more.  In addition, all parameters of the response distribution can be predicted  in order to perform distributional regression. Prior specifications are  flexible and explicitly encourage users to apply prior distributions that actually reflect their prior knowledge. Models can easily be evaluated and compared using several methods assessing posterior or prior predictions.  References: Bürkner (2017) <doi:10.18637/jss.v080.i01>;  Bürkner (2018) <doi:10.32614/RJ-2018-017>; Bürkner (2021) <doi:10.18637/jss.v100.i05>; Carpenter et al. (2017) <doi:10.18637/jss.v076.i01>.",
+      "Description": "Fit Bayesian generalized (non-)linear multivariate multilevel models using 'Stan' for full Bayesian inference. A wide range of distributions and link functions are supported, allowing users to fit -- among others -- linear, robust linear, count data, survival, response times, ordinal, zero-inflated, hurdle, and even self-defined mixture models all in a multilevel context. Further modeling options include both theory-driven and data-driven non-linear terms, auto-correlation structures, censoring and truncation, meta-analytic standard errors, and quite a few more. In addition, all parameters of the response distribution can be predicted in order to perform distributional regression. Prior specifications are flexible and explicitly encourage users to apply prior distributions that actually reflect their prior knowledge. Models can easily be evaluated and compared using several methods assessing posterior or prior predictions. References: Bürkner (2017) <doi:10.18637/jss.v080.i01>; Bürkner (2018) <doi:10.32614/RJ-2018-017>; Bürkner (2021) <doi:10.18637/jss.v100.i05>; Carpenter et al. (2017) <doi:10.18637/jss.v076.i01>.",
       "LazyData": "true",
       "NeedsCompilation": "no",
       "License": "GPL-2",
       "URL": "https://github.com/paul-buerkner/brms, https://discourse.mc-stan.org/, https://paulbuerkner.com/brms/",
       "BugReports": "https://github.com/paul-buerkner/brms/issues",
-      "Additional_repositories": "https://stan-dev.r-universe.dev/",
+      "Additional_repositories": "https://stan-dev.r-universe.dev/, https://seantalts.r-universe.dev/",
       "SystemRequirements": "pngquant",
       "VignetteBuilder": "knitr, R.rsp",
-      "RoxygenNote": "7.3.2",
-      "Author": "Paul-Christian Bürkner [aut, cre], Jonah Gabry [ctb], Sebastian Weber [ctb], Andrew Johnson [ctb], Martin Modrak [ctb], Hamada S. Badr [ctb], Frank Weber [ctb], Aki Vehtari [ctb], Mattan S. Ben-Shachar [ctb], Hayden Rabel [ctb], Simon C. Mills [ctb], Stephen Wild [ctb], Ven Popov [ctb], Ioannis Kosmidis [ctb], Ben Schneider [ctb], Noa Kallioinen [ctb], Wellington J. Silva [ctb], Luiz Carvalho [ctb], Sermet Pekin [ctb]",
+      "Config/roxygen2/version": "8.1.0",
+      "Author": "Paul-Christian Bürkner [aut, cre], Jonah Gabry [ctb], Sebastian Weber [ctb], Andrew Johnson [ctb], Martin Modrak [ctb], Hamada S. Badr [ctb], Frank Weber [ctb], Aki Vehtari [ctb], Mattan S. Ben-Shachar [ctb], Hayden Rabel [ctb], Simon C. Mills [ctb], Stephen Wild [ctb], Ven Popov [ctb], Ioannis Kosmidis [ctb], Ben Schneider [ctb], Noa Kallioinen [ctb], Wellington J. Silva [ctb], Luiz Carvalho [ctb], Sermet Pekin [ctb], Florence Bockting [ctb]",
       "Maintainer": "Paul-Christian Bürkner <paul.buerkner@gmail.com>",
-      "Repository": "CRAN"
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteUsername": "paul-buerkner",
+      "RemoteRepo": "brms",
+      "RemoteRef": "master",
+      "RemoteSha": "87aa1468895d8df99c004053866313c1fee16d37"
     },
     "broom": {
       "Package": "broom",
@@ -7730,6 +7736,54 @@
       "Author": "Wenjie Wang [aut, cre] (<https://orcid.org/0000-0003-0363-3180>), Jun Yan [aut] (<https://orcid.org/0000-0003-4401-7296>)",
       "Maintainer": "Wenjie Wang <wang@wwenjie.org>",
       "Repository": "CRAN"
+    },
+    "stanli": {
+      "Package": "stanli",
+      "Version": "0.25.0",
+      "Source": "Repository",
+      "Type": "Package",
+      "Title": "The Stan Language Interpreter",
+      "Authors@R": "person(\"Sean\", \"Talts\", email = \"xitrium@gmail.com\", role = c(\"aut\", \"cre\"))",
+      "Description": "Compile and sample Stan models without a C++ toolchain. Stan models are lowered to a graph of operations over precompiled 'stan-math' kernels rather than translated to C++ and compiled, so preparing a model takes milliseconds instead of minutes. Provides adaptive Hamiltonian Monte Carlo with the diagnostics a Bayesian workflow needs (rank-normalized split R-hat, bulk and tail effective sample size, E-BFMI), and L-BFGS optimization. The runtime library is downloaded on first use rather than bundled; see stanli_install().",
+      "License": "BSD_3_clause + file LICENSE",
+      "URL": "https://github.com/seantalts/stanli",
+      "BugReports": "https://github.com/seantalts/stanli/issues",
+      "Encoding": "UTF-8",
+      "Depends": [
+        "R (>= 4.0)"
+      ],
+      "Imports": [
+        "utils",
+        "tools",
+        "methods",
+        "stats"
+      ],
+      "Suggests": [
+        "V8",
+        "jsonlite",
+        "posterior",
+        "bayesplot",
+        "loo",
+        "rstantools",
+        "tidybayes",
+        "callr",
+        "rstan",
+        "cmdstanr",
+        "shinystan",
+        "brms",
+        "testthat (>= 3.0.0)"
+      ],
+      "Additional_repositories": "https://stan-dev.r-universe.dev",
+      "NeedsCompilation": "yes",
+      "Config/roxygen2/version": "8.1.0",
+      "Repository": "https://seantalts.r-universe.dev",
+      "Author": "Sean Talts [aut, cre]",
+      "Maintainer": "Sean Talts <xitrium@gmail.com>",
+      "RemoteType": "repository",
+      "RemoteUrl": "https://github.com/seantalts/stanli",
+      "RemoteRef": "v0.25.0",
+      "RemoteSha": "bc66380ed8f4bccf3ad21c189fed95d804c6ccde",
+      "RemoteSubdir": "r"
     },
     "stringi": {
       "Package": "stringi",

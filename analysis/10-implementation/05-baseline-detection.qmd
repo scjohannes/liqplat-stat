@@ -111,7 +111,7 @@ if (!file.exists(detection_model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 3L,
     refresh = 0L
   )
@@ -297,7 +297,7 @@ if (!file.exists(ordinal_model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 4L,
     refresh = 0L
   )

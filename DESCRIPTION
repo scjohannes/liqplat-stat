@@ -13,5 +13,6 @@ Depends:
 Imports:
     knitr,
     rmarkdown,
+    stanli,
     svglite
 Encoding: UTF-8

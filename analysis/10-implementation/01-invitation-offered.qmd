@@ -60,7 +60,7 @@ if (!file.exists(model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting,
     refresh = 0L
   )

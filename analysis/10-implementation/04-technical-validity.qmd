@@ -56,9 +56,10 @@ if (!file.exists(model_path)) {
     iter = 2000L,
     chains = 4L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 2L,
-    refresh = 0L
+    refresh = 0L,
+    control = list(adapt_delta = 0.95)
   )
   saveRDS(fit, model_path, compress = "xz")
 }

@@ -102,7 +102,7 @@ if (!file.exists(adjusted_model_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 3601L,
     combine = FALSE,
     refresh = 0L
@@ -133,7 +133,7 @@ if (!file.exists(unadjusted_model_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 3602L,
     refresh = 0L
   ))
@@ -172,7 +172,7 @@ if (!file.exists(zi_adjusted_model_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 3603L,
     combine = FALSE,
     refresh = 0L
@@ -195,7 +195,7 @@ if (!file.exists(zi_unadjusted_model_path)) {
     chains = 4L,
     iter = 2000L,
     cores = 1L,
-    backend = "cmdstanr",
+    backend = "stanli",
     seed = config$seeds$supporting + 3604L,
     refresh = 0L
   ))
